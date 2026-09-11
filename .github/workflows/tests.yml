@@ -1,0 +1,41 @@
+name: tests
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.10", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      # The benchmark, harness, reward and judge layers have zero dependencies,
+      # so CI needs no install step at all. Training extras are not exercised
+      # here on purpose: they need a GPU and this must stay fast.
+      - name: reference and null agents
+        run: python -m pasarbench.run
+      - name: adversarial traps
+        run: python -m tests.test_traps
+      - name: harness invariants
+        run: python -m tests.test_harness
+      - name: reward invariants
+        run: python -m tests.test_reward
+      - name: generated suite
+        run: python -m tests.test_generated
+      - name: context strategies
+        run: python -m tests.test_context
+      - name: judge and agreement statistics
+        run: python -m tests.test_judge
+      - name: tool exposure and diagnosis
+        run: python -m tests.test_exposure
+      - name: serving metrics and cost
+        run: python -m tests.test_serving
+      - name: end-to-end sweep (scripted backend, no API calls)
+        run: python -m pasarbench.sweep --backend scripted --suite all --strategies full
