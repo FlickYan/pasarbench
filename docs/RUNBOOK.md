@@ -23,15 +23,34 @@ waiting for a node.
 
 ```bash
 git clone <your-repo> && cd pasarbench
-python -m pasarbench.run
-for t in traps harness reward generated context judge exposure serving; do
-  python -m tests.test_$t || echo "FAILED: $t"
-done
-python -m pasarbench.sweep --backend scripted --suite all --strategies full
+./run_tests.sh
 ```
 
-Expect: reference 1.0, null 0.0, and 9 green suites. If anything fails here,
-stop — everything downstream inherits it.
+Expect: reference 1.0, null 0.0, 9 green suites, and a scripted end-to-end
+sweep. If anything fails here, stop — everything downstream inherits it.
+
+### `ModuleNotFoundError: No module named 'pasarbench'`
+
+Almost always a working-directory problem, made easy to hit by the nesting: the
+repo root is called `pasarbench` and it *contains* a package also called
+`pasarbench`.
+
+```
+pasarbench/            <- run from HERE (has README.md, LICENSE)
+├── pasarbench/        <- NOT here (has db.py, policy.md)
+├── tests/
+└── scripts/
+```
+
+```bash
+pwd && ls               # see README.md? correct. see db.py? cd ..
+```
+
+`./run_tests.sh` resolves the repo root from its own location and works from
+anywhere, so use it rather than remembering where you are. Two other causes
+worth ruling out: Python older than 3.10 (`python3 --version`), and `python`
+pointing at Python 2 or a Windows Store stub — use `python3`, or set
+`PYTHON=/path/to/python ./run_tests.sh`.
 
 ---
 

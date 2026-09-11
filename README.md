@@ -24,6 +24,14 @@ rollouts ──▶ verifier ──▶ group advantage ──▶ policy update �
 ## Quickstart
 
 ```bash
+./run_tests.sh                    # every suite, from any directory
+```
+
+Or individually, **from the repo root** (the one containing `README.md`, not the
+`pasarbench/` package inside it — that nesting is the most common first-run
+mistake):
+
+```bash
 python -m pasarbench.run          # null agent → 0.0, reference agent → 1.0
 python -m tests.test_traps        # 10 naive solutions, all must be rejected
 python -m tests.test_harness      # 28 harness invariants
