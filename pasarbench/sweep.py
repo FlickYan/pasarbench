@@ -63,6 +63,20 @@ def select_tasks(args) -> list[Task]:
     return pool
 
 
+def _extra_body(raw: str) -> dict:
+    """Parse --extra-body. Fail loudly: a silently ignored provider flag is how
+    you end up running with thinking mode on and not knowing."""
+    if not raw:
+        return {}
+    try:
+        d = json.loads(raw)
+    except json.JSONDecodeError as e:
+        raise SystemExit(f"--extra-body is not valid JSON: {e}")
+    if not isinstance(d, dict):
+        raise SystemExit("--extra-body must be a JSON object")
+    return d
+
+
 def make_backend(kind: str, args) -> callable:
     if kind == "scripted":
         return lambda t: ScriptedBackend(ALL_SOLUTIONS.get(t.task_id, []))
@@ -71,7 +85,9 @@ def make_backend(kind: str, args) -> callable:
     if kind == "openai":
         return lambda t: OpenAICompatBackend(model=args.model, base_url=args.base_url,
                                              api_key=args.api_key,
-                                             temperature=args.temperature)
+                                             temperature=args.temperature,
+                                             max_tokens=args.max_tokens,
+                                             extra_body=_extra_body(args.extra_body))
     if kind == "anthropic":
         return lambda t: AnthropicBackend(model=args.model, temperature=args.temperature)
     raise ValueError(kind)
@@ -83,8 +99,12 @@ def make_simulator(kind: str, args) -> callable:
     if kind == "silent":
         return lambda t: SilentUser()
     if kind == "openai":
-        sim = OpenAICompatBackend(model=args.sim_model, base_url=args.base_url,
-                                  api_key=args.api_key, temperature=0.7)
+        sim = OpenAICompatBackend(model=args.sim_model,
+                                  base_url=args.sim_url or args.base_url,
+                                  api_key=args.sim_api_key or args.api_key,
+                                  temperature=0.7, max_tokens=512,
+                                  extra_body=_extra_body(
+                                      args.sim_extra_body or args.extra_body))
         return lambda t: LLMUser(sim, t.persona, t.hidden_facts, t.language)
     if kind == "anthropic":
         sim = AnthropicBackend(model=args.sim_model, temperature=0.7)
@@ -210,6 +230,16 @@ def main() -> None:
     ap.add_argument("--base-url", default="https://api.openai.com/v1")
     ap.add_argument("--api-key", default=os.environ.get("OPENAI_API_KEY", "EMPTY"))
     ap.add_argument("--temperature", type=float, default=0.0)
+    ap.add_argument("--max-tokens", type=int, default=2048)
+    ap.add_argument("--sim-url", default="", help="simulator endpoint, if different")
+    ap.add_argument("--sim-api-key", default="", help="simulator key, if different")
+    ap.add_argument("--extra-body", default="",
+                    help='provider-specific JSON merged into the request body. '
+                         'DeepSeek V4 REQUIRES \'{"thinking":{"type":"disabled"}}\' '
+                         'or reasoning tokens inflate every token measurement and '
+                         'can exhaust max_tokens before a tool call is emitted.')
+    ap.add_argument("--sim-extra-body", default="",
+                    help="same, for the simulator only")
     ap.add_argument("--strategies", default="full,window8,window4,trim3,notes4",
                     help="also summarize<N>, which needs --summarizer-model")
     ap.add_argument("--summarizer-model", default="",

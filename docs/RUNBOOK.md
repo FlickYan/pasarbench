@@ -73,6 +73,37 @@ python -m pasarbench.sweep \
   --strategies full -k 1 --run-id smoke
 ```
 
+#### Provider notes
+
+**DeepSeek** — `./scripts/smoke_deepseek.sh` (set `DEEPSEEK_API_KEY`). Model is
+`deepseek-v4-flash`, endpoint `https://api.deepseek.com/v1`.
+
+> **V4 runs with thinking ENABLED by default**, and reasoning tokens count
+> toward `max_tokens`. Left on, it can exhaust the budget before a tool call is
+> emitted (empty assistant turns), and it corrupts two measurements this project
+> depends on: the token axis of the context ablation becomes reasoning
+> verbosity, and tokens-per-char in the multilingual diagnosis becomes
+> unreadable. Always pass:
+>
+> ```bash
+> --extra-body '{"thinking":{"type":"disabled"}}'
+> ```
+>
+> Re-enable it later as a deliberate, separately-labelled arm if you want to
+> measure what thinking buys here. Running with it on by accident is the
+> problem, not thinking itself.
+
+DeepSeek also reports `prompt_cache_hit_tokens` in `usage`, which the backend
+now records as `Usage.cached_tokens`. The ~2.2k-token policy prefix is identical
+on every call, so **you get a prefix-caching measurement from the API with no
+GPU** — part of Phase 3, early and free.
+
+**Anthropic** — `--backend anthropic --model <id>`, key in `ANTHROPIC_API_KEY`.
+
+**Any OpenAI-compatible endpoint** — `--base-url` plus `--api-key`. No code
+change is needed; `OpenAICompatBackend` handles the wire format and
+`--extra-body` carries anything provider-specific.
+
 Read the traces before spending anything more. You are checking three things:
 the agent actually calls tools, the simulator withholds `hidden_facts` until
 asked, and episodes terminate rather than burning the step budget.

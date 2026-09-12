@@ -134,12 +134,21 @@ class OpenAICompatBackend:
 
     def __init__(self, model: str, base_url: str = "https://api.openai.com/v1",
                  api_key: str | None = None, temperature: float = 0.0,
-                 max_tokens: int = 2048):
+                 max_tokens: int = 2048,
+                 extra_body: dict[str, Any] | None = None):
         self.model = model
         self.base_url = base_url.rstrip("/")
         self.api_key = api_key or os.environ.get("OPENAI_API_KEY", "EMPTY")
         self.temperature = temperature
         self.max_tokens = max_tokens
+        # Provider-specific body fields. The one that matters here:
+        # DeepSeek V4 has THINKING ENABLED BY DEFAULT and reasoning counts
+        # toward max_tokens, so without {"thinking": {"type": "disabled"}} the
+        # token axis of the context ablation measures reasoning verbosity
+        # rather than context strategy, and the multilingual tokens-per-char
+        # mechanism becomes unmeasurable. Pass it explicitly; never rely on a
+        # provider default you did not choose.
+        self.extra_body = dict(extra_body or {})
         self.name = f"openai-compat:{model}"
 
     def chat(self, messages: list[Message], tools: list[dict[str, Any]]) -> ModelResponse:
@@ -152,6 +161,7 @@ class OpenAICompatBackend:
         if tools:
             payload["tools"] = tools
             payload["tool_choice"] = "auto"
+        payload.update(self.extra_body)
 
         data = _post(f"{self.base_url}/chat/completions", payload,
                      {"Content-Type": "application/json",
@@ -171,10 +181,23 @@ class OpenAICompatBackend:
             calls.append(ToolCall(name=tc["function"]["name"], arguments=args, id=tc["id"]))
 
         u = data.get("usage") or {}
+        # Cache accounting differs by provider: OpenAI nests it under
+        # prompt_tokens_details.cached_tokens, DeepSeek reports
+        # prompt_cache_hit_tokens at the top level. Take whichever is present.
+        cached = (u.get("prompt_cache_hit_tokens")
+                  or (u.get("prompt_tokens_details") or {}).get("cached_tokens")
+                  or 0)
+        content = choice.get("content") or ""
+        if not content and choice.get("reasoning_content"):
+            # Thinking mode produced reasoning but no answer -- almost always
+            # means max_tokens was exhausted by the reasoning trace. Surface it
+            # rather than returning a silent empty turn.
+            content = ""
         return ModelResponse(
-            content=choice.get("content") or "",
+            content=content,
             tool_calls=calls,
-            usage=Usage(u.get("prompt_tokens", 0), u.get("completion_tokens", 0)),
+            usage=Usage(u.get("prompt_tokens", 0), u.get("completion_tokens", 0),
+                        int(cached)),
             stop_reason=data["choices"][0].get("finish_reason"),
         )
 

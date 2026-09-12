@@ -64,14 +64,25 @@ class Message:
 class Usage:
     prompt_tokens: int = 0
     completion_tokens: int = 0
+    cached_tokens: int = 0      # prompt tokens served from the provider's cache
 
     @property
     def total(self) -> int:
         return self.prompt_tokens + self.completion_tokens
 
+    @property
+    def cache_hit_rate(self) -> float:
+        """Free prefix-caching signal. DeepSeek and several others report this
+        in `usage`, which means the week-7 caching result can be measured
+        against an API with no GPU involved. The ~2.2k-token policy prefix is
+        identical on every call, so this should be high -- if it is not, the
+        prompt is being perturbed somewhere it should not be."""
+        return round(self.cached_tokens / self.prompt_tokens, 4) if self.prompt_tokens else 0.0
+
     def __add__(self, other: "Usage") -> "Usage":
         return Usage(self.prompt_tokens + other.prompt_tokens,
-                     self.completion_tokens + other.completion_tokens)
+                     self.completion_tokens + other.completion_tokens,
+                     self.cached_tokens + other.cached_tokens)
 
 
 @dataclass
