@@ -64,6 +64,12 @@ def select_tasks(args) -> list[Task]:
 
 
 API_KEY_ENV = ("PASARBENCH_API_KEY", "DEEPSEEK_API_KEY", "OPENAI_API_KEY",
+               "DASHSCOPE_API_KEY", "TOGETHER_API_KEY", "GROQ_API_KEY")
+
+# The simulator usually lives on a DIFFERENT provider from the agent, so it
+# needs its own key resolved separately -- otherwise you end up passing it on
+# the command line, where other users on a shared node can read it.
+SIM_KEY_ENV = ("PASARBENCH_SIM_API_KEY", "DASHSCOPE_API_KEY", "OPENAI_API_KEY",
                "TOGETHER_API_KEY", "GROQ_API_KEY")
 
 
@@ -81,6 +87,14 @@ def resolve_api_key() -> str:
         if v:
             return v
     return "EMPTY"
+
+
+def resolve_sim_api_key() -> str:
+    for name in SIM_KEY_ENV:
+        v = os.environ.get(name)
+        if v:
+            return v
+    return ""
 
 
 def check_key(args) -> None:
@@ -129,10 +143,16 @@ def make_simulator(kind: str, args) -> callable:
     if kind == "silent":
         return lambda t: SilentUser()
     if kind == "openai":
-        sim = OpenAICompatBackend(model=args.sim_model,
-                                  base_url=args.sim_url or args.base_url,
-                                  api_key=args.sim_api_key or args.api_key,
-                                  temperature=0.7, max_tokens=512,
+        sim_key = args.sim_api_key or resolve_sim_api_key() or args.api_key
+        sim_url = args.sim_url or args.base_url
+        if sim_url != args.base_url and sim_key == args.api_key:
+            print("!! the simulator is on a different endpoint but reusing the "
+                  "agent's key. Set PASARBENCH_SIM_API_KEY (or DASHSCOPE_API_KEY) "
+                  "or expect a 401.", flush=True)
+        # max_tokens is small on purpose: a customer turn is one or two
+        # sentences. Anything larger just pays for a model to ramble.
+        sim = OpenAICompatBackend(model=args.sim_model, base_url=sim_url,
+                                  api_key=sim_key, temperature=0.7, max_tokens=256,
                                   extra_body=_extra_body(
                                       args.sim_extra_body or args.extra_body))
         return lambda t: LLMUser(sim, t.persona, t.hidden_facts, t.language)
@@ -265,7 +285,9 @@ def main() -> None:
     ap.add_argument("--temperature", type=float, default=0.0)
     ap.add_argument("--max-tokens", type=int, default=2048)
     ap.add_argument("--sim-url", default="", help="simulator endpoint, if different")
-    ap.add_argument("--sim-api-key", default="", help="simulator key, if different")
+    ap.add_argument("--sim-api-key", default="",
+                    help="prefer PASARBENCH_SIM_API_KEY / DASHSCOPE_API_KEY in "
+                         "the environment; a key passed here is visible in `ps`")
     ap.add_argument("--extra-body", default="",
                     help='provider-specific JSON merged into the request body. '
                          'DeepSeek V4 REQUIRES \'{"thinking":{"type":"disabled"}}\' '
