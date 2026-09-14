@@ -20,12 +20,24 @@ REMOTE="${1:-}"
 BRANCH="${BRANCH:-main}"
 [ -z "$REMOTE" ] && { echo "usage: $0 <git-remote-url>"; exit 1; }
 
+# A LOCAL identity beats a --global one. The shipped .git/config used to carry
+# a placeholder, which silently overrode whatever the user had set globally and
+# made the guard below fire no matter what they did. Clear it first, then read.
+git config --local --unset user.name  2>/dev/null || true
+git config --local --unset user.email 2>/dev/null || true
+
 NAME="$(git config --get user.name  || true)"
 EMAIL="$(git config --get user.email || true)"
-if [ -z "$NAME" ] || [ -z "$EMAIL" ] || [ "$EMAIL" = "you@example.com" ]; then
-  echo "Set your identity first so the commit is authored by you, not a placeholder:"
-  echo "  git config --global user.name  \"Your Name\""
-  echo "  git config --global user.email \"your@email.com\""
+PLACEHOLDERS="you@example.com your@email.com your.real@email.com"
+if [ -z "$NAME" ] || [ -z "$EMAIL" ] || [[ " $PLACEHOLDERS " == *" $EMAIL "* ]]; then
+  echo "No real git identity found (currently: ${NAME:-unset} <${EMAIL:-unset}>)."
+  echo
+  echo "Set it -- inside this folder, WITHOUT --global, is simplest:"
+  echo "  git config user.name  \"Your Real Name\""
+  echo "  git config user.email \"your.real@email.com\""
+  echo
+  echo "Then check it took:"
+  echo "  git config --get user.email"
   exit 1
 fi
 
