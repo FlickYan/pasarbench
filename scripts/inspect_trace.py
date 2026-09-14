@@ -146,12 +146,22 @@ def cache_and_cost(eps: list[dict]) -> None:
     print("4. TOKENS, CACHE, AND WHAT THE FULL SWEEP WILL COST")
     print("=" * 72)
     prompt = completion = cached = 0
+    sim_prompt = sim_completion = sim_cached = 0
     for e in eps:
         for st in e["steps"]:
             u = st.get("usage", {})
             prompt += u.get("prompt", 0)
             completion += u.get("completion", 0)
             cached += u.get("cached", 0)
+        # The simulator accumulates, so the LAST event carries the episode total.
+        last = None
+        for ev in e["events"]:
+            if ev.get("kind") == "user_turn" and ev.get("sim_usage"):
+                last = ev["sim_usage"]
+        if last:
+            sim_prompt += last.get("prompt", 0)
+            sim_completion += last.get("completion", 0)
+            sim_cached += last.get("cached", 0)
     n = len(eps) or 1
     total = prompt + completion
     print(f"  episodes        {n}")
@@ -181,21 +191,35 @@ def cache_and_cost(eps: list[dict]) -> None:
                          ("full 186, 5 strategies, k=5", 186 * 5 * 5)):
         t = per_ep * eps_n
         print(f"    {label:32s} {eps_n:>5} episodes  {t / 1e6:>7.1f}M tokens")
+    if sim_prompt:
+        print(f"\n  SIMULATOR (separate provider, separate price)")
+        print(f"    prompt      {sim_prompt:,}   ({sim_prompt / n:,.0f} per episode)")
+        print(f"    completion  {sim_completion:,}   ({sim_completion / n:,.0f} per episode)")
+        share = sim_prompt / (prompt + sim_prompt)
+        print(f"    {share:.0%} of all prompt tokens in the run")
+    else:
+        print("\n  SIMULATOR tokens not recorded (scripted simulator, or an "
+              "older run). Cost below is AGENT ONLY and understates the bill.")
+
     hit = cached / prompt if prompt else 0.0
     print("\n  COST -- the cache discount dominates, so raw token counts")
     print("  overstate the bill badly. Rates below are ILLUSTRATIVE; check your")
     print("  provider's current pricing page and re-run with --price.")
-    p_in, p_cached, p_out = 0.28, 0.028, 0.42        # USD per million tokens
+    # agent: DeepSeek Flash.  simulator: Qwen3.8 Flash, Singapore.
+    p_in, p_cached, p_out = 0.28, 0.028, 0.42
+    s_in, s_cached, s_out = 0.15, 0.016, 0.47
+    s_hit = sim_cached / sim_prompt if sim_prompt else 0.0
     for label, eps_n in (("--sample 2, 5 strategies, k=3", 32 * 5 * 3),
                          ("full 186, 5 strategies, k=3", 186 * 5 * 3),
                          ("full 186, 5 strategies, k=5", 186 * 5 * 5)):
-        pr = prompt / n * eps_n
-        co = completion / n * eps_n
-        usd = ((pr * hit) / 1e6 * p_cached + (pr * (1 - hit)) / 1e6 * p_in
-               + co / 1e6 * p_out)
-        naive = (pr / 1e6 * p_in) + (co / 1e6 * p_out)
-        print(f"    {label:32s} ~${usd:6.2f}   (${naive:6.2f} without the "
-              f"{hit:.0%} cache hit)")
+        pr, co = prompt / n * eps_n, completion / n * eps_n
+        agent = ((pr * hit) / 1e6 * p_cached + (pr * (1 - hit)) / 1e6 * p_in
+                 + co / 1e6 * p_out)
+        spr, sco = sim_prompt / n * eps_n, sim_completion / n * eps_n
+        sim = ((spr * s_hit) / 1e6 * s_cached + (spr * (1 - s_hit)) / 1e6 * s_in
+               + sco / 1e6 * s_out)
+        print(f"    {label:32s} agent ${agent:6.2f} + sim ${sim:5.2f} "
+              f"= ${agent + sim:6.2f}")
 
 
 def growth(eps: list[dict]) -> None:

@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from typing import Protocol
 
-from .types import Message
+from .types import Message, Usage
 
 
 class UserSimulator(Protocol):
@@ -85,6 +85,11 @@ class LLMUser:
         self.facts = facts
         self.language = language
         self.name = f"llm-user:{getattr(backend, 'name', '?')}"
+        # Accumulated across the episode. Without this every cost projection is
+        # agent-only, which on a multi-turn benchmark understates the bill by
+        # roughly half -- and the simulator is usually on a DIFFERENT provider
+        # at a different price, so you cannot just scale the agent number.
+        self.usage = Usage()
 
     def _system(self) -> str:
         facts = "\n".join(f"- {k}: {v}" for k, v in self.facts.items()) or "- (none)"
@@ -104,6 +109,7 @@ class LLMUser:
                 convo.append(Message(role="assistant", content=m.content))
 
         resp = self.backend.chat(convo, tools=[])
+        self.usage = self.usage + resp.usage
         text = (resp.content or "").strip()
         if "###END###" in text:
             return text.replace("###END###", "").strip(), True

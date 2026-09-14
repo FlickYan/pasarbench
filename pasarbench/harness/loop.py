@@ -196,7 +196,11 @@ def run_episode(
         state.simulator_cursor += 1
         tracker.turns += 1
         state.turn = tracker.turns
-        trace.event("user_turn", turn=state.turn, ended=ended, text=reply)
+        su = getattr(simulator, "usage", None)
+        trace.event("user_turn", turn=state.turn, ended=ended, text=reply,
+                    sim_usage=({"prompt": su.prompt_tokens,
+                                "completion": su.completion_tokens,
+                                "cached": su.cached_tokens} if su else None))
         if ended:
             stop = StopReason.DONE
             break

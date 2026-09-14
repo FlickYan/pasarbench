@@ -32,7 +32,11 @@ AGENT_URL="${AGENT_URL:-https://api.deepseek.com/v1}"
 # lives. Some accounts use a workspace-scoped host instead
 # (https://<WorkspaceId>.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1);
 # check which one your Model Studio console shows.
-SIM_MODEL="${SIM_MODEL:-qwen3.8-max}"
+# qwen3.8-flash, not -max. Singapore list price is $0.15/$0.47 per Mtok against
+# max's $2/$6 -- 13x cheaper in, 12.8x cheaper out, with an 89% cache discount.
+# The customer's job is to play a persona and withhold facts until asked;
+# frontier reasoning buys nothing here and costs more than the agent.
+SIM_MODEL="${SIM_MODEL:-qwen3.8-flash}"
 SIM_URL="${SIM_URL:-https://dashscope-intl.aliyuncs.com/compatible-mode/v1}"
 
 # Both providers default their reasoning ON. Disable it on BOTH sides or your
