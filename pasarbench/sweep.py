@@ -63,6 +63,36 @@ def select_tasks(args) -> list[Task]:
     return pool
 
 
+API_KEY_ENV = ("PASARBENCH_API_KEY", "DEEPSEEK_API_KEY", "OPENAI_API_KEY",
+               "TOGETHER_API_KEY", "GROQ_API_KEY")
+
+
+def resolve_api_key() -> str:
+    """First key found in the environment, in priority order.
+
+    Prefer this over `--api-key sk-...` on a SHARED CLUSTER. Command-line
+    arguments land in /proc/<pid>/cmdline, which is world-readable -- any other
+    user on the node can read your key out of `ps aux`. Environment variables
+    live in /proc/<pid>/environ, readable only by you and root. They also stay
+    out of ~/.bash_history.
+    """
+    for name in API_KEY_ENV:
+        v = os.environ.get(name)
+        if v:
+            return v
+    return "EMPTY"
+
+
+def check_key(args) -> None:
+    remote = not any(h in args.base_url for h in ("localhost", "127.0.0.1", "0.0.0.0"))
+    if remote and args.api_key in ("", "EMPTY"):
+        raise SystemExit(
+            f"No API key found for {args.base_url}.\n"
+            f"Set one of: {', '.join(API_KEY_ENV)}\n"
+            f"  export DEEPSEEK_API_KEY=sk-...\n"
+            f"Failing here rather than sending the request and handing you a 401.")
+
+
 def _extra_body(raw: str) -> dict:
     """Parse --extra-body. Fail loudly: a silently ignored provider flag is how
     you end up running with thinking mode on and not knowing."""
@@ -228,7 +258,10 @@ def main() -> None:
     ap.add_argument("--model", default="gpt-4o-mini")
     ap.add_argument("--sim-model", default="gpt-4o-mini")
     ap.add_argument("--base-url", default="https://api.openai.com/v1")
-    ap.add_argument("--api-key", default=os.environ.get("OPENAI_API_KEY", "EMPTY"))
+    ap.add_argument("--api-key", default=resolve_api_key(),
+                    help="prefer an env var (%s); a key passed here is visible "
+                         "to other users via `ps` on a shared machine"
+                         % "/".join(API_KEY_ENV[:3]))
     ap.add_argument("--temperature", type=float, default=0.0)
     ap.add_argument("--max-tokens", type=int, default=2048)
     ap.add_argument("--sim-url", default="", help="simulator endpoint, if different")
@@ -262,6 +295,9 @@ def main() -> None:
     ap.add_argument("--trace-root", default="traces")
     ap.add_argument("--run-id", default=None)
     args = ap.parse_args()
+
+    if args.backend in ("openai", "anthropic"):
+        check_key(args)
 
     tasks = select_tasks(args)
     if not tasks:

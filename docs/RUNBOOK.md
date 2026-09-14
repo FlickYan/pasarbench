@@ -73,6 +73,46 @@ python -m pasarbench.sweep \
   --strategies full -k 1 --run-id smoke
 ```
 
+#### Supplying your API key
+
+```bash
+export DEEPSEEK_API_KEY=sk-...        # then pass NO --api-key flag
+```
+
+The sweep searches `PASARBENCH_API_KEY`, `DEEPSEEK_API_KEY`, `OPENAI_API_KEY`,
+`TOGETHER_API_KEY`, `GROQ_API_KEY` in that order, and fails immediately with
+guidance if none is set rather than sending a request and handing you a 401.
+
+**Do not pass `--api-key sk-...` on a shared cluster.** Command-line arguments
+land in `/proc/<pid>/cmdline`, which is world-readable — any other user on the
+node can read your key out of `ps aux`. Environment variables live in
+`/proc/<pid>/environ`, readable only by you and root.
+
+Three ways to set it, safest first:
+
+```bash
+# 1. A .env file, already in .gitignore. Best for repeated runs.
+echo 'DEEPSEEK_API_KEY=sk-...' > .env
+set -a; source .env; set +a
+
+# 2. Interactive, never echoed and never in shell history.
+read -rs -p "DeepSeek key: " DEEPSEEK_API_KEY && export DEEPSEEK_API_KEY
+
+# 3. Plain export with a LEADING SPACE, which keeps it out of ~/.bash_history
+#    when HISTCONTROL includes ignorespace (bash default on most distros).
+ export DEEPSEEK_API_KEY=sk-...
+```
+
+Check it took without printing it:
+
+```bash
+echo "${#DEEPSEEK_API_KEY} chars"     # ~35 for a DeepSeek key
+```
+
+If you ever paste a key into a terminal on a shared machine, or commit one,
+rotate it. It is thirty seconds of work and the alternative is someone else
+spending your credits.
+
 #### Provider notes
 
 **DeepSeek** — `./scripts/smoke_deepseek.sh` (set `DEEPSEEK_API_KEY`). Model is

@@ -31,14 +31,18 @@ BASE_URL="${BASE_URL:-https://api.deepseek.com/v1}"
 # is not acceptable is running with it on by accident.
 THINKING='{"thinking":{"type":"disabled"}}'
 
+# The key is NOT passed as --api-key. The sweep reads DEEPSEEK_API_KEY from the
+# environment, so it never appears in argv -- on a shared cluster,
+# /proc/<pid>/cmdline is world-readable and `ps aux` would show it to everyone.
 echo "model     : $MODEL"
 echo "endpoint  : $BASE_URL"
 echo "thinking  : disabled (explicit)"
+echo "key       : \$DEEPSEEK_API_KEY (${#DEEPSEEK_API_KEY} chars, not shown)"
 echo
 
 python -m pasarbench.sweep \
   --backend openai --model "$MODEL" \
-  --base-url "$BASE_URL" --api-key "$DEEPSEEK_API_KEY" \
+  --base-url "$BASE_URL" \
   --extra-body "$THINKING" \
   --simulator openai --sim-model "$MODEL" \
   --suite core --tasks T01,T02,T08,T13,T16 \
