@@ -19,6 +19,39 @@ waiting for a node.
 
 ---
 
+# Updating an already-pushed repo
+
+If you pushed an earlier snapshot, the histories have diverged at the root and
+`git pull` will refuse to merge them. Replace the remote contents instead —
+nothing depends on the old commits:
+
+```bash
+tar xzf pasarbench-repo.tar.gz && cd pasarbench
+git config --global user.name  "Your Name"
+git config --global user.email "your@email.com"
+./scripts/push_to_github.sh git@github.com:<you>/pasarbench.git
+```
+
+It runs the full suite first and refuses to push a broken tree, strips run
+artifacts, creates one commit authored by you, and force-pushes. It asks you to
+type `REPLACE` before doing anything destructive.
+
+Then confirm the update landed:
+
+```bash
+grep -c "extra-body" pasarbench/sweep.py     # expect 5
+python -c "import pasarbench.sweep as m; print(m.__file__)"
+```
+
+That second command is the one that catches the real problem: if you have two
+extractions on disk, Python may still be importing the old one.
+
+**HTTPS vs SSH.** GitHub removed password authentication, so an `https://` URL
+needs a personal access token rather than your account password. `git@github...`
+with an SSH key is less friction if you already have one set up.
+
+---
+
 # Phase 0 — verify (10 minutes, laptop)
 
 ```bash
