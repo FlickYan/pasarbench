@@ -205,9 +205,25 @@ def cache_and_cost(eps: list[dict]) -> None:
     print("\n  COST -- the cache discount dominates, so raw token counts")
     print("  overstate the bill badly. Rates below are ILLUSTRATIVE; check your")
     print("  provider's current pricing page and re-run with --price.")
-    # agent: DeepSeek Flash.  simulator: Qwen3.8 Flash, Singapore.
-    p_in, p_cached, p_out = 0.28, 0.028, 0.42
-    s_in, s_cached, s_out = 0.15, 0.016, 0.47
+    # USD per 1M tokens, rechecked 2026-09-15. VERIFY before quoting: these
+    # changed twice in the last two months.
+    #
+    # DeepSeek bills PEAK vs OFF-PEAK. Peak is 01:00-04:00 and 06:00-10:00 UTC;
+    # every other hour is half price. Scheduling a long sweep outside those
+    # windows halves the agent bill for free -- and Singapore is UTC+8, so peak
+    # is 09:00-12:00 and 14:00-18:00 local. Run overnight.
+    PRICES = {
+        "deepseek-flash":   {"off": (0.003, 0.15, 0.60), "peak": (0.006, 0.30, 1.20)},
+        "deepseek-v4-pro":  {"off": (0.022, 0.66, 1.98), "peak": (0.044, 1.32, 3.96)},
+    }
+    served = ""
+    for e in eps:
+        served = e["head"].get("requested_model") or served
+    band = PRICES.get(served, PRICES["deepseek-flash"])
+    p_cached, p_in, p_out = band["off"]
+    print(f"\n  agent priced as {served or 'deepseek-flash'} at OFF-PEAK rates "
+          f"(peak is 2x)")
+    s_cached, s_in, s_out = 0.016, 0.15, 0.47      # qwen3.8-flash, Singapore
     s_hit = sim_cached / sim_prompt if sim_prompt else 0.0
     for label, eps_n in (("--sample 2, 5 strategies, k=3", 32 * 5 * 3),
                          ("full 186, 5 strategies, k=3", 186 * 5 * 3),
