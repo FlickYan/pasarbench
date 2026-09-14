@@ -12,7 +12,11 @@ cd "$ROOT"
 
 : "${DEEPSEEK_API_KEY:?set DEEPSEEK_API_KEY first}"
 
-MODEL="${MODEL:-deepseek-v4-flash}"
+# Canonical name as of the V4.1 Flash release (2026-09-10). `deepseek-v4-flash`
+# is RETIRED and only temporarily routed here for compatibility -- do not pin a
+# retired alias, it can re-point to different weights without notice and your
+# earlier results become unreproducible.
+MODEL="${MODEL:-deepseek-flash}"
 BASE_URL="${BASE_URL:-https://api.deepseek.com/v1}"
 
 # THIS FLAG IS NOT OPTIONAL.

@@ -149,7 +149,20 @@ spending your credits.
 #### Provider notes
 
 **DeepSeek** — `./scripts/smoke_deepseek.sh` (set `DEEPSEEK_API_KEY`). Model is
-`deepseek-v4-flash`, endpoint `https://api.deepseek.com/v1`.
+**`deepseek-flash`**, endpoint `https://api.deepseek.com/v1`.
+
+> **Pin the canonical name, never a retired alias.** DeepSeek released V4.1
+> Flash on 2026-09-10 and made `deepseek-flash` the preferred identifier;
+> `deepseek-v4-flash` is retired and only *temporarily* routed to V4.1 for
+> compatibility. Ask for a retired alias and the provider silently serves you
+> something else — which means a sweep run in August and one run in September
+> under the same string compare two different models, with nothing in the
+> output saying so.
+>
+> The harness now reads the `model` field the provider returns, records it in
+> every trace header as `served_model`, and prints a one-time warning when it
+> differs from what you asked for. **Report the served name and the date in
+> your writeup**, not the string you typed.
 
 > **V4 runs with thinking ENABLED by default**, and reasoning tokens count
 > toward `max_tokens`. Left on, it can exhaust the budget before a tool call is

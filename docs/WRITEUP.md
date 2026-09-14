@@ -2,6 +2,12 @@
 
 Blog post, resume lines, interview prep.
 
+**Record the model the provider actually served, plus the date.** Not the
+string you passed. Providers route retired aliases to newer weights without
+notice — the traces carry `served_model` for exactly this reason. "deepseek-flash
+(DeepSeek V4.1 Flash), accessed 2026-09-15" is reproducible; "DeepSeek Flash" is
+not.
+
 **Every number in this file is `[N]`.** Fill them only from `RESULTS.md`, which
 is generated from files on disk and refuses to fabricate. Do not hand-fill
 either document — run the command, regenerate, copy across. A published post

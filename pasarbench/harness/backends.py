@@ -199,6 +199,7 @@ class OpenAICompatBackend:
             usage=Usage(u.get("prompt_tokens", 0), u.get("completion_tokens", 0),
                         int(cached)),
             stop_reason=data["choices"][0].get("finish_reason"),
+            served_model=data.get("model"),
         )
 
     @staticmethod
@@ -262,7 +263,8 @@ class AnthropicBackend:
         u = data.get("usage") or {}
         return ModelResponse(content=text, tool_calls=calls,
                              usage=Usage(u.get("input_tokens", 0), u.get("output_tokens", 0)),
-                             stop_reason=data.get("stop_reason"))
+                             stop_reason=data.get("stop_reason"),
+                             served_model=data.get("model"))
 
     @staticmethod
     def _convert(messages: list[Message]) -> list[dict[str, Any]]:

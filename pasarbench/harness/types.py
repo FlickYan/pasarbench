@@ -91,6 +91,10 @@ class ModelResponse:
     tool_calls: list[ToolCall] = field(default_factory=list)
     usage: Usage = field(default_factory=Usage)
     stop_reason: str | None = None
+    # What the provider says it actually ran. NOT the same as what you asked
+    # for: providers silently route retired aliases to newer models. A result
+    # recorded against an alias is unreproducible once that alias re-points.
+    served_model: str | None = None
 
     def as_message(self) -> Message:
         return Message(role="assistant", content=self.content, tool_calls=self.tool_calls)
@@ -196,6 +200,7 @@ class EpisodeState:
     usage: Usage = field(default_factory=Usage)
     stop_reason: StopReason | None = None
     simulator_cursor: int = 0
+    served_model: str | None = None   # what the provider actually ran
     summary: str = ""            # running summary, for the Summarize strategy
     summarized_upto: int = 0     # index of the last unit folded into `summary`
 
@@ -208,6 +213,7 @@ class EpisodeState:
             "usage": asdict(self.usage),
             "stop_reason": self.stop_reason.value if self.stop_reason else None,
             "simulator_cursor": self.simulator_cursor,
+            "served_model": self.served_model,
             "summary": self.summary,
             "summarized_upto": self.summarized_upto,
         }
@@ -222,6 +228,7 @@ class EpisodeState:
             usage=Usage(**d["usage"]),
             stop_reason=StopReason(d["stop_reason"]) if d["stop_reason"] else None,
             simulator_cursor=d.get("simulator_cursor", 0),
+            served_model=d.get("served_model"),
             summary=d.get("summary", ""),
             summarized_upto=d.get("summarized_upto", 0),
         )

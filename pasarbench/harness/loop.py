@@ -26,6 +26,8 @@ import json
 import time
 from typing import Any
 
+_ALIAS_WARNED: set[tuple[str, str]] = set()
+
 from ..db import Database
 from ..tools import DEFAULT_TOOLS
 from ..tools import call as tool_call
@@ -94,6 +96,7 @@ def run_episode(
         "policy_mode": policy_mode,
         "exposure": getattr(exposure, "name", "default"),
         "resumed": resuming,
+        "requested_model": getattr(backend, "model", None),
         "trap": task.trap,
         "market": task.market,
         "language": task.language,
@@ -123,6 +126,25 @@ def run_episode(
             stop = StopReason.BACKEND_ERROR
             break
         latency_ms = int((time.monotonic() - t0) * 1000)
+
+        # A provider that silently routes a retired alias to a newer model
+        # makes your results unreproducible: re-running the same command later
+        # can hit different weights with no signal that anything changed.
+        # Record what was actually served, and say so once.
+        requested = getattr(backend, "model", None)
+        served = resp.served_model
+        if served and requested and served != requested:
+            key = (requested, served)
+            if key not in _ALIAS_WARNED:
+                _ALIAS_WARNED.add(key)
+                msg = (f"requested model {requested!r} but the provider served "
+                       f"{served!r} -- an alias was re-pointed. Pin the served "
+                       f"name and record it in your writeup.")
+                print(f"\n!! {msg}\n", flush=True)
+                trace.event("model_alias_mismatch", requested=requested, served=served)
+            state.served_model = served
+        elif served:
+            state.served_model = served
 
         usage = resp.usage
         if not getattr(backend, "reports_usage", False) and usage.total == 0:
