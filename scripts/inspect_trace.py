@@ -49,20 +49,25 @@ def sequence(e: dict) -> None:
     print("\n" + "=" * 72)
     print(f"TOOL SEQUENCE: {e['id']}")
     print("=" * 72)
+    events = {ev["turn"]: ev for ev in e["events"] if ev.get("kind") == "user_turn"}
+    turn = 0
+    print(f"  customer: {e.get('opening', '(opening)')}")
     for st in e["steps"]:
         n = st["step"]
         if st.get("model_content"):
             txt = " ".join(st["model_content"].split())[:110]
-            print(f"  [{n}] says: {txt}")
+            print(f"  [{n}] agent: {txt}")
         for tr in st.get("tool_results", []):
             mark = "ok " if tr.get("ok") else "ERR"
             args = json.dumps(tr.get("args", {}), ensure_ascii=False)[:90]
-            print(f"  [{n}] {mark} {tr['name']}{args}")
+            print(f"  [{n}]   {mark} {tr['name']}{args}")
             if not tr.get("ok"):
-                print(f"         {tr.get('error')}")
-    for ev in e["events"]:
-        if ev.get("kind") == "user_turn" and ev.get("text"):
-            print(f"  customer: {' '.join(ev['text'].split())[:110]}")
+                print(f"           {tr.get('error')}")
+        if not st.get("tool_calls"):
+            ev = events.get(turn)
+            if ev and ev.get("text"):
+                print(f"  customer: {' '.join(ev['text'].split())[:110]}")
+            turn += 1
 
 
 def empties(eps: list[dict]) -> None:
@@ -92,22 +97,48 @@ def leaks(eps: list[dict]) -> None:
         print(f"  (could not load tasks: {ex})")
         return
 
-    leaked = 0
+    from pasarbench.harness.types import Message
+    from pasarbench.simqa import audit, leak_report
+
+    reports = []
     for e in eps:
         task = tasks.get(e["id"])
         if not task:
             continue
-        turns = [ev.get("text", "") for ev in e["events"]
-                 if ev.get("kind") == "user_turn"]
-        opening = task.opening
-        first = [opening] + turns[:1]
-        for fact, value in task.hidden_facts.items():
-            if any(str(value).lower() in (t or "").lower() for t in first):
-                leaked += 1
-                print(f"  {e['id']}: volunteered `{fact}` = {value} unprompted")
-    print("  none -- the customer made the agent ask" if not leaked else
-          f"  {leaked} leak(s). Above ~15% of episodes this invalidates every "
-          f"pass rate: the benchmark has become single-turn.")
+        # Rebuild the transcript IN ORDER. A fact given after the agent asked
+        # for it is correct behaviour; only an unprompted one is a leak, and
+        # you cannot tell the two apart without the interleaving.
+        msgs = [Message("system", ""), Message("user", task.opening)]
+        events = {ev["turn"]: ev for ev in e["events"]
+                  if ev.get("kind") == "user_turn"}
+        turn = 0
+        for st in e["steps"]:
+            if st.get("model_content"):
+                msgs.append(Message("assistant", st["model_content"]))
+            if not st.get("tool_calls"):
+                ev = events.get(turn)
+                if ev and ev.get("text"):
+                    msgs.append(Message("user", ev["text"]))
+                turn += 1
+        reports.append(leak_report(task, msgs))
+
+    if not reports:
+        print("  (no matching tasks)")
+        return
+    a = audit(reports)
+    on_request = sum(len(r.revealed_on_request) for r in reports)
+    print(f"  episodes {a['transcripts']}   leak rate {a['leak_rate']:.1%}   "
+          f"clean {a['clean_rate']:.1%}")
+    print(f"  facts revealed ON REQUEST (correct behaviour): {on_request}")
+    for r in reports:
+        for fact, t in r.leaked:
+            print(f"  LEAK {r.task_id}: volunteered `{fact}` at turn {t}, "
+                  f"before the agent asked")
+    if a["leak_rate"] == 0:
+        print("  no leaks -- the customer made the agent ask for everything")
+    elif a["leak_rate"] > 0.15:
+        print("  above 15%: the benchmark has drifted toward single-turn. "
+              "Strengthen the persona prompt before trusting any pass rate.")
 
 
 def cache_and_cost(eps: list[dict]) -> None:
@@ -150,8 +181,21 @@ def cache_and_cost(eps: list[dict]) -> None:
                          ("full 186, 5 strategies, k=5", 186 * 5 * 5)):
         t = per_ep * eps_n
         print(f"    {label:32s} {eps_n:>5} episodes  {t / 1e6:>7.1f}M tokens")
-    print("\n  Multiply by your provider's per-Mtok price. Subsample while")
-    print("  iterating; run the full grid only for final numbers.")
+    hit = cached / prompt if prompt else 0.0
+    print("\n  COST -- the cache discount dominates, so raw token counts")
+    print("  overstate the bill badly. Rates below are ILLUSTRATIVE; check your")
+    print("  provider's current pricing page and re-run with --price.")
+    p_in, p_cached, p_out = 0.28, 0.028, 0.42        # USD per million tokens
+    for label, eps_n in (("--sample 2, 5 strategies, k=3", 32 * 5 * 3),
+                         ("full 186, 5 strategies, k=3", 186 * 5 * 3),
+                         ("full 186, 5 strategies, k=5", 186 * 5 * 5)):
+        pr = prompt / n * eps_n
+        co = completion / n * eps_n
+        usd = ((pr * hit) / 1e6 * p_cached + (pr * (1 - hit)) / 1e6 * p_in
+               + co / 1e6 * p_out)
+        naive = (pr / 1e6 * p_in) + (co / 1e6 * p_out)
+        print(f"    {label:32s} ~${usd:6.2f}   (${naive:6.2f} without the "
+              f"{hit:.0%} cache hit)")
 
 
 def growth(eps: list[dict]) -> None:
