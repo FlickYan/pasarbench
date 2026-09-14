@@ -158,7 +158,9 @@ def run_episode(
             context_strategy=context.name, model_content=resp.content,
             tool_calls=[tc.to_dict() for tc in resp.tool_calls],
             tool_results=results,
-            usage={"prompt": usage.prompt_tokens, "completion": usage.completion_tokens},
+            usage={"prompt": usage.prompt_tokens,
+                   "completion": usage.completion_tokens,
+                   "cached": usage.cached_tokens},
             latency_ms=latency_ms, budget=tracker.snapshot(),
             n_tools=len(names), schema_tokens=schema_tokens(names),
         ))

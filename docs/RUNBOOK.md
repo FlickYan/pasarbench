@@ -181,7 +181,18 @@ Read the traces before spending anything more. You are checking three things:
 the agent actually calls tools, the simulator withholds `hidden_facts` until
 asked, and episodes terminate rather than burning the step budget.
 
-### 1b. Audit the simulator before trusting any number
+### 1b. Inspect the smoke run before spending anything more
+
+```bash
+python scripts/inspect_trace.py traces/smoke-deepseek/full
+python scripts/inspect_trace.py traces/smoke-deepseek/full --task T08
+```
+
+Answers all four smoke-test questions plus the two that matter after a real
+run: exactly which check each failing task broke, and what the full sweep will
+cost at the token rate you just measured.
+
+### 1c. Audit the simulator before trusting any number
 
 ```python
 from pasarbench.diagnose import load_episodes
@@ -197,7 +208,7 @@ print(audit(reports)); print(VERDICT)
 `leak_rate > 0.15` means the persona prompt is not holding and your pass rates
 describe an easier benchmark than the one you wrote up. Fix it here, not later.
 
-### 1c. Context ablation — subsample first
+### 1d. Context ablation — subsample first
 
 ```bash
 python -m pasarbench.sweep \
@@ -217,7 +228,7 @@ drop `--sample`, raise `-k 5`, and run the full 186.
 user turn. On a cheap model that is tens of dollars; on a frontier model it is
 hundreds. Check the number before pressing enter.
 
-### 1d. Tool scaling — include the pair or the result is unreadable
+### 1e. Tool scaling — include the pair or the result is unreadable
 
 ```bash
 python -m pasarbench.sweep \
@@ -230,7 +241,7 @@ python -m pasarbench.sweep \
 `all-N` **and** `random-N` must both be present. The sweep warns you if they are
 not: without the pair you cannot tell token cost from selection difficulty.
 
-### 1e. Multilingual — the run that produces the headline
+### 1f. Multilingual — the run that produces the headline
 
 ```bash
 python -m pasarbench.sweep \
