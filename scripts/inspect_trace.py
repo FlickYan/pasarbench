@@ -29,7 +29,10 @@ def load(path: str) -> dict:
     steps = [r for r in recs if r.get("type") == "step"]
     events = [r for r in recs if r.get("type") == "event"]
     return {"head": head, "foot": foot, "steps": steps, "events": events,
-            "id": Path(path).stem}
+            "id": Path(path).stem,
+            # filenames carry a seed suffix (T01__r2), so task lookups must use
+            # the header rather than the stem
+            "task_id": head.get("task_id", Path(path).stem.split("__")[0])}
 
 
 def config(eps: list[dict]) -> None:
@@ -132,7 +135,7 @@ def leaks(eps: list[dict]) -> None:
 
     reports = []
     for e in eps:
-        task = tasks.get(e["id"])
+        task = tasks.get(e["task_id"])
         if not task:
             continue
         # Rebuild the transcript IN ORDER. A fact given after the agent asked
@@ -298,8 +301,8 @@ def main() -> None:
     config(eps)
     verdicts(eps)
     if args.task:
-        e = next((x for x in eps if x["id"] == args.task), None)
-        if e:
+        matches = [x for x in eps if args.task in (x["id"], x["task_id"])]
+        for e in matches[:3]:
             sequence(e)
     else:
         for e in eps:

@@ -55,6 +55,7 @@ def run_episode(
     state: EpisodeState | None = None,
     interrupt_after_steps: int | None = None,
     exposure=None,
+    run_index: int | None = None,
 ) -> EpisodeResult:
     simulator = simulator or SilentUser()
     context = context or FullContext()
@@ -89,7 +90,7 @@ def run_episode(
         tracker.turns = state.turn
         tracker.tokens = state.usage.total
 
-    trace.open_episode(task.task_id, {
+    trace.open_episode(task.task_id, run_index=run_index, meta={
         "backend": getattr(backend, "name", "?"),
         "simulator": getattr(simulator, "name", "?"),
         "context": context.name,

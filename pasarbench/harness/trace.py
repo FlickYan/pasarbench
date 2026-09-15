@@ -29,12 +29,18 @@ class TraceWriter:
         self._path: Path | None = None
         self._t0 = 0.0
 
-    def open_episode(self, task_id: str, meta: dict[str, Any]) -> None:
+    def open_episode(self, task_id: str, meta: dict[str, Any] | None = None,
+                     run_index: int | None = None, **kw: Any) -> None:
+        """`run_index` distinguishes repeat seeds of the same task. Without it,
+        k>1 overwrites its own traces and you analyse one episode in k."""
+        meta = {**(meta or {}), **kw}
         self.close()
-        self._path = self.dir / f"{task_id}.jsonl"
+        name = task_id if run_index is None else f"{task_id}__r{run_index}"
+        self._path = self.dir / f"{name}.jsonl"
         self._fh = self._path.open("w", encoding="utf-8")
         self._t0 = time.monotonic()
         self._write({"type": "header", "task_id": task_id,
+                     "run_index": run_index,
                      "started_at": datetime.now(timezone.utc).isoformat(), **meta})
 
     def step(self, record: dict[str, Any]) -> None:
@@ -69,7 +75,8 @@ class NullTrace:
     run_id = "null"
     dir = Path(".")
 
-    def open_episode(self, task_id: str, meta: dict[str, Any]) -> None: ...
+    def open_episode(self, task_id: str, meta: dict[str, Any] | None = None,
+                     run_index: int | None = None, **kw: Any) -> None: ...
     def step(self, record: dict[str, Any]) -> None: ...
     def event(self, kind: str, **payload: Any) -> None: ...
     def close_episode(self, *a: Any, **kw: Any) -> None: ...

@@ -77,6 +77,7 @@ def load_episodes(run_dir: str | Path) -> list[dict[str, Any]]:
                          if e.get("kind") == "user_turn")
         out.append({
             "transcript_id": f.stem,
+            "task_id": head.get("task_id", f.stem.split("__")[0]),
             "language": head.get("language", "?"),
             "market": head.get("market", "?"),
             "trap": head.get("trap", "?"),

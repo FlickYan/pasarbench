@@ -25,6 +25,7 @@ import json
 import os
 from pathlib import Path
 from collections import Counter, defaultdict
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from .agents import HarnessAgent
 from .db import Database
@@ -180,7 +181,7 @@ def make_simulator(kind: str, args) -> callable:
 
 def run_cell(strategy_name: str, backend_factory, simulator_factory, tasks: list[Task],
              k: int, budget: Budget, policy_mode: str, trace_root: str, run_id: str,
-             summarizer=None, exposure_spec: str = "") -> dict:
+             summarizer=None, exposure_spec: str = "", workers: int = 1) -> dict:
     strategy = make_strategy(strategy_name, summarizer)
     exposure = build_exposure(exposure_spec, ALL_SOLUTIONS) if exposure_spec else None
     cell = strategy_name if not exposure_spec else f"{strategy_name}+{exposure_spec}"
@@ -190,28 +191,52 @@ def run_cell(strategy_name: str, backend_factory, simulator_factory, tasks: list
     schema_toks, tool_counts = [], []
     notes_written, notes_possible = 0, 0
 
-    for task in tasks:
-        for _ in range(k):
-            db = Database.fresh(task.db_patch)
-            res = run_episode(task, db, backend_factory(task),
-                              simulator=simulator_factory(task),
-                              context=strategy, budget=budget, trace=tw,
-                              policy_mode=policy_mode, exposure=exposure)
-            v = verify(task, db, n_turns=res.budget["steps"],
-                       tokens=res.budget["tokens"])
-            tw.close_episode(res.stop_reason.value, v.passed, v.failures, res.budget)
-            by_task[task.task_id].append(v)
-            tokens.append(res.budget["tokens"])
-            steps.append(res.budget["steps"])
-            stops[res.stop_reason.value] += 1
-            if res.steps:
-                schema_toks.append(sum(st.schema_tokens for st in res.steps)
-                                   / len(res.steps))
-                tool_counts.append(res.steps[0].n_tools)
-            if getattr(strategy, "extra_tools", None):
-                d = note_discipline(res.state.messages)
-                notes_written += d["wrote_any"]
-                notes_possible += 1
+    def one_episode(job):
+        task, seed = job
+        # A private writer per episode: TraceWriter holds a single file handle,
+        # so sharing one across threads interleaves records from different
+        # episodes into the same file.
+        w = TraceWriter(root=trace_root, run_id=f"{run_id}/{cell}")
+        db = Database.fresh(task.db_patch)
+        res = run_episode(task, db, backend_factory(task),
+                          simulator=simulator_factory(task),
+                          context=strategy, budget=budget, trace=w,
+                          policy_mode=policy_mode, exposure=exposure,
+                          run_index=seed)
+        v = verify(task, db, n_turns=res.budget["steps"],
+                   tokens=res.budget["tokens"])
+        w.close_episode(res.stop_reason.value, v.passed, v.failures, res.budget)
+        w.close()
+        return task, v, res
+
+    jobs = [(t, i) for t in tasks for i in range(k)]
+    results = []
+    if workers > 1:
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            futures = [pool.submit(one_episode, j) for j in jobs]
+            for n, fut in enumerate(as_completed(futures), 1):
+                results.append(fut.result())
+                if n % 25 == 0 or n == len(jobs):
+                    print(f"    {n}/{len(jobs)} episodes", flush=True)
+    else:
+        for n, j in enumerate(jobs, 1):
+            results.append(one_episode(j))
+            if n % 25 == 0 or n == len(jobs):
+                print(f"    {n}/{len(jobs)} episodes", flush=True)
+
+    for task, v, res in results:
+        by_task[task.task_id].append(v)
+        tokens.append(res.budget["tokens"])
+        steps.append(res.budget["steps"])
+        stops[res.stop_reason.value] += 1
+        if res.steps:
+            schema_toks.append(sum(st.schema_tokens for st in res.steps)
+                               / len(res.steps))
+            tool_counts.append(res.steps[0].n_tools)
+        if getattr(strategy, "extra_tools", None):
+            d = note_discipline(res.state.messages)
+            notes_written += d["wrote_any"]
+            notes_possible += 1
     tw.close()
 
     s = pass_hat_k(dict(by_task))
@@ -330,6 +355,10 @@ def main() -> None:
     ap.add_argument("--languages", default="", help="e.g. en,id,th")
     ap.add_argument("--tasks", default="", help="comma-separated ids, blank = all")
     ap.add_argument("--max-steps", type=int, default=30)
+    ap.add_argument("--workers", type=int, default=1,
+                    help="concurrent episodes. 8-16 is usually safe; too many "
+                         "triggers provider rate limits, which surface as "
+                         "backend_error stop reasons rather than as a crash.")
     ap.add_argument("--trace-root", default="traces")
     ap.add_argument("--run-id", default=None)
     args = ap.parse_args()
@@ -364,7 +393,7 @@ def main() -> None:
                   flush=True)
             rows.append(run_cell(name, bf, sf, tasks, args.k, budget,
                                  args.policy_mode, args.trace_root, run_id,
-                                 summarizer, exp))
+                                 summarizer, exp, args.workers))
 
     print("\n" + markdown_table(rows))
 
