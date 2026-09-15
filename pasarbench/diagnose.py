@@ -138,6 +138,63 @@ def by_language(episodes: list[dict[str, Any]],
     return out
 
 
+def paired_language_gap(episodes: list[dict[str, Any]], baseline: str = "en"
+                        ) -> dict[str, Any]:
+    """THE controlled language comparison. Only compares locale TWINS.
+
+    `by_language` aggregates every episode of a language together, which is
+    confounded: with a stratified sample, different languages draw different
+    traps, so a Thai rate and a Vietnamese rate can be computed over entirely
+    different tasks. The whole "identical world, identical checks" guarantee
+    applies to a task and ITS OWN twin -- nowhere else.
+
+    This pairs `HRWR-ID` against `HRWR-ID.id`, compares only within pairs, and
+    reports how many pairs it actually found. If that count is small, the
+    number means nothing and the function says so instead of printing a rate.
+    """
+    by_task: dict[str, list[bool]] = defaultdict(list)
+    lang_of: dict[str, str] = {}
+    base_of: dict[str, str] = {}
+    for e in episodes:
+        tid = e.get("task_id") or e["transcript_id"]
+        by_task[tid].append(e["passed"])
+        lang_of[tid] = e["language"]
+        base_of[tid] = tid.split(".")[0]
+
+    rate = {t: sum(v) / len(v) for t, v in by_task.items()}
+    groups: dict[str, dict[str, str]] = defaultdict(dict)
+    for tid, base in base_of.items():
+        groups[base][lang_of[tid]] = tid
+
+    out: dict[str, Any] = {}
+    for lang in sorted({l for l in lang_of.values() if l != baseline}):
+        pairs = [(g[baseline], g[lang]) for g in groups.values()
+                 if baseline in g and lang in g]
+        if not pairs:
+            out[lang] = {"pairs": 0,
+                         "note": "no twins present -- run the FULL suite, not a "
+                                 "stratified sample, or this language cannot be "
+                                 "compared at all"}
+            continue
+        deltas = [rate[b] - rate[o] for b, o in pairs]
+        out[lang] = {
+            "pairs": len(pairs),
+            "baseline_rate": round(sum(rate[b] for b, _ in pairs) / len(pairs), 3),
+            "language_rate": round(sum(rate[o] for _, o in pairs) / len(pairs), 3),
+            "paired_gap": round(sum(deltas) / len(deltas), 3),
+            "pairs_where_worse": sum(1 for d in deltas if d > 0),
+            "pairs_where_better": sum(1 for d in deltas if d < 0),
+            "reliable": len(pairs) >= 10,
+            "note": ("" if len(pairs) >= 10 else
+                     f"only {len(pairs)} pair(s) -- too few to read as a rate; "
+                     f"treat as anecdote until the full suite is run"),
+        }
+    return {"baseline": baseline, "languages": out,
+            "warning": ("Unpaired per-language rates compare DIFFERENT tasks "
+                        "and are confounded by which traps landed in which "
+                        "language. Only this paired table is controlled.")}
+
+
 def attribute_gap(table: dict[str, dict[str, Any]], baseline: str = "en"
                   ) -> dict[str, Any]:
     """For each language, the gap against `en` and which mechanisms co-move.
@@ -226,6 +283,19 @@ def report(episodes: list[dict[str, Any]],
         cells = ["-" if m[c] is None else
                  (f"{m[c]}" if c == "n" else f"{m[c]:.3f}") for c in cols]
         out.append(f"| `{lang}` | " + " | ".join(cells) + " |")
+
+    paired = paired_language_gap(episodes, baseline)
+    out.append("\n### Paired comparison (the controlled one)\n")
+    out.append("| lang | pairs | en rate | this rate | paired gap | reliable |")
+    out.append("|---|---|---|---|---|---|")
+    for lang, r in paired["languages"].items():
+        if not r["pairs"]:
+            out.append(f"| `{lang}` | 0 | - | - | - | no twins |")
+            continue
+        out.append(f"| `{lang}` | {r['pairs']} | {r['baseline_rate']:.3f} | "
+                   f"{r['language_rate']:.3f} | {r['paired_gap']:+.3f} | "
+                   f"{'yes' if r['reliable'] else 'too few pairs'} |")
+    out.append(f"\n> {paired['warning']}")
 
     out.append("\n### Gap attribution\n")
     for lang, row in attr["languages"].items():

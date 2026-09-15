@@ -398,8 +398,10 @@ def main() -> None:
     print("\n" + markdown_table(rows))
 
     if any(len(r["per_language"]) > 1 for r in rows):
-        print("pass rate by language (locale twins share identical checks, so")
-        print("any gap here is language and nothing else):")
+        print("pass rate by language -- UNPAIRED, so NOT yet a controlled")
+        print("comparison. With --sample these rates cover different traps per")
+        print("language. Run the full suite and use diagnose.paired_language_gap")
+        print("for the comparison the twin design actually licenses:")
         for r in rows:
             base = r["per_language"].get("en")
             cells = []
