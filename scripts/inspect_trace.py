@@ -103,6 +103,54 @@ def sequence(e: dict) -> None:
             turn += 1
 
 
+def reliability(eps: list[dict]) -> None:
+    """Split tasks into always-pass, FLAKY, and always-fail.
+
+    The gap between pass^1 and pass^k lives entirely in the flaky bucket, and
+    that bucket is the finding: a task the agent gets right 3 times in 5 is a
+    conversation you cannot predict. For a CS org that is often worse than a
+    task it fails every time, because consistent failure can be routed around.
+    """
+    from collections import defaultdict
+    by_task = defaultdict(list)
+    trap = {}
+    for e in eps:
+        tid = e["task_id"]
+        by_task[tid].append(bool(e["foot"].get("passed")))
+        trap[tid] = e["head"].get("trap", "?")
+
+    k = max(len(v) for v in by_task.values())
+    if k < 2:
+        return
+    always = [t for t, v in by_task.items() if all(v)]
+    never = [t for t, v in by_task.items() if not any(v)]
+    flaky = [t for t, v in by_task.items() if any(v) and not all(v)]
+
+    print("\n" + "=" * 72)
+    print(f"RELIABILITY  (k={k})  -- where pass^1 and pass^k diverge")
+    print("=" * 72)
+    n = len(by_task)
+    print(f"  always pass  {len(always):>4}/{n}  ({len(always)/n:.1%})")
+    print(f"  FLAKY        {len(flaky):>4}/{n}  ({len(flaky)/n:.1%})  <- the finding")
+    print(f"  always fail  {len(never):>4}/{n}  ({len(never)/n:.1%})")
+
+    by_trap = defaultdict(lambda: [0, 0])
+    for t in flaky:
+        by_trap[trap[t]][0] += 1
+    for t in by_task:
+        by_trap[trap[t]][1] += 1
+    print("\n  flaky tasks by trap (a trap that is never flaky is understood;")
+    print("  one that is often flaky is where the policy is being half-applied):")
+    for tr, (f, tot) in sorted(by_trap.items(), key=lambda kv: -kv[1][0]):
+        if f:
+            print(f"    {f:>3}/{tot:<3} {tr}")
+
+    if never:
+        print(f"\n  never passes ({len(never)}): {', '.join(sorted(never)[:10])}")
+        print("    zero variance means zero learning signal -- these contribute")
+        print("    nothing to RFT and will still fail after training.")
+
+
 def empties(eps: list[dict]) -> None:
     print("\n" + "=" * 72)
     print("2. EMPTY ASSISTANT TURNS  (max_tokens exhausted, or thinking still on)")
@@ -309,6 +357,7 @@ def main() -> None:
             if not e["foot"].get("passed"):
                 sequence(e)
 
+    reliability(eps)
     empties(eps)
     leaks(eps)
     cache_and_cost(eps)
