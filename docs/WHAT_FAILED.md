@@ -155,7 +155,39 @@ within one step of producing a fabricated finding about evaluation integrity.
 
 ---
 
-## 8. The kappa-paradox test did not contain a paradox
+## 8. A task was unsolvable by anything that had to look
+
+**What happened.** `duplicate_refund_escalate` requires the agent to notice a
+refund has already been issued and escalate rather than pay twice. It scored
+**0.00 across every episode**. Reading the tool registry explains why: nothing
+exposed prior refunds. `get_order` returned the order, `get_payment` returned
+the payment, `check_return_eligibility` returned an existing-*return* count.
+Nothing returned existing refunds. An agent could not have known.
+
+**Why the reference-solution guarantee missed it.** This is the important part.
+The reference solution passes because it calls
+`escalate_to_human(category="duplicate_refund")` directly -- it is an **oracle**.
+It already knows the answer, so it never needs to discover anything.
+
+> A reference solution proves a task is solvable BY SOMETHING THAT KNOWS THE
+> ANSWER. It does not prove the task is solvable by an agent that can only
+> observe.
+
+That is a real limitation of the central guarantee in this repo, and it took a
+real model run to expose it. The adversarial suite could not catch it either:
+tool spam and naive solutions test whether wrong behaviour is rejected, not
+whether right behaviour is *reachable*.
+
+**Fix.** `get_order` now returns `existing_refunds` and `existing_returns`.
+
+**What to add.** A third guarantee alongside solvable-and-failable:
+**observable** -- for every required action, is the information that motivates
+it reachable through some read tool from the starting state? That check is
+mechanisable and this repo does not yet have it.
+
+---
+
+## 9. The kappa-paradox test did not contain a paradox
 
 **What happened.** The test asserted that 96%-agreement data would produce a low
 kappa. It produced **kappa = 0.74**. The test failed and the implementation was
@@ -172,7 +204,7 @@ more in an interview than the statistic.
 
 ---
 
-## 9. A test asserted on state the code had already mutated
+## 10. A test asserted on state the code had already mutated
 
 **What happened.** The interrupt/resume test snapshotted an episode, restored
 it, resumed — then asserted `state2.step == 2`. But `run_episode` mutates
@@ -182,7 +214,7 @@ it, resumed — then asserted `state2.step == 2`. But `run_episode` mutates
 
 ---
 
-## 10. Two locale variants were byte-identical
+## 11. Two locale variants were byte-identical
 
 **What happened.** The Singlish and English openings for
 `identity_verification_failure` were the same string. The "twins differ in the
@@ -194,7 +226,7 @@ all is a silent duplicate inflating the English sample.
 
 ---
 
-## 11. The distractor pool ran out before 300
+## 12. The distractor pool ran out before 300
 
 **What happened.** `all-300` produced a 258-tool registry. Domain × field × verb
 combinatorics topped out at 235 distractors.

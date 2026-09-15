@@ -116,6 +116,21 @@ def get_order(db: Database, order_id: str) -> dict:
         return _err(db, "get_order", {"order_id": order_id}, "no such order")
     out = dict(o)
     out["total_display"] = fmt_money(o["total_minor"], o["currency"])
+    # Prior refunds and returns against this order MUST be visible. Without
+    # them the duplicate-refund policy (P10) is unenforceable by any agent that
+    # can only observe -- it would have to already know the answer. The
+    # reference solutions did not catch this because a reference solution is an
+    # ORACLE: it proves a task is solvable by something that knows the answer,
+    # not by something that has to find out.
+    out["existing_refunds"] = [
+        {"refund_id": r["refund_id"], "amount_minor": r["amount_minor"],
+         "currency": r["currency"], "status": r["status"], "created": r["created"],
+         "display": fmt_money(r["amount_minor"], r["currency"])}
+        for r in db.where("refunds", order_id=order_id)]
+    out["existing_returns"] = [
+        {"return_id": r["return_id"], "order_item_id": r["order_item_id"],
+         "status": r["status"]}
+        for r in db.where("returns", order_id=order_id)]
     return _ok(db, "get_order", {"order_id": order_id}, order=out)
 
 
