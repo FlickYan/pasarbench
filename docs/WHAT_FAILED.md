@@ -111,7 +111,51 @@ otherwise. They are the argument for the judge.
 
 ---
 
-## 6. The kappa-paradox test did not contain a paradox
+## 6. A policy rule had two reasonable readings, and the verifier accepted one
+
+**What happened.** P4.4 read *"A refund for a returnable item is issued only
+after the return is initiated."* A model handled the happy-path return
+correctly right up to the end, opened the return, told the customer it was
+approved, and stopped — never issuing the refund. Real shops refund when the
+item arrives back, so "only after" is naturally read as a precedence
+constraint rather than an obligation to act now.
+
+**How it was found.** Running the suite against a stronger model. The weaker
+`deepseek-flash` passed the task; `deepseek-v4-pro` reasoned its way into the
+*other* valid reading and was marked wrong. **The benchmark was penalising the
+more careful reader.**
+
+**Why it matters.** The task was measuring whether a model guesses the author's
+intent, not whether it follows the policy. Left unfixed, it would have shown up
+as "the stronger model is worse at returns", which is a confidently wrong
+finding and exactly the kind that survives into a writeup.
+
+**Fix.** Reword the policy, not the task: the refund must now explicitly be
+issued in the same conversation. Reference solutions already did this, so every
+suite stayed green.
+
+**Lesson.** Where a policy is ambiguous, that is a benchmark bug — file it
+against `policy.md`, never against the model. A rule only one reading satisfies
+is a rule that tests mind-reading.
+
+---
+
+## 7. Customer turns were displayed one step late
+
+**What happened.** The trace inspector numbered user turns from 0, but the loop
+increments `tracker.turns` *before* writing the event, so they start at 1. Every
+customer line rendered one speaking step later than it happened.
+
+**Why it matters more than a display bug should.** It made the agent look
+clairvoyant — calling `get_order("O1003")` two steps *before* the customer
+supplied the order id, and verifying `phone_last4=4567` before it was given.
+Reading that trace, the obvious conclusion is that the simulator is leaking
+answers into the prompt. It was not. An off-by-one in a debugging view came
+within one step of producing a fabricated finding about evaluation integrity.
+
+---
+
+## 8. The kappa-paradox test did not contain a paradox
 
 **What happened.** The test asserted that 96%-agreement data would produce a low
 kappa. It produced **kappa = 0.74**. The test failed and the implementation was
@@ -128,7 +172,7 @@ more in an interview than the statistic.
 
 ---
 
-## 7. A test asserted on state the code had already mutated
+## 9. A test asserted on state the code had already mutated
 
 **What happened.** The interrupt/resume test snapshotted an episode, restored
 it, resumed — then asserted `state2.step == 2`. But `run_episode` mutates
@@ -138,7 +182,7 @@ it, resumed — then asserted `state2.step == 2`. But `run_episode` mutates
 
 ---
 
-## 8. Two locale variants were byte-identical
+## 10. Two locale variants were byte-identical
 
 **What happened.** The Singlish and English openings for
 `identity_verification_failure` were the same string. The "twins differ in the
@@ -150,7 +194,7 @@ all is a silent duplicate inflating the English sample.
 
 ---
 
-## 9. The distractor pool ran out before 300
+## 11. The distractor pool ran out before 300
 
 **What happened.** `all-300` produced a 258-tool registry. Domain × field × verb
 combinatorics topped out at 235 distractors.
@@ -171,5 +215,6 @@ to fake.
 **In an interview**, #1 and #6 are the two to tell. #1 because the bug class —
 silent corruption invisible at the default configuration — is the one senior
 engineers actually worry about, and because the fix came from a *guarantee*
-rather than from code review. #6 because getting a statistic wrong and saying so
-is more credible than a table of numbers nobody can check.
+rather than from code review. #6 because "my benchmark penalised the better
+model until I found the ambiguity" demonstrates the instinct that separates
+people who build evals from people who run them.

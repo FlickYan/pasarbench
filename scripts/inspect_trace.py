@@ -76,9 +76,12 @@ def sequence(e: dict) -> None:
     print("\n" + "=" * 72)
     print(f"TOOL SEQUENCE: {e['id']}")
     print("=" * 72)
+    # Events are numbered from 1: the loop increments tracker.turns BEFORE
+    # writing the event. Counting from 0 here shifted every customer line one
+    # step later and made the agent look clairvoyant.
     events = {ev["turn"]: ev for ev in e["events"] if ev.get("kind") == "user_turn"}
-    turn = 0
-    print(f"  customer: {e.get('opening', '(opening)')}")
+    turn = 1
+    print(f"  customer: {e.get('opening', '(opening message)')}")
     for st in e["steps"]:
         n = st["step"]
         if st.get("model_content"):
@@ -138,7 +141,7 @@ def leaks(eps: list[dict]) -> None:
         msgs = [Message("system", ""), Message("user", task.opening)]
         events = {ev["turn"]: ev for ev in e["events"]
                   if ev.get("kind") == "user_turn"}
-        turn = 0
+        turn = 1
         for st in e["steps"]:
             if st.get("model_content"):
                 msgs.append(Message("assistant", st["model_content"]))

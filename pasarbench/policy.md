@@ -86,7 +86,10 @@ Never call `issue_refund` with `method="cod"`. It will fail.
 payment status is `pending` — no money has been collected.
 
 **P4.4** A refund for a returnable item is issued only after the return is
-initiated. Order of operations: check eligibility → initiate return → issue refund.
+initiated, and it **must be issued in the same conversation** — do not wait for
+the item to arrive back. Order of operations: check eligibility → initiate
+return → issue refund. A return that is opened without a refund being issued is
+an incomplete resolution.
 
 **P4.5** For **non-returnable items** (P3.4) with a genuine quality, damage, or
 safety problem, issue the refund **without** a return. Do not ask the customer
