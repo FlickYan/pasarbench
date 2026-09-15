@@ -143,12 +143,28 @@ def make_simulator(kind: str, args) -> callable:
     if kind == "silent":
         return lambda t: SilentUser()
     if kind == "openai":
-        sim_key = args.sim_api_key or resolve_sim_api_key() or args.api_key
         sim_url = args.sim_url or args.base_url
-        if sim_url != args.base_url and sim_key == args.api_key:
-            print("!! the simulator is on a different endpoint but reusing the "
-                  "agent's key. Set PASARBENCH_SIM_API_KEY (or DASHSCOPE_API_KEY) "
-                  "or expect a 401.", flush=True)
+        sim_key = args.sim_api_key or resolve_sim_api_key()
+        if sim_url == args.base_url:
+            sim_key = sim_key or args.api_key
+        elif not sim_key:
+            # HARD FAIL, never fall back. Reusing the agent's key here does not
+            # just produce a confusing 401 -- it TRANSMITS ONE PROVIDER'S SECRET
+            # TO A DIFFERENT COMPANY'S SERVERS. That is a credential disclosure,
+            # not an inconvenience.
+            raise SystemExit(
+                f"The simulator is on {sim_url} but no simulator key is set.\n"
+                f"Set one of: {', '.join(SIM_KEY_ENV)}\n"
+                f"  export PASARBENCH_SIM_API_KEY=sk-...\n\n"
+                f"Refusing to fall back to the agent's key: that would send your "
+                f"{args.base_url} credential to a different provider.")
+
+        if "dashscope" in sim_url:
+            region = ("Singapore/international" if "intl" in sim_url
+                      else "Beijing/China")
+            print(f"   simulator endpoint is the {region} DashScope region. "
+                  f"Model Studio keys are REGION-SPECIFIC -- a key from the "
+                  f"other console returns 401 invalid_api_key.", flush=True)
         # max_tokens is small on purpose: a customer turn is one or two
         # sentences. Anything larger just pays for a model to ramble.
         sim = OpenAICompatBackend(model=args.sim_model, base_url=sim_url,
