@@ -142,11 +142,19 @@ def test_spam_is_punished(corpus):
     print("\n=== the enumerate-every-tool policy is not rewarded ===")
     spam = [r for r in corpus if r.seed == 9]
     check("spam rollouts collected", len(spam) == len(TASKS), str(len(spam)))
-    check("no spam rollout passes", not any(r.passed for r in spam))
+    # "Do no harm" traps are structurally satisfiable by a cautious agent that
+    # looks things up and changes nothing -- that IS the correct behaviour
+    # there. Exempted here to match tests/test_generated.py, and named in the
+    # limitations section rather than hidden.
+    BENIGN = {"cannot_cancel_shipped_order", "address_change_after_dispatch",
+              "peak_period_delay_not_compensable"}
+    offenders = [r.task_id for r in spam if r.passed and r.trap not in BENIGN]
+    check("no action-requiring task passes under spam", not offenders, str(offenders))
+    acting = [r for r in spam if r.trap not in BENIGN]
     worst_ref = min(r.reward.reward for r in corpus if r.seed == 0)
-    check("every spam rollout scores below every reference rollout",
-          max(r.reward.reward for r in spam) < worst_ref,
-          f"spam_max={max(r.reward.reward for r in spam)} ref_min={worst_ref}")
+    check("every action-requiring spam rollout scores below every reference",
+          max(r.reward.reward for r in acting) < worst_ref,
+          f"spam_max={max(r.reward.reward for r in acting)} ref_min={worst_ref}")
     gated = [r for r in spam if r.reward.gated]
     check("spam that violates policy is gated to zero partial credit",
           all(r.reward.reward <= 0 for r in gated), f"{len(gated)} gated")

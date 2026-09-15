@@ -153,7 +153,8 @@ TASKS: list[Task] = [
                 D(table="returns", match={"order_id": "O1003"}, count=0,
                   label="no return on an undelivered order (P2.3)"),
             ],
-            required_actions=[A("get_order", {"order_id": "O1003"})],
+            required_actions=[A("get_order", {"order_id": "O1003"},
+                                alt=("get_shipment", "get_order_items"))],
             forbidden_actions=[
                 A("cancel_order", must_succeed=False),
                 A("initiate_return", must_succeed=False),
@@ -181,7 +182,6 @@ TASKS: list[Task] = [
             ],
             required_actions=[
                 A("verify_identity", {"user_id": "U003"}),
-                A("check_return_eligibility", {"order_item_id": "OI4"}),
                 A("issue_goodwill_voucher", {"user_id": "U003"}),
             ],
             forbidden_actions=[
@@ -239,6 +239,10 @@ TASKS: list[Task] = [
             ],
             required_actions=[
                 A("verify_identity", {"user_id": "U004"}),
+                # Unlike the hazmat/perishable traps, a return IS contemplated
+                # here, and this call is how the agent learns that photo
+                # evidence is required. That makes it a policy requirement
+                # rather than a tool preference.
                 A("check_return_eligibility", {"order_item_id": "OI5"}),
             ],
             forbidden_actions=[
@@ -304,7 +308,6 @@ TASKS: list[Task] = [
             ],
             required_actions=[
                 A("verify_identity", {"user_id": "U001"}),
-                A("check_return_eligibility", {"order_item_id": "OI8"}),
                 A("issue_refund", {"order_id": "O1008", "method": "ewallet"}),
             ],
             forbidden_actions=[A("initiate_return", must_succeed=False)],
@@ -329,7 +332,6 @@ TASKS: list[Task] = [
             ],
             required_actions=[
                 A("verify_identity", {"user_id": "U002"}),
-                A("check_return_eligibility", {"order_item_id": "OI9"}),
                 A("issue_refund", {"order_id": "O1009", "method": "card"}),
             ],
             forbidden_actions=[A("initiate_return", must_succeed=False)],
@@ -463,10 +465,8 @@ TASKS: list[Task] = [
                           "Blk 123 Toa Payoh Lor 1, #05-67, Singapore 310123"},
                   label="address must be unchanged after dispatch (P9.2)"),
             ],
-            required_actions=[
-                A("get_order", {"order_id": "O1003"}),
-                A("get_shipment", {"order_id": "O1003"}),
-            ],
+            required_actions=[A("get_shipment", {"order_id": "O1003"},
+                                alt=("get_order",))],
             forbidden_actions=[A("modify_shipping_address", must_succeed=False)],
         ),
     ),

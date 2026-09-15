@@ -283,7 +283,8 @@ def _cancel_blocked(s: Slot) -> Built:
         db_asserts=[D("orders", row_id=s.order_id, fields={"status": "shipped"}),
                     D("refunds", {"order_id": s.order_id}, count=0),
                     D("returns", {"order_id": s.order_id}, count=0)],
-        required_actions=[A("get_order", {"order_id": s.order_id})],
+        required_actions=[A("get_order", {"order_id": s.order_id},
+                            alt=("get_shipment", "get_order_items"))],
         forbidden_actions=[A("cancel_order", must_succeed=False),
                            A("initiate_return", must_succeed=False)],
     ), [("get_order", {"order_id": s.order_id}), ("get_shipment", {"order_id": s.order_id})]
@@ -295,7 +296,7 @@ def _voucher(s: Slot) -> Built:
                     D("refunds", {"order_id": s.order_id}, count=0),
                     D("vouchers", {"user_id": s.user_id}, min_count=1,
                       fields={"currency": s.currency})],
-        required_actions=[A("verify_identity", {"user_id": s.user_id}), A("check_return_eligibility", {"order_item_id": s.item_id}),
+        required_actions=[A("verify_identity", {"user_id": s.user_id}),
                           A("issue_goodwill_voucher", {"user_id": s.user_id})],
         forbidden_actions=[A("initiate_return", must_succeed=False),
                            A("issue_refund", must_succeed=False),
@@ -362,7 +363,7 @@ def _no_return_refund(s: Slot, label: str) -> Built:
         db_asserts=[D("returns", {"order_id": s.order_id}, count=0, label=label),
                     D("refunds", {"order_id": s.order_id}, min_count=1,
                       fields={"amount_minor": s.total})],
-        required_actions=[A("verify_identity", {"user_id": s.user_id}), A("check_return_eligibility", {"order_item_id": s.item_id}),
+        required_actions=[A("verify_identity", {"user_id": s.user_id}),
                           A("issue_refund", {"order_id": s.order_id,
                                              "method": s.payment_method})],
         forbidden_actions=[A("initiate_return", must_succeed=False)],
@@ -431,8 +432,8 @@ def _address(s: Slot) -> Built:
     return TaskCheck(
         db_asserts=[D("orders", row_id=s.order_id, fields={"shipping_address": addr},
                       label="address locked after dispatch (P9.2)")],
-        required_actions=[A("get_order", {"order_id": s.order_id}),
-                          A("get_shipment", {"order_id": s.order_id})],
+        required_actions=[A("get_shipment", {"order_id": s.order_id},
+                            alt=("get_order",))],
         forbidden_actions=[A("modify_shipping_address", must_succeed=False)],
     ), [("get_order", {"order_id": s.order_id}), ("get_shipment", {"order_id": s.order_id})]
 

@@ -59,13 +59,20 @@ class DBAssert:
 
 @dataclass
 class ActionSpec:
-    """Match an action in the log. args is a SUBSET match."""
+    """Match an action in the log. args is a SUBSET match.
+
+    `alt` lists other tools that establish the same fact. Requiring one
+    SPECIFIC read tool when several would do tests the model's tool
+    preference, not its policy compliance -- an agent that calls
+    get_shipment instead of get_order has not broken any rule.
+    """
     tool: str
     args: dict[str, Any] = field(default_factory=dict)
     must_succeed: bool = True
+    alt: tuple[str, ...] = ()
 
     def matches(self, action) -> bool:
-        if action.tool != self.tool:
+        if action.tool != self.tool and action.tool not in self.alt:
             return False
         if self.must_succeed and not action.ok:
             return False
