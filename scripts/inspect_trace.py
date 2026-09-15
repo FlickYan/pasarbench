@@ -32,6 +32,33 @@ def load(path: str) -> dict:
             "id": Path(path).stem}
 
 
+def config(eps: list[dict]) -> None:
+    """Print the run configuration FIRST.
+
+    Comparing two runs that differ in more than one variable is the fastest way
+    to a confident wrong conclusion. Making the config visible at the top of
+    every inspection is the cheapest defence against it.
+    """
+    h = eps[0]["head"]
+    print("=" * 72)
+    print("RUN CONFIGURATION -- check this before comparing against another run")
+    print("=" * 72)
+    for k in ("backend", "requested_model", "simulator", "context",
+              "policy_mode", "exposure"):
+        if h.get(k) is not None:
+            print(f"  {k:18s} {h[k]}")
+    served = {e["head"].get("served_model") for e in eps} - {None}
+    if served:
+        print(f"  {'served_model':18s} {', '.join(sorted(served))}")
+    n_per_task = {}
+    for e in eps:
+        n_per_task[e["id"]] = n_per_task.get(e["id"], 0) + 1
+    print(f"  {'tasks':18s} {len(n_per_task)}")
+    print(f"  {'episodes':18s} {len(eps)}")
+    print("\n  If ANY line above differs from the run you are comparing to, the")
+    print("  comparison is confounded. Change one variable at a time.\n")
+
+
 def verdicts(eps: list[dict]) -> None:
     print("=" * 72)
     print("WHY EACH TASK PASSED OR FAILED")
@@ -265,6 +292,7 @@ def main() -> None:
         raise SystemExit(f"no traces in {args.trace_dir}")
     eps = [load(f) for f in files]
 
+    config(eps)
     verdicts(eps)
     if args.task:
         e = next((x for x in eps if x["id"] == args.task), None)
