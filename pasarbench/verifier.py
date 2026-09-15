@@ -72,10 +72,19 @@ class ActionSpec:
     alt: tuple[str, ...] = ()
 
     def matches(self, action) -> bool:
-        if action.tool != self.tool and action.tool not in self.alt:
+        is_alt = action.tool != self.tool and action.tool in self.alt
+        if action.tool != self.tool and not is_alt:
             return False
         if self.must_succeed and not action.ok:
             return False
+        # Alternatives match on NAME ONLY. They were listed precisely because
+        # they establish the same fact by a different route, so they do not
+        # carry the primary tool's arguments: list_user_orders takes user_id,
+        # not order_id. Holding them to the primary's args made the alternative
+        # unreachable and reintroduced exactly the tool-preference test the
+        # `alt` mechanism exists to remove.
+        if is_alt:
+            return True
         return all(action.args.get(k) == v for k, v in self.args.items())
 
 
