@@ -283,8 +283,11 @@ def _cancel_blocked(s: Slot) -> Built:
         db_asserts=[D("orders", row_id=s.order_id, fields={"status": "shipped"}),
                     D("refunds", {"order_id": s.order_id}, count=0),
                     D("returns", {"order_id": s.order_id}, count=0)],
+        # Any read that establishes the order is already shipped. Requiring
+        # one specific call tests tool preference, not policy compliance.
         required_actions=[A("get_order", {"order_id": s.order_id},
-                            alt=("get_shipment", "get_order_items"))],
+                            alt=("get_shipment", "get_order_items",
+                                 "list_user_orders"))],
         forbidden_actions=[A("cancel_order", must_succeed=False),
                            A("initiate_return", must_succeed=False)],
     ), [("get_order", {"order_id": s.order_id}), ("get_shipment", {"order_id": s.order_id})]

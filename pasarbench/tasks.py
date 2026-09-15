@@ -154,7 +154,8 @@ TASKS: list[Task] = [
                   label="no return on an undelivered order (P2.3)"),
             ],
             required_actions=[A("get_order", {"order_id": "O1003"},
-                                alt=("get_shipment", "get_order_items"))],
+                                alt=("get_shipment", "get_order_items",
+                                     "list_user_orders"))],
             forbidden_actions=[
                 A("cancel_order", must_succeed=False),
                 A("initiate_return", must_succeed=False),

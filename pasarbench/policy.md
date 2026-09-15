@@ -185,7 +185,10 @@ Escalate, and take no other write action, when any of the following is true:
 - the customer requests a refund above SGD 500 equivalent
 - identity cannot be verified (P1.2)
 - the customer alleges a counterfeit or safety incident
-- the customer has already been refunded for the same order item
+- the customer has already been refunded for the same order item. **Escalate
+  even if you have explained the existing refund and the customer accepts it.**
+  A duplicate-refund claim is a fraud or system-error signal and must be
+  recorded for investigation; resolving the conversation is not a substitute
 - the customer explicitly asks for a human
 - an out-of-window dispute where the voucher is rejected (P6.3)
 - a customs hold beyond 5 days (P8.3)
