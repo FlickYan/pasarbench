@@ -30,6 +30,7 @@ means the week-1 regression tests stay meaningful.
 
 from __future__ import annotations
 
+import hashlib
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
@@ -73,8 +74,34 @@ MARKETS: dict[str, dict[str, Any]] = {
                courier="Giao Hang Nhanh"),
 }
 
-PHONE_LAST4 = "0000"          # every generated user; the real digits live in the
-                              # world, the simulator only reveals them when asked
+def _opaque(*parts: str) -> str:
+    """Deterministic but MEANINGLESS identifier.
+
+    The first version built ids from the trap name -- GO-cannotTH, GO-hazmatID,
+    GO-duplicMY -- which put the answer in the prompt. The agent could read the
+    case type out of the order id in turn 1, before calling a single tool.
+    Deterministic ids are still required (reproducible runs, stable trace
+    filenames), but they must carry NO signal about the task.
+    """
+    return hashlib.sha1("|".join(parts).encode()).hexdigest()[:6].upper()
+
+
+def _phone_last4(*parts: str) -> str:
+    """Per-user digits, not a global constant.
+
+    Every generated user previously verified with 0000, so the answer was
+    learnable rather than askable -- and the identity-failure trap, whose
+    customer says 1234, became trivially distinguishable. 1234 and
+    all-same-digit strings are excluded so the wrong answer stays wrong and the
+    right one never looks like a placeholder.
+    """
+    h = int(hashlib.sha1(("phone|" + "|".join(parts)).encode()).hexdigest(), 16)
+    for _ in range(64):
+        d = f"{h % 10000:04d}"
+        if d != "1234" and len(set(d)) > 1:
+            return d
+        h //= 7
+    return "8642"
 
 DELIVERED_IN_WINDOW = "2026-11-08 12:00"      # 2 days before NOW
 DELIVERED_OUT_WINDOW = "2026-10-20 12:00"     # 21 days before NOW
@@ -99,6 +126,7 @@ class Slot:
     total: int
     voucher: int
     payment_method: str
+    phone_last4: str = "0000"
     rows: dict[str, dict[str, dict[str, Any]]] = field(default_factory=dict)
 
 
@@ -133,7 +161,8 @@ def build_slot(trap: str, market: str) -> Slot | None:
     if spec.get("cod_only") and not m["cod"]:
         return None                      # SG has no COD rail in this world
 
-    tag = f"{trap[:6]}{market}".replace("_", "")
+    tag = _opaque(trap, market)
+    phone4 = _phone_last4(trap, market)
     uid, sid = f"GU-{market}", f"GS-{market}"
     pid = f"GP-{tag}"
     oid, iid = f"GO-{tag}", f"GI-{tag}"
@@ -155,7 +184,7 @@ def build_slot(trap: str, market: str) -> Slot | None:
                             language=LANGUAGES_FOR_MARKET[market][0], tier="silver",
                             joined="2024-05-01", store_credit_minor=0,
                             store_credit_currency=m["currency"],
-                            verified_phone_last4=PHONE_LAST4)},
+                            verified_phone_last4=phone4)},
         "sellers": {sid: dict(seller_id=sid, name=f"{market} Marketplace Seller",
                               country=market, rating=4.3, cod_enabled=m["cod"],
                               official_store=False)},
@@ -212,7 +241,7 @@ def build_slot(trap: str, market: str) -> Slot | None:
             status="issued", created="2026-11-09 09:00")}
 
     return Slot(trap, market, m["currency"], uid, sid, pid, oid, iid, lsid,
-                value, ship, total, m["voucher"], pay, rows)
+                value, ship, total, m["voucher"], pay, phone4, rows)
 
 
 def _product_title(flag: str | None) -> str:
@@ -226,7 +255,8 @@ def _product_title(flag: str | None) -> str:
 
 Built = tuple[TaskCheck, list[tuple[str, dict[str, Any]]]]
 
-VERIFY = lambda s: ("verify_identity", {"user_id": s.user_id, "phone_last4": PHONE_LAST4})
+VERIFY = lambda s: ("verify_identity", {"user_id": s.user_id,
+                                        "phone_last4": s.phone_last4})
 ELIG = lambda s: ("check_return_eligibility", {"order_id": s.order_id, "order_item_id": s.item_id})
 
 
@@ -504,7 +534,7 @@ def generate(markets: list[str] | None = None,
                     checks=checks,
                     hidden_facts={"order_id": slot.order_id,
                                   "phone_last4": ("1234" if trap == "identity_verification_failure"
-                                                  else PHONE_LAST4)},
+                                                  else slot.phone_last4)},
                     db_patch=slot.rows,
                 ))
                 solutions[tid] = solution

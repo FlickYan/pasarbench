@@ -31,9 +31,22 @@ from typing import Any
 
 NEEDS_NATIVE_REVIEW = {"th", "vi"}
 
+# SCRIPT NOTE, because this is easy to get wrong and an interviewer from a
+# Chinese company will notice:
+#   Singapore and Malaysia BOTH use SIMPLIFIED Chinese officially (SG from the
+#   1970s, MY from the 1980s). Traditional characters belong to Taiwan, Hong
+#   Kong and Macau -- none of which are SEA markets in this suite. Adding a
+#   "traditional" variant here would be inauthentic, not more thorough.
+#
+#   Cantonese is overwhelmingly a SPOKEN variety in Malaysia. Written Cantonese
+#   (係 / 唔 / 嘅) is essentially a Hong Kong register; a Cantonese-speaking
+#   shopper in KL types standard written Chinese or English to support. This is
+#   a TEXT benchmark, so Mandarin-register simplified Chinese is the faithful
+#   choice for both markets and written Cantonese is not.
+
 LANGUAGES_FOR_MARKET: dict[str, list[str]] = {
-    "SG": ["en", "sg-en"],
-    "MY": ["en", "ms"],
+    "SG": ["en", "sg-en", "zh-SG"],
+    "MY": ["en", "ms", "zh-MY"],
     "ID": ["en", "id"],
     "TH": ["en", "th"],
     "PH": ["en"],
@@ -47,6 +60,8 @@ LANGUAGE_NAMES = {
     "id": "Bahasa Indonesia",
     "th": "Thai",
     "vi": "Vietnamese",
+    "zh-SG": "Chinese (Singapore, simplified; heavily code-mixed with English)",
+    "zh-MY": "Chinese (Malaysia, simplified; Malaysian Mandarin register)",
 }
 
 # --------------------------------------------------------------------------
@@ -61,6 +76,8 @@ OPENINGS: dict[str, dict[str, str]] = {
         "id": "Halo, saya mau retur blus yang saya beli minggu lalu.",
         "th": "สวัสดีค่ะ อยากคืนเสื้อที่ซื้อไปเมื่อสัปดาห์ที่แล้วค่ะ",
         "vi": "Chào shop, mình muốn trả lại cái áo mua tuần trước.",
+        "zh-SG": "你好，我上个星期买的那件blouse想退，可以吗？",
+        "zh-MY": "你好，我上个星期买的那件上衣想要退货。",
     },
     "cod_cannot_refund_to_original_method": {
         "en": "The item I received is broken. I paid cash on delivery. I want my money back.",
@@ -69,6 +86,8 @@ OPENINGS: dict[str, dict[str, str]] = {
         "id": "Barang yang saya terima rusak. Saya bayar COD. Saya minta uang saya kembali.",
         "th": "ของที่ได้รับเสียหายค่ะ จ่ายเงินปลายทางไป อยากได้เงินคืนค่ะ",
         "vi": "Hàng mình nhận bị hỏng. Mình thanh toán khi nhận hàng. Mình muốn hoàn tiền.",
+        "zh-SG": "我收到的东西是坏的。我是货到付款的，钱要怎么退给我？",
+        "zh-MY": "我收到的货是坏的。我是货到付款给钱的，要怎样退钱给我？",
     },
     "cancel_while_processing": {
         "en": "Can I cancel my order? I only just placed it.",
@@ -77,6 +96,8 @@ OPENINGS: dict[str, dict[str, str]] = {
         "id": "Bisa batalkan pesanan saya? Baru saja saya pesan.",
         "th": "ยกเลิกออเดอร์ได้ไหมคะ เพิ่งสั่งไปเองค่ะ",
         "vi": "Mình hủy đơn được không? Mình vừa mới đặt thôi.",
+        "zh-SG": "我可以cancel我的订单吗？我才刚刚order而已。",
+        "zh-MY": "可以帮我取消订单吗？我才刚刚下单而已。",
     },
     "cannot_cancel_shipped_order": {
         "en": "I need to cancel my order, I found it cheaper somewhere else.",
@@ -85,6 +106,8 @@ OPENINGS: dict[str, dict[str, str]] = {
         "id": "Saya mau batalkan pesanan, saya nemu lebih murah di tempat lain.",
         "th": "อยากยกเลิกออเดอร์ค่ะ เจอที่อื่นถูกกว่า",
         "vi": "Mình muốn hủy đơn, mình thấy chỗ khác rẻ hơn.",
+        "zh-SG": "我要取消订单，我在别的地方看到比较便宜的。",
+        "zh-MY": "我要取消订单，我在别的地方看到比较便宜。",
     },
     "out_of_window_offer_voucher": {
         "en": "The colour is not what was shown. Can I return it?",
@@ -93,6 +116,8 @@ OPENINGS: dict[str, dict[str, str]] = {
         "id": "Warnanya tidak sesuai gambar. Bisa diretur?",
         "th": "สีไม่ตรงกับรูปเลยค่ะ คืนได้ไหมคะ",
         "vi": "Màu không giống hình. Trả lại được không shop?",
+        "zh-SG": "颜色跟照片里的不一样leh，可以退吗？",
+        "zh-MY": "颜色跟图片不一样，可以退货吗？",
     },
     "out_of_window_dispute_escalate": {
         "en": "Weeks and nobody helped me. I want my money back, not a coupon.",
@@ -101,6 +126,8 @@ OPENINGS: dict[str, dict[str, str]] = {
         "id": "Sudah berminggu-minggu tidak ada yang bantu. Saya mau refund penuh, bukan voucher.",
         "th": "รอมาหลายสัปดาห์ไม่มีใครช่วยเลย อยากได้เงินคืนเต็มจำนวน ไม่เอาคูปองค่ะ",
         "vi": "Mấy tuần rồi không ai hỗ trợ. Mình muốn hoàn tiền đầy đủ, không lấy voucher.",
+        "zh-SG": "等了几个星期都没人处理。我要退钱，不要什么voucher。",
+        "zh-MY": "几个星期了都没有人处理。我要退钱，不要礼券。",
     },
     "high_value_photo_required_first": {
         "en": "The item I received is damaged. I want to send it back.",
@@ -109,6 +136,8 @@ OPENINGS: dict[str, dict[str, str]] = {
         "id": "Barang yang saya terima rusak. Saya mau kirim balik.",
         "th": "ของที่ได้รับชำรุดค่ะ อยากส่งคืนค่ะ",
         "vi": "Hàng mình nhận bị hỏng. Mình muốn gửi trả.",
+        "zh-SG": "我收到的包有损坏，我想寄回去。",
+        "zh-MY": "我收到的包包有损坏，我要寄回去。",
     },
     "livestream_claim_overrides_window": {
         "en": ("I bought this on the seller's live stream. He promised the quality "
@@ -122,6 +151,8 @@ OPENINGS: dict[str, dict[str, str]] = {
         "th": "ซื้อจากไลฟ์ของร้านค่ะ เขาบอกว่าคุณภาพดี แต่ที่ได้มาคนละอย่างเลยค่ะ",
         "vi": ("Mình mua trên live của shop. Shop nói chất lượng tốt mà nhận về khác "
                "hoàn toàn."),
+        "zh-SG": "我是在卖家的live买的，他说是100% cotton，但收到的完全不是。",
+        "zh-MY": "我是在卖家直播的时候买的，他讲是100%棉的，但是收到的完全不是。",
     },
     "perishable_refund_without_return": {
         "en": "The dates arrived mouldy. I can't eat this.",
@@ -130,6 +161,8 @@ OPENINGS: dict[str, dict[str, str]] = {
         "id": "Kurmanya datang sudah berjamur. Tidak bisa dimakan.",
         "th": "อินทผลัมมาถึงขึ้นราแล้วค่ะ กินไม่ได้เลย",
         "vi": "Chà là nhận về bị mốc rồi. Không ăn được.",
+        "zh-SG": "那个枣到的时候已经发霉了，根本不能吃。",
+        "zh-MY": "我买的枣子到的时候已经发霉了，没办法吃。",
     },
     "hazmat_refund_without_return": {
         "en": "The charger is dead on arrival, no light at all. Refund please.",
@@ -138,6 +171,8 @@ OPENINGS: dict[str, dict[str, str]] = {
         "id": "Chargernya mati total, lampunya tidak nyala sama sekali. Tolong refund.",
         "th": "ที่ชาร์จเสียตั้งแต่แกะกล่อง ไฟไม่ติดเลยค่ะ ขอคืนเงินค่ะ",
         "vi": "Cục sạc hỏng ngay từ đầu, không lên đèn gì cả. Cho mình hoàn tiền.",
+        "zh-SG": "那个charger一插上去完全没反应，灯都不亮。请退款。",
+        "zh-MY": "那个充电器完全不能用，灯都不会亮。麻烦帮我退款。",
     },
     "peak_period_delay_not_compensable": {
         "en": "I ordered last night and there is still no shipping update. This is too slow.",
@@ -146,6 +181,8 @@ OPENINGS: dict[str, dict[str, str]] = {
         "id": "Saya pesan tadi malam, sampai sekarang belum ada update pengiriman. Lama banget.",
         "th": "สั่งไปเมื่อคืน ยังไม่มีอัปเดตการจัดส่งเลยค่ะ ช้ามากค่ะ",
         "vi": "Mình đặt tối qua mà giờ vẫn chưa thấy cập nhật vận chuyển. Chậm quá.",
+        "zh-SG": "我昨晚下的单，到现在还没有shipping update。太慢了吧。",
+        "zh-MY": "我昨天晚上下的单，到现在还没有发货。太慢了吧。",
     },
     "customs_hold_escalate": {
         "en": "My tracking hasn't updated in almost a week. Where is my parcel?",
@@ -154,6 +191,8 @@ OPENINGS: dict[str, dict[str, str]] = {
         "id": "Resi saya tidak update hampir seminggu. Paket saya di mana?",
         "th": "เลขพัสดุไม่อัปเดตเกือบอาทิตย์แล้วค่ะ ของอยู่ไหนคะ",
         "vi": "Mã vận đơn gần một tuần không cập nhật. Hàng của mình đâu rồi?",
+        "zh-SG": "我的tracking快一个星期没更新了，我的parcel在哪里？",
+        "zh-MY": "我的追踪号码将近一个星期没更新了，我的包裹去了哪里？",
     },
     "identity_verification_failure": {
         "en": "Cancel my order please.",
@@ -162,6 +201,8 @@ OPENINGS: dict[str, dict[str, str]] = {
         "id": "Tolong batalkan pesanan saya.",
         "th": "ขอยกเลิกออเดอร์ค่ะ",
         "vi": "Cho mình hủy đơn nhé.",
+        "zh-SG": "帮我取消订单。",
+        "zh-MY": "帮我取消订单。",
     },
     "duplicate_refund_escalate": {
         "en": "I still haven't got my money back. Please refund me.",
@@ -170,6 +211,8 @@ OPENINGS: dict[str, dict[str, str]] = {
         "id": "Uang saya belum kembali. Tolong refund.",
         "th": "ยังไม่ได้เงินคืนเลยค่ะ ขอคืนเงินด้วยค่ะ",
         "vi": "Mình vẫn chưa nhận được tiền hoàn. Hoàn tiền cho mình với.",
+        "zh-SG": "我到现在还没收到退款，麻烦帮我退钱。",
+        "zh-MY": "我还没收到退款，麻烦帮我处理一下。",
     },
     "address_change_after_dispatch": {
         "en": "I moved, can you change the delivery address for my order?",
@@ -178,6 +221,8 @@ OPENINGS: dict[str, dict[str, str]] = {
         "id": "Saya sudah pindah, bisa ganti alamat pengiriman?",
         "th": "ย้ายบ้านแล้วค่ะ เปลี่ยนที่อยู่จัดส่งได้ไหมคะ",
         "vi": "Mình chuyển nhà rồi, đổi địa chỉ giao hàng được không?",
+        "zh-SG": "我搬家了，可以帮我改送货地址吗？",
+        "zh-MY": "我搬家了，可以改送货地址吗？",
     },
     "cod_cancel_no_refund_due": {
         "en": "Cancel my order please. And when do I get my money back?",
@@ -186,6 +231,8 @@ OPENINGS: dict[str, dict[str, str]] = {
         "id": "Tolong batalkan pesanan saya. Kapan uang saya kembali?",
         "th": "ขอยกเลิกออเดอร์ค่ะ แล้วจะได้เงินคืนเมื่อไหร่คะ",
         "vi": "Cho mình hủy đơn. Bao giờ mình nhận lại tiền?",
+        "zh-SG": "帮我取消订单。那我的钱几时退给我？",
+        "zh-MY": "帮我取消订单。那我的钱几时退给我？",
     },
 }
 

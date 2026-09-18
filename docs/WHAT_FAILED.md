@@ -1,13 +1,16 @@
 # What failed
 
-Nine real defects found while building this, in the order of how much damage
-they would have done. Every one is reproducible from the git history.
+Thirteen real defects found while building this, in the order of how much
+damage they would have done. Every one is reproducible from the git history.
 
-The pattern worth extracting: **none of the serious bugs were found by reading
-code.** They were found by mechanisms built to catch a whole class — a
+The pattern worth extracting: **almost none of the serious bugs were found by
+reading code.** They were found by mechanisms built to catch a whole class — a
 reference solution that must pass, an adversarial solution that must fail, a
-scale-up that exercises a code path differently. That is the argument for
-spending the first two weeks on guarantees rather than features.
+scale-up that exercises a code path differently, a real model run. That is the
+argument for spending the first two weeks on guarantees rather than features.
+
+The exception is #9, which no mechanism here could have caught and a human
+reading transcripts did. Automation catches the classes you thought of.
 
 ---
 
@@ -105,7 +108,7 @@ a customer the address is locked without checking the order status.
 
 **The honest residue.** "Do no harm" traps are structurally weak under
 state-only verification — passing means nothing bad happened, which a cautious
-lookup-only agent achieves for free. 33 of 186 tasks are in this category and
+lookup-only agent achieves for free. 36 of 199 tasks are in this category and
 `tests/test_generated.py` **exempts them explicitly** rather than pretending
 otherwise. They are the argument for the judge.
 
@@ -187,7 +190,47 @@ mechanisable and this repo does not yet have it.
 
 ---
 
-## 9. The kappa-paradox test did not contain a paradox
+## 9. Order IDs contained the answer
+
+**What happened.** Generated identifiers were built from the trap name:
+
+```python
+tag = f"{trap[:6]}{market}".replace("_", "")   # "cannot" + "TH"
+oid = f"GO-{tag}"                              # GO-cannotTH
+```
+
+So `GO-duplicMY` carried "duplic" from `duplicate_refund_escalate`,
+`GO-hazmatID` said "hazmat" outright, `GO-livestMY` said "livest". The customer
+hands that string to the agent in turn one. **The case type was in the prompt
+before a single tool call.** Separately, every generated user verified with
+`0000`, so the identity answer was learnable rather than askable, and the
+identity-failure trap (whose customer says `1234`) was trivially distinguishable.
+
+**How it was found.** Not by any test. By a human reading transcripts during
+judge labelling and noticing the ids all looked alike.
+
+**Why nothing caught it.** Every guarantee in this repo asks *is the right
+behaviour reachable, and is the wrong behaviour rejected*. None of them asks
+**is the answer reachable too cheaply**. Reference solutions, adversarial
+solutions and observability checks are all blind to a leak that makes a task
+easier rather than impossible.
+
+**Fix.** Ids are now a truncated hash of (trap, market) -- deterministic, so
+runs stay reproducible and trace filenames stay stable, but carrying no signal.
+Phone digits are per-user, derived the same way, excluding `1234` and
+all-same-digit strings.
+
+**What this costs.** Every pass rate measured before this fix was taken under a
+prompt that contained a hint. Whether the model used it is unknown; the point
+is that it cannot be ruled out, so those numbers are not the ones to publish.
+
+**The missing guarantee.** Alongside solvable, failable and observable:
+**uninformative** -- no identifier, name or field visible to the agent may
+correlate with the task's label. Mechanisable, and this repo did not have it.
+
+---
+
+## 10. The kappa-paradox test did not contain a paradox
 
 **What happened.** The test asserted that 96%-agreement data would produce a low
 kappa. It produced **kappa = 0.74**. The test failed and the implementation was
@@ -204,7 +247,7 @@ more in an interview than the statistic.
 
 ---
 
-## 10. A test asserted on state the code had already mutated
+## 11. A test asserted on state the code had already mutated
 
 **What happened.** The interrupt/resume test snapshotted an episode, restored
 it, resumed — then asserted `state2.step == 2`. But `run_episode` mutates
@@ -214,7 +257,7 @@ it, resumed — then asserted `state2.step == 2`. But `run_episode` mutates
 
 ---
 
-## 11. Two locale variants were byte-identical
+## 12. Two locale variants were byte-identical
 
 **What happened.** The Singlish and English openings for
 `identity_verification_failure` were the same string. The "twins differ in the
@@ -226,7 +269,7 @@ all is a silent duplicate inflating the English sample.
 
 ---
 
-## 12. The distractor pool ran out before 300
+## 13. The distractor pool ran out before 300
 
 **What happened.** `all-300` produced a 258-tool registry. Domain × field × verb
 combinatorics topped out at 235 distractors.

@@ -161,9 +161,10 @@ def test_coverage():
     cov = coverage_report()
     check("no missing (trap, language) cell", not cov["missing"], str(cov["missing"][:5]))
     langs = Counter(t.language for t in TASKS)
-    check("six language varieties present", len(langs) == 6, str(dict(langs)))
+    check("eight language varieties present, incl. zh-SG and zh-MY",
+          len(langs) == 8 and {"zh-SG", "zh-MY"} <= set(langs), str(dict(langs)))
     check("non-English is a substantial share",
-          sum(v for k, v in langs.items() if k != "en") >= 60,
+          sum(v for k, v in langs.items() if k != "en") >= 90,
           str(sum(v for k, v in langs.items() if k != "en")))
     check("unreviewed languages are declared",
           NEEDS_NATIVE_REVIEW == {"th", "vi"}, str(NEEDS_NATIVE_REVIEW))
@@ -189,10 +190,11 @@ def test_simulator_qa():
     task = next(t for t in TASKS if t.trap == "happy_path_return_refund"
                 and t.language == "en")
     oid = task.hidden_facts["order_id"]
+    ph = task.hidden_facts["phone_last4"]
 
     leaky = [
         Message("system", "..."),
-        Message("user", f"Hi, I want to return order {oid}, my phone ends 0000."),
+        Message("user", f"Hi, I want to return order {oid}, my phone ends {ph}."),
         Message("assistant", "Sure, let me look that up."),
         Message("user", "Thanks"),
     ]
@@ -209,7 +211,7 @@ def test_simulator_qa():
         Message("assistant", "Happy to help. Could you give me the order number?"),
         Message("user", f"It is {oid} I think"),
         Message("assistant", "Thanks. For security, the last 4 digits of the phone on the account?"),
-        Message("user", "0000"),
+        Message("user", ph),
     ]
     g = leak_report(task, good)
     check("facts given ON REQUEST are not counted as leaks", not g.leaked, str(g.leaked))

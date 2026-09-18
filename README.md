@@ -1,7 +1,7 @@
 # PasarBench
 
 A verifiable tool-agent **environment** for Southeast Asian e-commerce customer
-service. 186 tasks across 6 markets and 6 language varieties, 20 tools (303 with
+service. 199 tasks across 6 markets and 8 language varieties, 20 tools (303 with
 distractors), one policy document, and verification on final database state
 rather than text.
 
@@ -86,7 +86,16 @@ to language at all.
 |---|---|---|
 | **trap** | the checks — what correct behaviour is | 16 |
 | **market** | the world — currency, payment rails, order data | SG MY ID TH PH VN |
-| **language** | the surface form — what the customer types | en, sg-en, ms, id, th, vi |
+| **language** | the surface form — what the customer types | en, sg-en, zh-SG, ms, zh-MY, id, th, vi |
+
+Chinese is included because Singapore is majority ethnic Chinese and Malaysia
+has a large Chinese-speaking population — a SEA e-commerce benchmark that omits
+it is not modelling those two markets. Both use **simplified** characters
+officially; traditional belongs to Taiwan, Hong Kong and Macau, which are not
+markets here, so a "traditional" variant would be inauthentic rather than more
+thorough. Written Cantonese is likewise a Hong Kong register: a
+Cantonese-speaking shopper in KL types standard written Chinese to support, so
+Mandarin-register simplified is the faithful choice for a text benchmark.
 
 SEA-specific content that no US-built benchmark has: **cash on delivery** (no
 instrument to refund to), **livestream purchase disputes**, **zero-minor-unit
@@ -263,13 +272,13 @@ docs/       RUNBOOK.md  WHAT_FAILED.md  WRITEUP.md  README_weekly.md
 Stated plainly, because a limitations section nobody wrote is the first thing a
 careful reader notices.
 
-- **186 tasks cannot detect a 2-point regression.** ~6,000 per arm would be
+- **199 tasks cannot detect a 2-point regression.** ~6,000 per arm would be
   needed. Several verdicts in this work are honestly INCONCLUSIVE.
 - **Thai and Vietnamese translations are drafted, not native-reviewed.** English,
-  Singlish, Malay and Indonesian were written directly; Singlish deliberately
-  was not machine-translated, because the particles and code-switching are the
-  part that breaks agents.
-- **33 of 186 tasks are "do no harm" traps** that a cautious lookup-only agent
+  Singlish, Malay, Indonesian and both Chinese varieties were written directly;
+  Singlish deliberately was not machine-translated, because the particles and
+  code-switching are the part that breaks agents.
+- **36 of 199 tasks are "do no harm" traps** that a cautious lookup-only agent
   passes for free. `tests/test_generated.py` exempts them explicitly rather than
   pretending otherwise. They are the argument for the judge.
 - **Prose-only policy rules are unverifiable by state checks.** P1.4 (never
