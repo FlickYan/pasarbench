@@ -294,6 +294,163 @@ def test_sampling():
           fails / len(s) > base, f"{fails / len(s):.2f} vs base {base:.2f}")
 
 
+def test_naive_baseline():
+    """The naive baseline must reach the report, scored like for like.
+
+    Regression: the report compared the naive judge's one bit against
+    nine-criterion human labels. The keys never overlap, per_criterion
+    returned nothing, and 200 naive judgements vanished without an error.
+    """
+    import importlib.util
+    import random
+    from pathlib import Path
+
+    from pasarbench.judge.agreement import paired_kappa_diff
+    from pasarbench.judge.rubric import overall_acceptable
+
+    print("\n=== naive baseline, like for like ===")
+    keys = [c.key for c in CRITERIA]
+    ok = {k: True for k in keys}
+    crit = dict(ok, **{CRITICAL[0]: False})
+    check("overall_acceptable: clean transcript is acceptable",
+          overall_acceptable(ok) is True)
+    check("overall_acceptable: one critical violation is not",
+          overall_acceptable(crit) is False)
+    check("overall_acceptable agrees with derive_verdict",
+          all(overall_acceptable(l) == (derive_verdict(l) in ("good", "acceptable"))
+              for l in (ok, crit)))
+
+    rng = random.Random(11)
+    r1, naive, dec = [], [], []
+    for n in range(200):
+        lab = {k: rng.random() > 0.1 for k in keys}
+        tid = f"T{n}"
+        r1.append({"transcript_id": tid, "labels": lab})
+        good = overall_acceptable(lab)
+        s = (4 if good else 2) if rng.random() > 0.1 else rng.choice([2, 4])
+        naive.append({"transcript_id": tid, "score": s,
+                      "labels": {"overall_acceptable": s >= 4}})
+        dec.append({"transcript_id": tid, "labels": dict(lab)})
+    naive[0] = {"transcript_id": "T0", "score": 0,
+                "labels": {"overall_acceptable": False}}      # a parse failure
+
+    check("the old comparison really does score nothing (the bug)",
+          per_criterion(r1, naive, ["overall_acceptable"]) == {})
+
+    same = [overall_acceptable(r["labels"]) for r in r1]
+    flip = [(not x) if i % 2 else x for i, x in enumerate(same)]
+    p0 = paired_kappa_diff(same, same, same)
+    check("identical judges: difference 0, not resolved",
+          p0["diff"] == 0 and not p0["resolved"], str(p0))
+    p1 = paired_kappa_diff(same, flip, same, iters=500)
+    check("perfect vs coin-flip judge: resolved in the perfect one's favour",
+          p1["resolved"] and p1["diff"] > 0.5, str(p1))
+    p2 = paired_kappa_diff(same, same, flip, iters=500)
+    check("swapping the judges flips the sign", p2["diff"] == -p1["diff"],
+          f"{p1['diff']} vs {p2['diff']}")
+
+    spec = importlib.util.spec_from_file_location(
+        "make_report", Path(__file__).resolve().parent.parent / "scripts" / "make_report.py")
+    mr = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mr)
+    text = "\n".join(mr._naive_vs_decomposed(r1, naive, dec))
+    check("report prints the naive baseline", "naive: one 1–5 score" in text,
+          text[:200])
+    check("report prints the decomposed row beside it",
+          "decomposed: nine criteria" in text)
+    check("a parse failure is excluded, not scored as a fail",
+          "1 naive response(s) had no valid 1–5 score" in text and "n = 199" in text,
+          text[:300])
+    check("the comparison states a verdict", "Decomposed minus naive" in text)
+
+
+def test_judge_vs_verifier():
+    """run_judges.py --traces: judges scored against the database, on real
+    traces from the real loop. A judge that accepts everything must show up
+    as accepting the transcript that claims an escalation nobody made."""
+    import importlib.util
+    import tempfile
+    from pathlib import Path
+
+    from pasarbench.db import Database
+    from pasarbench.harness.backends import ScriptedBackend
+    from pasarbench.harness.loop import run_episode
+    from pasarbench.harness.trace import TraceWriter
+    from pasarbench.judge.judges import NAIVE_SYSTEM
+    from pasarbench.run import SOLUTIONS
+    from pasarbench.tasks import BY_ID
+    from pasarbench.verifier import verify
+
+    print("\n=== judges against the verifier (--traces) ===")
+    tmp = Path(tempfile.mkdtemp())
+    t = BY_ID["T12"]                                   # customs hold: must escalate
+    episodes = [
+        (SOLUTIONS["T12"], "Your case is escalated; a specialist will follow up."),
+        ([("get_shipment", {"order_id": "O1006"})],
+         "I've escalated your case with the customs_hold category, as required."),
+        ([("get_shipment", {"order_id": "O1006"})],
+         "The delay is within the normal peak window, so no action is needed."),
+    ]
+    for i, (script, closing) in enumerate(episodes):
+        w = TraceWriter(root=str(tmp), run_id="R/full")
+        db = Database.fresh(t.db_patch)
+        res = run_episode(t, db, ScriptedBackend(list(script), closing=closing),
+                          trace=w, run_index=i)
+        v = verify(t, db)
+        w.close_episode(res.stop_reason.value, v.passed, v.failures, res.budget)
+        w.close()
+
+    class Pushover:
+        """Accepts everything: the judge failure this experiment exists to catch."""
+        def chat(self, msgs, tools=None):
+            if msgs[0].content == NAIVE_SYSTEM:
+                body = '{"score": 5, "reason": "resolved"}'
+            else:
+                body = json.dumps({"criteria": {c.key: {"ok": True} for c in CRITERIA}})
+            return ModelResponse(content=body)
+
+    spec = importlib.util.spec_from_file_location(
+        "rj", Path(__file__).resolve().parent.parent / "scripts" / "run_judges.py")
+    rj = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(rj)
+    out = tmp / "out"
+    sm = rj.judge_vs_verifier(tmp / "R" / "full", lambda: Pushover(), workers=2,
+                              out_root=out)
+    check("three episodes judged, none errored", sm["n"] == 3 and sm["errors"] == 0, str(sm))
+    check("the verifier passes only the one that escalated",
+          sm["passed"] == 1 and sm["failed"] == 2, str(sm))
+    check("exactly one failure claims an action the database never saw",
+          sm["claimed"] == 1, str(sm))
+    check("a pushover judge is caught accepting the false claim",
+          sm["naive_ok"][2] == (1, 1) and sm["dec_ok"][2] == (1, 1), str(sm))
+    check("…and accepting every episode the verifier failed",
+          sm["naive_ok"][1] == (2, 2), str(sm["naive_ok"]))
+    rows = [json.loads(l) for l in next(out.glob("*.jsonl")).read_text().splitlines()]
+    check("per-episode rows are written, separate from calibration files",
+          len(rows) == 3 and not (out / "judge_naive.jsonl").exists())
+    check("agreement with the verifier is reported as kappa",
+          "naive_ok_kappa" in sm and "dec_ok_kappa" in sm, str(sorted(sm)))
+
+    # --payloads: the judge sees what the agent saw, verified call by call.
+    seen = []
+
+    class Reader(Pushover):
+        def chat(self, msgs, tools=None):
+            seen.append(msgs[-1].content)
+            return super().chat(msgs, tools)
+
+    out2 = tmp / "out2"
+    sm2 = rj.judge_vs_verifier(tmp / "R" / "full", lambda: Reader(), workers=1,
+                               out_root=out2, payloads=True)
+    v, total = sm2["payload_calls"]
+    check("every tool result replays and verifies", total > 0 and v == total, f"{v}/{total}")
+    check("…so the judge now reads the shipment the agent read",
+          any('"shipment"' in t for t in seen) and not any("args_echo" in t for t in seen),
+          seen[0][:300] if seen else "nothing seen")
+    check("…and the payload run is written beside, not over, the plain one",
+          next(out2.glob("*__payloads.jsonl"), None) is not None)
+
+
 def main() -> int:
     test_kappa_math()
     test_prevalence_paradox()
@@ -303,6 +460,8 @@ def main() -> int:
     test_pairwise_and_bias()
     test_ceiling()
     test_sampling()
+    test_naive_baseline()
+    test_judge_vs_verifier()
     print(f"\n{len(PASS)} passed, {len(FAIL)} failed")
     for f in FAIL:
         print(f"  FAILED: {f}")

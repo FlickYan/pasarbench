@@ -6,50 +6,161 @@ is shown inline. **Do not fill these in by hand** — re-run and regenerate.
 
 ## The suite
 
-- **186 tasks** (16 hand-written, 170 generated)
-- **16 traps** across **6 markets** and **6 language varieties** (en, id, ms, sg-en, th, vi)
+- **215 tasks** (16 hand-written, 199 generated)
+- **16 traps** across **6 markets** and **8 language varieties** (en, id, ms, sg-en, th, vi, zh-MY, zh-SG)
 - **20 tools**, extendable to 303 with distractors
 - Unreviewed translations: th, vi — get these checked before quoting a per-language number
 
 
 ## 1. Context ablation
 
-**NOT MEASURED** — context ablation not run against a real model
+*Source: `traces/H-context` — 480 episodes, the only qualifying run.*
 
-```bash
-python -m pasarbench.sweep --backend openai --model <m> --suite all \
-    --strategies full,window8,window4,trim3,notes4 --sample 2 -k 3
-```
+## Context ablation
 
+| strategy | pass^1 | pass^k | mean tokens | vs baseline | frontier |
+|---|---|---|---|---|---|
+| `full` | 0.917 | 0.844 | 38,720 | +0.0% | dominated |
+| `window8` | 0.979 | 0.969 | 38,256 | +1.2% | **yes** |
+| `window4` | 0.885 | 0.812 | 43,344 | -11.9% | dominated |
+| `trim3` | 0.927 | 0.875 | 38,946 | -0.6% | dominated |
+| `notes4` | 0.938 | 0.875 | 39,638 | -2.4% | dominated |
+
+Dominated (worse on both axes, drop from the recommendation): `full`, `window4`, `trim3`, `notes4`
+
+### Where each strategy loses
+
+**`window8`** -- no regression: cheaper at no measured cost
+
+**`window4`** -- diffuse: 3 traps degraded -- the strategy is dropping something the agent needs generally, not a specific dependency
+  - `identity_verification_failure` -0.50
+  - `perishable_refund_without_return` -0.33
+  - `out_of_window_dispute_escalate` -0.17
+
+**`trim3`** -- concentrated: loss sits in 1 trap(s) -- go read those traces, the mechanism is legible there
+  - `livestream_claim_overrides_window` -0.17
+
+**`notes4`** -- concentrated: loss sits in 2 trap(s) -- go read those traces, the mechanism is legible there
+  - `duplicate_refund_escalate` -0.17
+  - `livestream_claim_overrides_window` -0.17
+
+### Pass rate by language
+
+| strategy | en | sg-en | vi |
+|---|---|---|---|
+| `full` | 0.907 | 0.917 | 1.000 |
+| `window8` | 0.973 | 1.000 | 1.000 |
+| `window4` | 0.893 | 0.833 | 0.889 |
+| `trim3` | 0.907 | 1.000 | 1.000 |
+| `notes4` | 0.920 | 1.000 | 1.000 |
+
+Locale twins share identical checks and an identical world, so any gap in this table is language and nothing else.
 
 ## 2. Tool scaling
 
-**NOT MEASURED** — tool-scaling arms not run
+*Source: `traces/I-tools2` — 480 episodes, pinned with `--tools-run`.*  
+*Also qualifying: `I-tools` (480).*
 
-```bash
-python -m pasarbench.sweep --backend openai --model <m> --suite all \
-    --strategies full --exposure oracle,all-20,all-100,random-100,search-300
-```
 
+| exposure | tools | schema tokens | total tokens | pass^1 | budget stops | pass^1, finished only |
+|---|---|---|---|---|---|---|
+| `oracle` | 5 | 452 | 25,285 | 0.979 | 0/96 | 0.979 (96) |
+| `all-20` | 20 | 1,762 | 38,041 | 0.958 | 0/96 | 0.958 (96) |
+| `all-100` | 100 | 9,670 | 101,708 | 0.927 | 0/96 | 0.927 (96) |
+| `random-100` | 100 | 9,753 | 88,974 | 0.927 | 0/96 | 0.927 (96) |
+| `search-300` | 5 | 793 | 46,423 | 0.823 | 0/96 | 0.823 (96) |
+
+### Reading
+
+- **INCONCLUSIVE at 100 tools** — no accuracy loss distinguishable from noise. `all-100` vs oracle: -0.052; 4 tasks worse, 0 better, sign test p=0.125 over 32 tasks. `random-100` vs oracle: -0.052; 6 tasks worse, 1 better, sign test p=0.125 over 32 tasks. Cost is not in doubt: 101,708 tokens per episode against 25,285 for oracle (4.0x) and 38,041 for all-20 (2.7x — what the distractors alone cost).
+  Both 100-tool arms lose on: `identity_verification_failure` (oracle 1.00, all 0.50, random 0.67). A lead to read in the traces, not a result.
+- `search-300` vs `all-20`: -0.135; 9 tasks worse, 1 better, sign test p=0.021 over 32 tasks. Total tokens per episode 46,423 vs 38,041 (+22%), steps 10.4 vs 7.7, schema tokens per call 793 vs 1,762. **Dominated at this registry size: less accurate AND more expensive in total** — the per-call schema saving is spent on the extra round trips.
+  Loses ≥0.5 on: `customs_hold_escalate`, `duplicate_refund_escalate`. Before naming a cause, read those traces: did the agent search for the tool and the ranker miss it, or never search at all? `python scripts/audit_tool_arms.py traces/<run>` separates the two, from the traces alone.
 
 ## 3. Multilingual diagnosis
 
-**NOT MEASURED** — no multi-language run found in traces/
+*Source: `traces/G-gated/full` — 1075 episodes, the largest of 6 qualifying run(s); pin another with `--multilingual-run <name>`.*  
+*Also qualifying: `B-multilingual/full` (930), `C-clean/full` (1075), `D-nozh/full` (930), `F-clean-sim/full` (1075), `H-context/full` (96).*
 
-```bash
-python -m pasarbench.sweep --backend openai --model <m> --suite all -k 3
-```
+## Multilingual diagnosis
 
+| lang | n | pass | malformed arg | search miss | language drift | budget exhaustion | tokens per char |
+|---|---|---|---|---|---|---|---|
+| `en` | 545 | 0.910 | 0.000 | 0.000 | 0.000 | 0.000 | 29.369 |
+| `id` | 80 | 0.463 | 0.000 | 0.000 | 0.000 | 0.000 | 20.067 |
+| `ms` | 80 | 0.887 | 0.000 | 0.000 | 0.030 | 0.000 | 30.829 |
+| `sg-en` | 65 | 0.939 | 0.000 | 0.000 | 0.000 | 0.000 | 27.817 |
+| `th` | 80 | 0.900 | 0.000 | 0.000 | 0.000 | 0.000 | 30.548 |
+| `vi` | 80 | 0.938 | 0.000 | 0.000 | 0.000 | 0.000 | 28.432 |
+| `zh-MY` | 80 | 0.650 | 0.000 | 0.000 | - | 0.000 | 63.714 |
+| `zh-SG` | 65 | 0.585 | 0.000 | 0.000 | - | 0.000 | 55.976 |
+
+### Paired comparison (the controlled one)
+
+| lang | pairs | en rate | this rate | paired gap | reliable |
+|---|---|---|---|---|---|
+| `id` | 16 | 0.912 | 0.463 | +0.450 | yes |
+| `ms` | 16 | 0.912 | 0.887 | +0.025 | yes |
+| `sg-en` | 13 | 0.877 | 0.938 | -0.062 | yes |
+| `th` | 16 | 0.887 | 0.900 | -0.013 | yes |
+| `vi` | 16 | 0.912 | 0.938 | -0.025 | yes |
+| `zh-MY` | 16 | 0.912 | 0.650 | +0.263 | yes |
+| `zh-SG` | 13 | 0.877 | 0.585 | +0.292 | yes |
+
+> Unpaired per-language rates compare DIFFERENT tasks and are confounded by which traps landed in which language. Only this paired table is controlled.
+
+### Gap attribution
+
+**`id`** -- gap +0.448 vs `en`; co-moving: none isolated; tokenisation 0.683x
+  - no single mechanism dominates. Read the traces for the tasks that pass in English and fail here; the difference is legible per-task because the world and checks are identical
+
+**`ms`** -- gap +0.023 vs `en`; co-moving: `language_drift`; tokenisation 1.05x
+  - no single mechanism dominates. Read the traces for the tasks that pass in English and fail here; the difference is legible per-task because the world and checks are identical
+
+**`zh-MY`** -- gap +0.260 vs `en`; co-moving: none isolated; tokenisation 2.169x
+  - tokenisation inflation above 1.4x. Same conversation, far more tokens. Re-run with a proportionally larger budget before attributing anything to the model
+
+**`zh-SG`** -- gap +0.326 vs `en`; co-moving: none isolated; tokenisation 1.906x
+  - tokenisation inflation above 1.4x. Same conversation, far more tokens. Re-run with a proportionally larger budget before attributing anything to the model
+
+> These are CO-MOVEMENTS, not causal attributions. Use them to choose which traces to read and which ablation to run; do not present this table as an explanation on its own.
+
+Locale twins share an identical world and byte-identical checks, so the gap itself is attributable to language. The MECHANISM still has to be established by reading traces.
 
 ## 4. Judge calibration
 
-**NOT MEASURED** — no human labels yet — this is the week-5 grind and nothing substitutes for it
+Human labels: round 1 = 200, round 2 (retest) = 30
 
-```bash
-python -m pasarbench.judge.label sample --traces traces/<run>/full --n 200
-python -m pasarbench.judge.label annotate --round 1
-```
+| criterion | p_o | kappa | CI95 | prevalence | harsh | lenient | reading |
+|---|---|---|---|---|---|---|---|
+| `no_data_leak` | 0.985 | +0.000 | [0.00, 0.00] | 0.98 | 3 | 0 | KAPPA PARADOX |
+| `no_hallucinated_facts` | 0.305 | +0.000 | [0.00, 0.00] | 0.30 | 139 | 0 | SYSTEMATIC BIAS |
+| `policy_accurate` | 1.000 | +0.000 | [0.00, 0.00] | 1.00 | 0 | 0 | KAPPA PARADOX |
+| `verification_before_action` | 0.950 | +0.000 | [0.00, 0.00] | 0.95 | 10 | 0 | KAPPA PARADOX |
+| `no_unfounded_promise` | 0.985 | +0.000 | [0.00, 0.00] | 0.98 | 3 | 0 | KAPPA PARADOX |
+| `outcome_communicated` | 0.985 | -0.007 | [-0.02, 0.00] | 0.98 | 1 | 2 | KAPPA PARADOX |
+| `escalation_explained` | 1.000 | +0.000 | [0.00, 0.00] | 1.00 | 0 | 0 | KAPPA PARADOX |
+| `tone_professional` | 1.000 | +0.000 | [0.00, 0.00] | 1.00 | 0 | 0 | KAPPA PARADOX |
+| `language_match` | 0.995 | +0.000 | [0.00, 0.00] | 0.99 | 1 | 0 | KAPPA PARADOX |
 
+*harsh* = human satisfied, judge violated. *lenient* = the reverse.
+
+**Naive baseline, like for like** — n = 200. Target: the human's round-1 labels collapsed to acceptable / not by the verdict rule (no critical violation, at most two minor); 100% of transcripts are acceptable on it.
+
+| judge | p_o | kappa | CI95 | reading |
+|---|---|---|---|---|
+| naive: one 1–5 score, thresholded | 0.930 | +0.000 | [+0.00, +0.00] | KAPPA PARADOX |
+| decomposed: nine criteria, collapsed by the same rule | 0.305 | +0.000 | [+0.00, +0.00] | SYSTEMATIC BIAS |
+
+Decomposed judge's 139 disagreements: **139 too harsh** (human acceptable, judge not), **0 too lenient** (the reverse).
+
+Decomposed minus naive: +0.000, paired 95% CI [+0.000, +0.000] — **not resolved at n = 200.** On the overall verdict the two judges are indistinguishable. What the decomposition buys is the per-criterion table above — knowing *which* part of the rubric disagrees — not a better overall call. Say that; do not claim it beats the baseline.
+
+**Ceiling — test-retest (one rater, twice):** mean human-human kappa +0.000, mean judge kappa -0.001, **0% of achievable agreement**
+
+Satisfied rate: round 1 99.9%, round 2 100.0% (gap +0.1% in round 2's favour — raters are similarly strict)
+
+Retest gap: median 24.5 h between first and second labelling of the same transcript.
 
 ## 5. Serving and cost
 

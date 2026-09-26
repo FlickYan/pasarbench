@@ -67,7 +67,17 @@ def test_arms_are_comparable():
     t_all = a100.tools_for(None, db, TASK)
     t_rnd = r100.tools_for(None, db, TASK)
 
-    check("oracle exposes only what the task needs", len(t_orc) <= 8, str(len(t_orc)))
+    # The oracle may remove CHOICES, never information: every lookup, plus
+    # only the write actions this task's solution takes.
+    from pasarbench.harness.exposure import LOOKUPS
+    writes_used = {n for n, _ in SOLUTIONS[TASK.task_id]} - LOOKUPS
+    check("oracle exposes every lookup", LOOKUPS <= set(t_orc),
+          str(LOOKUPS - set(t_orc)))
+    check("oracle exposes only the write actions the task takes",
+          set(t_orc) - LOOKUPS == writes_used & set(TOOLS),
+          f"{sorted(set(t_orc) - LOOKUPS)} vs {sorted(writes_used)}")
+    check("oracle is smaller than the full registry",
+          len(t_orc) < len(DEFAULT_TOOLS), str(len(t_orc)))
     needed = {n for n, _ in SOLUTIONS[TASK.task_id]}
     check("oracle contains every needed tool", needed <= set(t_orc),
           str(needed - set(t_orc)))
@@ -137,7 +147,7 @@ def test_search_ranking_is_english_only():
 
 def test_loop_records_exposure():
     print("\n=== the loop records exposure per step ===")
-    for spec, lo, hi in (("oracle", 1, 10), ("all-20", 18, 22), ("all-300", 290, 310)):
+    for spec, lo, hi in (("oracle", 12, 16), ("all-20", 18, 22), ("all-300", 290, 310)):
         db = Database.fresh(TASK.db_patch)
         res = run_episode(TASK, db, ScriptedBackend(SOLUTIONS["T08"]),
                           exposure=build_exposure(spec, SOLUTIONS))
@@ -151,6 +161,21 @@ def test_loop_records_exposure():
                       exposure=build_exposure("all-300", SOLUTIONS))
     check("the reference solution still passes with 300 tools exposed",
           __import__("pasarbench.verifier", fromlist=["verify"]).verify(TASK, db).passed)
+
+    # Regression: the loop sent only the visible schemas but DISPATCHED any
+    # registered tool by name, so every reduced arm leaked to a good guesser.
+    from pasarbench.harness.types import ToolCall
+    orc = build_exposure("oracle", SOLUTIONS)
+    hidden = sorted(set(DEFAULT_TOOLS) - set(orc.tools_for(None, None, TASK)))[0]
+    db = Database.fresh(TASK.db_patch)
+    before = len(db.action_log)
+    res = run_episode(TASK, db, ScriptedBackend([(hidden, {"order_id": "X"})]),
+                      exposure=orc)
+    tr = [r for st in res.steps for r in st.tool_results if r["name"] == hidden]
+    check(f"a hidden tool ({hidden}) cannot be called by guessing its name",
+          tr and not tr[0]["ok"] and "unknown tool" in (tr[0]["error"] or ""), str(tr))
+    check("…and it never touches the database", len(db.action_log) == before,
+          f"{before} -> {len(db.action_log)}")
 
 
 def _ep(lang, passed, **kw):
@@ -217,32 +242,348 @@ def test_diagnosis():
 
 
 def test_scaling_report():
-    print("\n=== tool scaling reads the contrasts, not the trend ===")
+    """Contrasts are read only after the loss clears a paired sign test, and
+    the composition verdict points the right way round (WHAT_FAILED #21)."""
+    from pasarbench.diagnose import _sign_p
+
+    print("\n=== tool scaling reads contrasts only after a paired test ===")
+    check("sign test: 4 tasks worse, 0 better is NOT significant", _sign_p(4, 0) > 0.1,
+          str(_sign_p(4, 0)))
+    check("sign test: 9 worse, 1 better is", _sign_p(9, 1) < 0.05, str(_sign_p(9, 1)))
+    check("sign test: no differing tasks is p=1", _sign_p(0, 0) == 1.0)
+
+    traps = [f"t{i:02d}" for i in range(16)]
+
+    def row(exp, n_tools, schema, tokens, steps, lose=()):
+        per = {t: (0.5 if t in lose else 1.0) for t in traps}
+        return {"exposure": exp, "cell": f"full+{exp}", "n_tools": n_tools,
+                "mean_schema_tokens": schema, "mean_tokens": tokens,
+                "mean_steps": steps, "pass^1": sum(per.values()) / len(per),
+                "stop_reasons": {"done": 96}, "per_trap": per}
+
+    lost = set(traps[:8])
+    base = [row("oracle", 14, 1200, 25000, 7.0), row("all-20", 20, 1760, 38000, 7.7)]
+    count = base + [row("all-100", 100, 9670, 100000, 8.1, lost),
+                    row("random-100", 100, 9750, 89000, 7.1, lost),
+                    row("search-300", 5, 790, 46000, 10.4, set(traps[:7]))]
+    md = tool_scaling_report(count)
+    check("a loss that persists in random-N is read as the NUMBER of tools",
+          "NUMBER of tools" in md, md)
+    check("…not as the unneeded real tools", "unneeded REAL tools:" not in md)
+
+    comp = base + [row("all-100", 100, 9670, 100000, 8.1, lost),
+                   row("random-100", 100, 9750, 89000, 7.1)]
+    md2 = tool_scaling_report(comp)
+    check("a loss random-N recovers is read as the unneeded REAL tools",
+          "unneeded REAL tools:" in md2, md2)
+
+    check("search is compared with the registry", "`search-300` vs `all-20`" in md)
+    check("…on total tokens, not only per-call schema", "Total tokens per episode" in md)
+    check("worse AND costlier is called dominated", "Dominated at this registry size" in md,
+          md)
+    print("\n" + "\n".join(l for l in md.splitlines() if l.startswith("- ")))
+
+
+def test_scaling_report_on_itools2():
+    """Your I-tools2 numbers. The old reading called a 5-episode gap
+    'SELECTION difficulty, not token cost'."""
+    print("\n=== I-tools2: a 5-episode gap is inconclusive, and says so ===")
+    names = ["address_change_after_dispatch", "cancel_while_processing",
+             "cannot_cancel_shipped_order", "cod_cancel_no_refund_due",
+             "cod_cannot_refund_to_original_method", "customs_hold_escalate",
+             "duplicate_refund_escalate", "happy_path_return_refund",
+             "hazmat_refund_without_return", "high_value_photo_required_first",
+             "identity_verification_failure", "livestream_claim_overrides_window",
+             "out_of_window_dispute_escalate", "out_of_window_offer_voucher",
+             "peak_period_delay_not_compensable", "perishable_refund_without_return"]
+
+    def pt(**low):
+        return {t: low.get(t, 1.0) for t in names}
+
     rows = [
-        {"exposure": "oracle", "n_tools": 6, "mean_schema_tokens": 500,
-         "mean_tokens": 8000, "pass^1": 0.82},
-        {"exposure": "all-20", "n_tools": 20, "mean_schema_tokens": 1800,
-         "mean_tokens": 9200, "pass^1": 0.80},
-        {"exposure": "all-100", "n_tools": 100, "mean_schema_tokens": 9600,
-         "mean_tokens": 17000, "pass^1": 0.66},
-        # selection-dominated: guaranteeing reachability does NOT recover it
-        {"exposure": "random-100", "n_tools": 100, "mean_schema_tokens": 9700,
-         "mean_tokens": 17100, "pass^1": 0.68},
-        {"exposure": "search-100", "n_tools": 100, "mean_schema_tokens": 600,
-         "mean_tokens": 9800, "pass^1": 0.77},
+        {"exposure": "oracle", "cell": "full+oracle", "pass^1": 0.979, "mean_tokens": 25285,
+         "mean_steps": 7.16, "mean_schema_tokens": 452, "stop_reasons": {"done": 96},
+         "per_trap": pt(duplicate_refund_escalate=0.67)},
+        {"exposure": "all-20", "cell": "full+all-20", "pass^1": 0.958, "mean_tokens": 38041,
+         "mean_steps": 7.73, "mean_schema_tokens": 1762, "stop_reasons": {"done": 96},
+         "per_trap": pt(duplicate_refund_escalate=0.67, livestream_claim_overrides_window=0.83,
+                        out_of_window_offer_voucher=0.83)},
+        {"exposure": "all-100", "cell": "full+all-100", "pass^1": 0.927, "mean_tokens": 101708,
+         "mean_steps": 8.11, "mean_schema_tokens": 9670, "stop_reasons": {"done": 96},
+         "per_trap": pt(duplicate_refund_escalate=0.67, high_value_photo_required_first=0.83,
+                        identity_verification_failure=0.50,
+                        livestream_claim_overrides_window=0.83)},
+        {"exposure": "random-100", "cell": "full+random-100", "pass^1": 0.927,
+         "mean_tokens": 88974, "mean_steps": 7.14, "mean_schema_tokens": 9753,
+         "stop_reasons": {"done": 96},
+         "per_trap": pt(duplicate_refund_escalate=0.67, identity_verification_failure=0.67,
+                        livestream_claim_overrides_window=0.83,
+                        out_of_window_offer_voucher=0.67)},
     ]
     md = tool_scaling_report(rows)
-    check("selection vs token cost is adjudicated",
-          "SELECTION difficulty" in md, md)
-    check("the search arm's recovery is quantified", "search-100` recovers" in md)
-    check("schema token saving is reported", "fewer schema tokens" in md)
+    check("the 100-tool loss is INCONCLUSIVE", "INCONCLUSIVE at 100 tools" in md, md)
+    check("…and no mechanism is named", "SELECTION" not in md and "NUMBER of tools" not in md, md)
+    check("the cost, which IS certain, is stated", "(4.0x)" in md, md)
+    check("the trap both 100-tool arms lose on is flagged as a lead",
+          "`identity_verification_failure` (oracle 1.00, all 0.50, random 0.67)" in md, md)
 
-    rows2 = list(rows)
-    rows2[3] = {"exposure": "random-100", "n_tools": 100, "mean_schema_tokens": 9700,
-                "mean_tokens": 17100, "pass^1": 0.81}   # recovery -> token cost
-    check("the opposite verdict is reached when the data says so",
-          "TOKEN COST" in tool_scaling_report(rows2))
-    print("\n" + "\n".join(tool_scaling_report(rows).splitlines()[-4:]))
+
+def test_reduced_arms_are_discoverable():
+    """The oracle must be a ceiling for an agent that has to FIND OUT.
+
+    Regression: the oracle exposed the tools the reference solution calls. The
+    reference solution hard-codes order_item_id="OI3" and never calls
+    get_order_items, so the arm hid the only way a real agent learns the item
+    id -- four traps scored exactly 0.00 and the "ceiling" came in below all-20.
+    test_arms_are_comparable checked the oracle holds what the ORACLE calls,
+    which is the same wrong assumption, and passed throughout.
+    """
+    from pasarbench.harness.exposure import ARG_SOURCES
+    from pasarbench.sweep import ALL_SOLUTIONS, ALL_TASKS
+
+    print("\n=== reduced arms expose what a discovering agent needs ===")
+    orc, rnd = OracleTools(ALL_SOLUTIONS), RandomSubset(100, ALL_SOLUTIONS)
+    gaps = []
+    for t in ALL_TASKS:
+        sol = ALL_SOLUTIONS.get(t.task_id, [])
+        must = {ARG_SOURCES[k] for _, a in sol for k in a if k in ARG_SOURCES}
+        for arm in (orc, rnd):
+            missing = must - set(arm.tools_for(None, None, t))
+            if missing:
+                gaps.append(f"{arm.name}:{t.task_id}:{sorted(missing)}")
+    check(f"every hard-coded id is discoverable, both arms, all {len(ALL_TASKS)} tasks",
+          not gaps, "; ".join(gaps[:5]))
+    hp = next(t for t in ALL_TASKS if t.trap == "happy_path_return_refund")
+    check("oracle for a return exposes get_order_items",
+          "get_order_items" in orc.tools_for(None, None, hp))
+    cancel = next(t for t in ALL_TASKS if t.trap == "cancel_while_processing")
+    t_cancel = set(orc.tools_for(None, None, cancel))
+    check("a cancel task's oracle hides the write actions it does not take",
+          not {"issue_refund", "initiate_return", "issue_goodwill_voucher"} & t_cancel,
+          str(sorted(t_cancel)))
+
+
+def test_lookups_are_read_only():
+    """LOOKUPS is exposed in every reduced arm on the promise that none of them
+    changes data. Hold each one to it, against a live database."""
+    import copy
+
+    from pasarbench.harness.exposure import LOOKUPS
+
+    print("\n=== every lookup leaves the data unchanged ===")
+    t = BY_ID["T01"]
+    db = Database.fresh(t.db_patch)
+    args = {"get_user_profile": {"user_id": "U002"}, "get_order": {"order_id": "O1003"},
+            "list_user_orders": {"user_id": "U002"}, "get_order_items": {"order_id": "O1003"},
+            "get_shipment": {"order_id": "O1003"}, "get_product": {"product_id": "P011"},
+            "get_payment": {"order_id": "O1003"}, "search_policy": {"query": "return window"},
+            "get_livestream_claims": {"livestream_id": "LS1", "product_id": "P011"},
+            "check_return_eligibility": {"order_id": "O1003", "order_item_id": "OI3"},
+            "calculate_refund_amount": {"order_id": "O1003", "order_item_id": "OI3",
+                                        "include_shipping": False},
+            "verify_identity": {"user_id": "U002", "phone_last4": "4567"}}
+    check("every lookup has a test call", set(args) == LOOKUPS, str(LOOKUPS ^ set(args)))
+    for name in sorted(LOOKUPS):
+        before = copy.deepcopy(db.tables)
+        out = call(db, name, args[name])
+        # ok must be True: a call that errors on bad arguments leaves the
+        # tables unchanged trivially and would prove nothing.
+        check(f"{name}: succeeded, and no table changed",
+              out.get("ok") is True and db.tables == before, str(out)[:120])
+    check("every lookup is a real registry tool", LOOKUPS <= set(DEFAULT_TOOLS),
+          str(LOOKUPS - set(DEFAULT_TOOLS)))
+
+
+def test_search_is_confined_to_its_arm():
+    """Regression: the ranker searched the GLOBAL registry. After random-100
+    registered 300 distractors, "search-300" ranked over 320 tools, and its
+    difficulty depended on which arms ran before it in the same process."""
+    from pasarbench.harness.exposure import (ToolSearch, _rank_tools,
+                                             distractor_names, register_distractors)
+
+    print("\n=== search ranks only within its own arm ===")
+    ts = ToolSearch(280, seed=0)
+    register_distractors(300, 0)                      # what random-100 does
+    extra = set(distractor_names(300, 0)[280:])
+    leaked = set()
+    for q in ("refund", "escalate to a human", "support handoff history",
+              "lookup records report", "voucher campaign pool"):
+        leaked |= {n for n, _ in _rank_tools(q, 50, universe=ts.universe)} & extra
+    check("no distractor from outside the arm is ever ranked", not leaked, str(leaked))
+
+    db = Database.fresh(TASK.db_patch)
+    ts.tools_for(None, db, TASK)                      # the loop does this each step
+    out = call(db, "search_tools", {"query": "support handoff history", "limit": 50})
+    shown = {x["name"] for x in out.get("tools", [])}
+    check("what search_tools SHOWS the agent comes from the same pool",
+          shown and shown <= ts.universe and not shown & extra,
+          str(sorted(shown & extra)))
+
+
+def test_scaling_report_refuses_a_broken_ceiling():
+    """Your I-tools numbers, fed back in. The old report read them as
+    'no degradation at 100 tools' because every arm beat a broken oracle."""
+    print("\n=== the report refuses to read against a broken ceiling ===")
+    zero4 = {"cod_cannot_refund_to_original_method": 0.0, "happy_path_return_refund": 0.0,
+             "high_value_photo_required_first": 0.0, "out_of_window_offer_voucher": 0.0,
+             "customs_hold_escalate": 1.0}
+    ok4 = {"cod_cannot_refund_to_original_method": 1.0, "happy_path_return_refund": 1.0,
+           "high_value_photo_required_first": 0.67, "out_of_window_offer_voucher": 0.83,
+           "customs_hold_escalate": 1.0}
+    rows = [
+        {"exposure": "oracle", "cell": "full+oracle", "n_tools": 5, "mean_schema_tokens": 424,
+         "mean_tokens": 33128, "pass^1": 0.656, "stop_reasons": {"done": 96}, "per_trap": zero4},
+        {"exposure": "all-20", "cell": "full+all-20", "n_tools": 20, "mean_schema_tokens": 1762,
+         "mean_tokens": 38848, "pass^1": 0.938, "stop_reasons": {"done": 96}, "per_trap": ok4},
+        {"exposure": "all-100", "cell": "full+all-100", "n_tools": 100, "mean_schema_tokens": 9670,
+         "mean_tokens": 95731, "pass^1": 0.854, "stop_reasons": {"done": 83, "max_tokens": 13},
+         "per_trap": ok4},
+        {"exposure": "random-100", "cell": "full+random-100", "n_tools": 100,
+         "mean_schema_tokens": 9772, "mean_tokens": 97378, "pass^1": 0.698,
+         "stop_reasons": {"done": 66, "max_tokens": 30}, "per_trap": zero4},
+        {"exposure": "search-300", "cell": "full+search-300", "n_tools": 5,
+         "mean_schema_tokens": 715, "mean_tokens": 40330, "pass^1": 0.781,
+         "stop_reasons": {"done": 96},
+         "per_trap": dict(ok4, customs_hold_escalate=0.33, out_of_window_offer_voucher=0.33)},
+    ]
+    md = tool_scaling_report(rows)
+    check("a ceiling the registry beats is called out", "not a ceiling" in md, md)
+    check("…and no verdict is read against it", "no degradation" not in md, md)
+    check("the structural zeros are named", "`happy_path_return_refund`" in md)
+    check("budget stops are separated from tool choice",
+          "13 of 96 episodes stopped on the per-episode budget" in md, md)
+    check("search losses are listed, rounding-safe (0.83 - 0.33)",
+          "`out_of_window_offer_voucher`" in md.split("Loses")[-1], md)
+
+
+def test_audit_classifies_search_failures():
+    """scripts/audit_tool_arms.py: one synthetic failed episode per category.
+
+    The categories have different fixes -- core the tool, fix the ranker, fix
+    the prompt, or look elsewhere -- so misfiling one sends the fix to the
+    wrong place.
+    """
+    import importlib.util
+    from pathlib import Path
+
+    print("\n=== audit sorts search failures into the right bins ===")
+    spec = importlib.util.spec_from_file_location(
+        "audit", Path(__file__).resolve().parent.parent / "scripts" / "audit_tool_arms.py")
+    au = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(au)
+    arm = au.Arm("search-300")
+    core = [t for t in CORE_VISIBLE if t in TOOLS]
+
+    from pasarbench.harness.trace import TraceWriter
+    from pasarbench.sweep import ALL_SOLUTIONS, ALL_TASKS
+    from pasarbench.verifier import verify
+    import json
+    import tempfile
+
+    by_id = {t.task_id: t for t in ALL_TASKS}
+    tmp = tempfile.mkdtemp()
+    ex = build_exposure("search-300", ALL_SOLUTIONS)
+
+    def ep(task_id, lang, *calls):
+        """Drive the REAL loop with a scripted agent and audit the REAL trace
+        it writes -- the fixture cannot drift from what a run records."""
+        task = by_id[task_id]
+        w = TraceWriter(root=tmp, run_id=f"{task_id}-{len(calls)}/full+search-300")
+        db = Database.fresh(task.db_patch)
+        res = run_episode(task, db, ScriptedBackend(list(calls),
+                          closing="I've escalated this to our specialist team."),
+                          exposure=ex, trace=w)
+        v = verify(task, db)
+        w.close_episode(res.stop_reason.value, v.passed, v.failures, res.budget)
+        w.close()
+        f = next(Path(tmp, f"{task_id}-{len(calls)}", "full+search-300").glob("*.jsonl"))
+        return au.replay(arm, [json.loads(l) for l in f.read_text().splitlines() if l.strip()])
+
+    def legacy_guess(task_id):
+        """A pre-fix trace: the agent calls escalate_to_human by name without
+        searching, and the old loop RAN it. The new loop cannot produce this,
+        so it is built by hand, recording the core at every step as the old
+        loop did."""
+        step = {"type": "step", "n_tools": len(core), "schema_tokens": schema_tokens(core)}
+        return au.replay(arm, [
+            {"type": "header", "task_id": task_id, "language": "en"},
+            {**step, "tool_calls": [{"name": "escalate_to_human", "arguments": {}}],
+             "tool_results": [{"name": "escalate_to_human", "ok": True}]},
+            {**step, "tool_calls": [], "tool_results": [], "model_content": "Done."},
+            {"type": "footer", "passed": False, "failures": ["x"]}])
+
+    s = lambda q: ("search_tools", {"query": q})                   # noqa: E731
+    esc = next(a for n, a in ALL_SOLUTIONS["T06"] if n == "escalate_to_human")
+    cases = [
+        ("never searched", "never searched for it",
+         ep("T12", "en", s("shipment tracking"), ("get_shipment", {"order_id": "O1006"}))),
+        ("non-English query", "searched in another language (ranker is English-only)",
+         ep("DRE-VN.vi", "vi", s("chuyển cho nhân viên hỗ trợ"))),
+        ("shown, unused", "was shown it, did not use it",
+         ep("T05", "en", s("goodwill voucher"))),
+        ("ranker miss", "searched for it, ranker missed it",
+         ep("T13", "en", s("talk to a supervisor"))),
+        ("shown but buried", "was shown it, did not use it",
+         ep("T13", "en", s("hand off to a specialist"))),
+        ("used it", "used it, failed elsewhere",
+         ep("T06", "en", s("escalate to a human agent"), ("escalate_to_human", esc))),
+        ("guessed name (pre-fix trace)", "used it, failed elsewhere (guessed name)",
+         legacy_guess("T12")),
+    ]
+    check("every real trace is reproduced at every step",
+          all(not c[2].get("unreconstructable") for c in cases),
+          str([(c[0], c[2].get("verified"), c[2].get("steps")) for c in cases
+               if c[2].get("unreconstructable")]))
+    check("…and identified as written by the current definition",
+          all(c[2].get("how") in ("current", "either") for c in cases[:-1]),
+          str([(c[0], c[2].get("how")) for c in cases[:-1]]))
+    check("the closing claim is captured, to catch 'escalated' said but not done",
+          "escalated" in cases[0][2].get("said", ""), cases[0][2].get("said"))
+    for label, want, e in cases:
+        tool = ("issue_goodwill_voucher" if e["task"].trap == "out_of_window_offer_voucher"
+                else "escalate_to_human")
+        got = au.classify(e, tool)
+        check(f"{label}: {want}", got == want, got)
+    check("…and the rank it was buried at is recorded (6th, behind 5 distractors)",
+          next(c for c in cases if c[0] == "shown but buried")[2]["shown"]
+          .get("escalate_to_human") == 6,
+          str(next(c for c in cases if c[0] == "shown but buried")[2]["shown"]))
+    check("the guessed call is counted as a visibility leak",
+          cases[-1][2]["hidden_calls"] == ["escalate_to_human"], str(cases[-1][2]["hidden_calls"]))
+    # A guess the enforced loop REFUSES, then the agent searches and recovers.
+    cre = {"order_id": "O1003", "order_item_id": "OI3"}
+    rec = ep("T01", "en", ("check_return_eligibility", cre),
+             s("check return eligibility"), ("check_return_eligibility", cre))
+    check("a refused guess is recorded as refused, not as having run",
+          rec["rejected"] == ["check_return_eligibility"] and rec["through"] == [],
+          f"rejected={rec['rejected']} through={rec['through']}")
+    check("…and as recovered once search found it and it was used",
+          rec["recovered"] == ["check_return_eligibility"], str(rec["recovered"]))
+    check("a pre-fix guess that RAN is recorded as having run",
+          cases[-1][2]["through"] == ["escalate_to_human"], str(cases[-1][2]["through"]))
+
+    # Said it, didn't do it.
+    def said(task_id, *texts, calls=()):
+        t = by_id[task_id]
+        return au.false_claims({"task": t, "texts": list(texts), "calls": list(calls)})
+    claim = "I've escalated your case with the customs_hold category, as required."
+    check("a claimed escalation with no escalation is flagged",
+          [c[0] for c in said("T12", claim)] == ["escalate_to_human"], str(said("T12", claim)))
+    check("…not when the escalation really happened",
+          said("T12", claim, calls=[("escalate_to_human", True)]) == [])
+    check("…and never on a negation",
+          said("T12", "I have not escalated this yet, and I can't escalate without an id.") == [])
+    check("a promised voucher that was never issued is flagged",
+          [c[0] for c in said("T05", "Thanks. I'll issue the goodwill voucher now.")]
+          == ["issue_goodwill_voucher"])
+    check("…but 'I can't issue a voucher' is not",
+          said("T05", "I'm afraid I can't issue a voucher for this order.") == [])
+
+    check("a step-1 cost matching no definition is refused, not guessed",
+          au.replay(au.Arm("oracle"), [{"type": "header", "task_id": "T12"},
+                                       {"type": "step", "n_tools": 99, "schema_tokens": 1,
+                                        "tool_calls": [], "tool_results": []}]
+                    ).get("unreconstructable") is True)
 
 
 def main() -> int:
@@ -253,6 +594,12 @@ def main() -> int:
     test_loop_records_exposure()
     test_diagnosis()
     test_scaling_report()
+    test_scaling_report_on_itools2()
+    test_reduced_arms_are_discoverable()
+    test_scaling_report_refuses_a_broken_ceiling()
+    test_audit_classifies_search_failures()
+    test_lookups_are_read_only()
+    test_search_is_confined_to_its_arm()
     print(f"\n{len(PASS)} passed, {len(FAIL)} failed")
     for f in FAIL:
         print(f"  FAILED: {f}")

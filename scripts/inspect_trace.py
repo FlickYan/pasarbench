@@ -32,7 +32,10 @@ def load(path: str) -> dict:
             "id": Path(path).stem,
             # filenames carry a seed suffix (T01__r2), so task lookups must use
             # the header rather than the stem
-            "task_id": head.get("task_id", Path(path).stem.split("__")[0])}
+            "task_id": head.get("task_id", Path(path).stem.split("__")[0]),
+            "language": head.get("language", "?"),
+            "trap": head.get("trap", "?"),
+            "passed": bool(foot.get("passed"))}
 
 
 def config(eps: list[dict]) -> None:
@@ -208,6 +211,26 @@ def leaks(eps: list[dict]) -> None:
         return
     a = audit(reports)
     on_request = sum(len(r.revealed_on_request) for r in reports)
+
+    # BY LANGUAGE, always. The overall rate is useless here: leaks concentrate
+    # in specific languages, and language is exactly the axis the suite is
+    # trying to measure. An aggregate hides the bias where it matters.
+    from collections import defaultdict
+    per = defaultdict(lambda: [0, 0])
+    for e in eps:
+        r = next((x for x in reports if x.task_id == e["task_id"]), None)
+        if r is None:
+            continue
+        lang = e.get("language", "?")
+        per[lang][1] += 1
+        if r.leaked:
+            per[lang][0] += 1
+    print("  leak rate BY LANGUAGE (this is the number that matters):")
+    for lang, (bad, tot) in sorted(per.items(), key=lambda kv: -kv[1][0] / max(kv[1][1], 1)):
+        rate = bad / tot if tot else 0
+        flag = "  <- contaminated" if rate > 0.15 else ("  <- clean" if rate == 0 else "")
+        print(f"    {lang:7s} {rate:6.1%}  ({bad}/{tot} episodes){flag}")
+    print()
     print(f"  episodes {a['transcripts']}   leak rate {a['leak_rate']:.1%}   "
           f"clean {a['clean_rate']:.1%}")
     print(f"  facts revealed ON REQUEST (correct behaviour): {on_request}")

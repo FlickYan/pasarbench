@@ -317,52 +317,272 @@ def report(episodes: list[dict[str, Any]],
 
 # --------------------------------------------------------------------------
 
-def tool_scaling_report(rows: Iterable[dict[str, Any]]) -> str:
-    """Rows: {exposure, pass^1, mean_tokens, mean_schema_tokens, n_tools}.
+def _arm_episodes(row: dict[str, Any], run_dir: str | Path | None
+                  ) -> list[dict[str, Any]]:
+    """Episodes for one arm, located by CELL.
 
-    The reading is in the CONTRASTS, not the trend:
-      oracle vs all-20      cost of the real registry, no distractors
-      all-N  vs random-N    same token cost, guaranteed reachability
-                            -> tracks all-N   => dilution/token cost
-                            -> tracks oracle  => selection difficulty
-      search-N vs all-N     does retrieval recover the loss, and at what
-                            latency cost from the extra round trip
+    Summaries written before the sweep fix record trace_dir as run/strategy,
+    which with --exposure is the same non-existent directory for every arm.
+    So the cell name decides, and a trace_dir that disagrees with it is ignored.
     """
+    cell = row.get("cell") or row.get("strategy", "")
+    cands = []
+    if run_dir:
+        cands.append(Path(run_dir) / cell)
+    td = row.get("trace_dir")
+    if td and Path(td).name == cell:
+        cands.append(Path(td))
+    for c in cands:
+        if c.is_dir():
+            return load_episodes(c)
+    return []
+
+
+def _sign_p(worse: int, better: int) -> float:
+    """Exact two-sided sign test on the tasks that differ."""
+    from math import comb
+    n = worse + better
+    if n == 0:
+        return 1.0
+    k = min(worse, better)
+    return min(1.0, 2 * sum(comb(n, i) for i in range(k + 1)) / 2 ** n)
+
+
+def paired_arm_gap(a: dict[str, Any], b: dict[str, Any],
+                   run_dir: str | Path | None = None) -> dict[str, Any] | None:
+    """Arm B against arm A on the SAME tasks: mean per-task difference, and an
+    exact sign test over the tasks where the two arms differ.
+
+    The unit is the task. Each task runs k seeds in every arm, and seeds of one
+    task are not independent draws of the suite -- treating 96 episodes as 96
+    samples overstates precision roughly k-fold. A bootstrap is also wrong
+    here: when a handful of tasks all differ in one direction, a percentile
+    interval can exclude zero while the sign test on those same tasks is
+    nowhere near significance. Falls back to per-trap rates without traces,
+    and says so.
+    """
+    ea, eb = _arm_episodes(a, run_dir), _arm_episodes(b, run_dir)
+    if ea and eb:
+        unit = "task"
+        ra, rb = defaultdict(list), defaultdict(list)
+        for e in ea:
+            ra[e["task_id"]].append(e["passed"])
+        for e in eb:
+            rb[e["task_id"]].append(e["passed"])
+        ra = {k: sum(v) / len(v) for k, v in ra.items()}
+        rb = {k: sum(v) / len(v) for k, v in rb.items()}
+    else:
+        unit = "trap"
+        ra, rb = a.get("per_trap") or {}, b.get("per_trap") or {}
+    keys = sorted(set(ra) & set(rb))
+    if len(keys) < 5:
+        return None
+    diffs = [rb[k] - ra[k] for k in keys]
+    worse = sum(1 for d in diffs if d < -1e-9)
+    better = sum(1 for d in diffs if d > 1e-9)
+    p = _sign_p(worse, better)
+    return {"unit": unit, "n": len(keys), "diff": sum(diffs) / len(diffs),
+            "worse": worse, "better": better, "p": p, "resolved": p < 0.05}
+
+
+def _gap_text(g: dict[str, Any] | None) -> str:
+    if not g:
+        return "not testable (too few shared tasks)"
+    return (f"{g['diff']:+.3f}; {g['worse']} {g['unit']}s worse, {g['better']} "
+            f"better, sign test p={g['p']:.3f} over {g['n']} {g['unit']}s")
+
+
+BUDGET_STOPS = ("max_tokens", "max_steps", "max_tool_calls", "max_wall", "max_turns")
+
+
+def tool_scaling_report(rows: Iterable[dict[str, Any]],
+                        run_dir: str | Path | None = None) -> str:
+    """Rows: {exposure, cell, pass^1, mean_tokens, mean_schema_tokens, n_tools,
+    stop_reasons, per_trap}. `run_dir` lets the report open each arm's traces.
+
+    The reading is in the CONTRASTS, not the trend, and every contrast is a
+    paired sign test over tasks before it is read at all:
+      oracle vs all-20      cost of the unneeded real tools, no distractors
+      random-N vs all-N     same count and schema cost, different COMPOSITION
+                            -> random tracks all-N  => the NUMBER of tools
+                               (count, length, dilution -- not separable here)
+                            -> random tracks oracle => the unneeded REAL tools
+      search-N vs all-20    accuracy AND total tokens, not per-call schema
+
+    Two things are checked BEFORE any contrast is read, because each silently
+    produced a wrong reading once:
+      1. The oracle must actually be a ceiling. If the real registry beats it,
+         the arm hides something a real agent needs, and contrasts against it
+         are meaningless -- the earlier version printed "no degradation"
+         because every arm beat a broken oracle.
+      2. Budget stops are cost, not choice. At 100 tools every call carries
+         ~10k schema tokens and episodes run into the per-episode token budget;
+         those count as failures by design, but they must not be read as the
+         agent picking the wrong tool.
+    """
+    from .harness.types import Budget
+
     rows = list(rows)
+    eps = {r["exposure"]: _arm_episodes(r, run_dir) for r in rows}
     out = ["## Tool scaling\n",
-           "| exposure | tools | schema tokens | total tokens | pass^1 |",
-           "|---|---|---|---|---|"]
+           "| exposure | tools | schema tokens | total tokens | pass^1 | "
+           "budget stops | pass^1, finished only |",
+           "|---|---|---|---|---|---|---|"]
+    finished: dict[str, tuple[int, int] | None] = {}
     for r in rows:
+        stops = r.get("stop_reasons") or {}
+        n = sum(stops.values())
+        hit = sum(v for k, v in stops.items() if k in BUDGET_STOPS)
+        e = eps.get(r["exposure"]) or []
+        done = [x for x in e if x["stop_reason"] not in BUDGET_STOPS]
+        finished[r["exposure"]] = ((sum(x["passed"] for x in done), len(done))
+                                   if done else None)
+        fin = (f"{finished[r['exposure']][0] / finished[r['exposure']][1]:.3f} "
+               f"({finished[r['exposure']][1]})" if finished[r["exposure"]] else "-")
         out.append(f"| `{r['exposure']}` | {r.get('n_tools', '-')} | "
                    f"{r.get('mean_schema_tokens', 0):,.0f} | "
-                   f"{r.get('mean_tokens', 0):,.0f} | {r.get('pass^1', 0):.3f} |")
+                   f"{r.get('mean_tokens', 0):,.0f} | {r.get('pass^1', 0):.3f} | "
+                   f"{f'{hit}/{n}' if n else '-'} | {fin} |")
 
     idx = {r["exposure"]: r for r in rows}
     out.append("\n### Reading\n")
-    for n in (50, 100, 300):
-        a, rnd, orc = idx.get(f"all-{n}"), idx.get(f"random-{n}"), idx.get("oracle")
-        if not (a and rnd and orc):
-            continue
-        d_all = orc["pass^1"] - a["pass^1"]
-        d_rnd = orc["pass^1"] - rnd["pass^1"]
-        if d_all <= 0.01:
-            verdict = f"no degradation at {n} tools"
-        elif d_rnd >= 0.7 * d_all:
-            verdict = (f"at {n} tools the loss survives when the needed tools are "
-                       f"guaranteed present -> SELECTION difficulty, not token cost")
-        elif d_rnd <= 0.3 * d_all:
-            verdict = (f"at {n} tools the loss disappears once reachability is "
-                       f"guaranteed -> TOKEN COST and dilution, not selection")
-        else:
-            verdict = f"at {n} tools both effects contribute roughly equally"
-        out.append(f"- {verdict} (all {d_all:+.3f}, random {d_rnd:+.3f} vs oracle)")
 
-    for n in (100, 300):
-        a, se = idx.get(f"all-{n}"), idx.get(f"search-{n}")
-        if a and se:
-            out.append(f"- `search-{n}` recovers {se['pass^1'] - a['pass^1']:+.3f} "
-                       f"over `all-{n}` and injects "
-                       f"{a.get('mean_schema_tokens', 0) - se.get('mean_schema_tokens', 0):,.0f} "
-                       f"fewer schema tokens per call -- weigh that against the "
-                       f"extra round trip in the latency numbers")
+    # 1. Is the ceiling a ceiling?
+    orc, a20 = idx.get("oracle"), idx.get("all-20")
+    ceiling_ok = True
+    if orc and a20 and orc["pass^1"] < a20["pass^1"] - 0.05:
+        ceiling_ok = False
+        zeros = sorted(t for t, v in (orc.get("per_trap") or {}).items()
+                       if v == 0 and (a20.get("per_trap") or {}).get(t, 0) >= 0.5)
+        out.append(f"- **The oracle arm is not a ceiling.** It scores "
+                   f"{orc['pass^1']:.3f}, below `all-20` at {a20['pass^1']:.3f}. "
+                   f"An arm the full registry beats is hiding something a real "
+                   f"agent needs, so every contrast against it — including the "
+                   f"random-N control, which shares its guarantee — is withheld.")
+        if zeros:
+            out.append(f"  Traps at exactly 0.00 under oracle that `all-20` "
+                       f"passes: {', '.join('`' + z + '`' for z in zeros)}. Exact "
+                       f"zeros across seeds are structural: look for a lookup "
+                       f"tool the arm does not expose.")
+
+    # 2. Budget stops are cost, not choice.
+    for r in rows:
+        cap = r.get("token_budget") or Budget().max_tokens
+        stops = r.get("stop_reasons") or {}
+        hit = sum(v for k, v in stops.items() if k in BUDGET_STOPS)
+        if not hit:
+            continue
+        n = sum(stops.values())
+        line = (f"- `{r['exposure']}`: {hit} of {n} episodes stopped on the "
+                f"per-episode budget (token cap {cap:,}). These fail by "
+                f"design and measure COST — {r.get('mean_schema_tokens', 0):,.0f} "
+                f"schema tokens ride on every call — not tool choice.")
+        f, f20 = finished.get(r["exposure"]), finished.get("all-20")
+        if f and f20 and r["exposure"] != "all-20":
+            line += (f" On episodes that finished: {f[0] / f[1]:.3f} ({f[1]}) "
+                     f"vs `all-20` {f20[0] / f20[1]:.3f} ({f20[1]}) — an UPPER "
+                     f"bound, since the episodes cut off are the long, harder "
+                     f"ones. For a clean read of tool choice, re-run with a "
+                     f"`--token-budget` that does not bind.")
+        elif not f:
+            line += " Finished-only pass rate needs the traces (pass run_dir)."
+        out.append(line)
+
+    # 3. Contrasts at N tools. Nothing is attributed until the loss itself is
+    #    shown to be more than noise.
+    #
+    #    all-N and random-N have the same number of tools and the same schema
+    #    cost; they differ in COMPOSITION. all-N holds every unneeded real
+    #    write tool (plausible wrong actions); random-N mostly swaps those for
+    #    distractors. So:
+    #      random-N tracks all-N   -> the loss comes with the NUMBER of tools
+    #                                 (count, context length, dilution -- these
+    #                                 move together here and are not separable)
+    #      random-N tracks oracle  -> the loss comes from the unneeded REAL
+    #                                 tools: choosing among plausible actions
+    #    An earlier version mapped these the other way round (WHAT_FAILED #21).
+    if ceiling_ok and orc:
+        for n in (50, 100, 300):
+            a, rnd = idx.get(f"all-{n}"), idx.get(f"random-{n}")
+            if not (a and rnd):
+                continue
+            g_all = paired_arm_gap(orc, a, run_dir)
+            g_rnd = paired_arm_gap(orc, rnd, run_dir)
+            g_mix = paired_arm_gap(rnd, a, run_dir)
+            ratio = (a.get("mean_tokens", 0) / orc["mean_tokens"]
+                     if orc.get("mean_tokens") else None)
+            vs20 = (f" and {a20['mean_tokens']:,.0f} for all-20 "
+                    f"({a.get('mean_tokens', 0) / a20['mean_tokens']:.1f}x — what "
+                    f"the distractors alone cost)"
+                    if a20 and a20.get("mean_tokens") else "")
+            cost = (f" Cost is not in doubt: {a.get('mean_tokens', 0):,.0f} tokens "
+                    f"per episode against {orc['mean_tokens']:,.0f} for oracle "
+                    f"({ratio:.1f}x){vs20}.") if ratio else ""
+            if not (g_all and g_all["resolved"] and g_all["diff"] < 0):
+                out.append(f"- **INCONCLUSIVE at {n} tools** — no accuracy loss "
+                           f"distinguishable from noise. `all-{n}` vs oracle: "
+                           f"{_gap_text(g_all)}. `random-{n}` vs oracle: "
+                           f"{_gap_text(g_rnd)}.{cost}")
+            elif g_mix and g_mix["resolved"] and g_mix["diff"] < 0:
+                out.append(f"- at {n} tools the loss comes from the unneeded REAL "
+                           f"tools: `random-{n}` recovers it at the same count "
+                           f"({_gap_text(g_mix)}).{cost}")
+            elif g_rnd and g_rnd["resolved"] and g_rnd["diff"] < 0:
+                out.append(f"- at {n} tools the loss comes with the NUMBER of "
+                           f"tools: it persists in `random-{n}`, which swaps most "
+                           f"unneeded real tools for distractors "
+                           f"({_gap_text(g_rnd)}).{cost}")
+            else:
+                out.append(f"- at {n} tools the loss is real ({_gap_text(g_all)}) "
+                           f"but its source is unresolved at this sample size."
+                           f"{cost}")
+
+            # Per trap before aggregate: a loss shared by BOTH N-tool arms on
+            # the same trap is a lead worth reading even when the aggregate is
+            # inconclusive -- and only a lead, at six episodes a trap.
+            op = orc.get("per_trap") or {}
+            # 0.3, not 0.33: rates are rounded to 2dp, and 1.00 - 0.67 is
+            # 0.3299... in float -- a 2-of-6 loss would silently not count.
+            conc = sorted(t for t, v in op.items()
+                          if v - (a.get("per_trap") or {}).get(t, v) >= 0.3
+                          and v - (rnd.get("per_trap") or {}).get(t, v) >= 0.3)
+            if conc:
+                out.append("  Both " + f"{n}-tool arms lose on: " + ", ".join(
+                    f"`{t}` (oracle {op[t]:.2f}, all {a['per_trap'][t]:.2f}, "
+                    f"random {rnd['per_trap'][t]:.2f})" for t in conc)
+                    + ". A lead to read in the traces, not a result.")
+
+    # 4. Retrieval, against the real registry: accuracy AND total cost.
+    for r in rows:
+        if not r["exposure"].startswith("search-"):
+            continue
+        base = idx.get(f"all-{r['exposure'].split('-')[1]}") or a20
+        if not base:
+            continue
+        g = paired_arm_gap(base, r, run_dir)
+        tok, btok = r.get("mean_tokens", 0), base.get("mean_tokens", 0)
+        line = (f"- `{r['exposure']}` vs `{base['exposure']}`: {_gap_text(g)}. "
+                f"Total tokens per episode {tok:,.0f} vs {btok:,.0f}"
+                + (f" ({(tok / btok - 1):+.0%})" if btok else "")
+                + f", steps {r.get('mean_steps', 0):.1f} vs "
+                  f"{base.get('mean_steps', 0):.1f}, schema tokens per call "
+                  f"{r.get('mean_schema_tokens', 0):,.0f} vs "
+                  f"{base.get('mean_schema_tokens', 0):,.0f}.")
+        # Per-call schema savings are not the cost: every extra search is a
+        # round trip that re-sends the whole conversation.
+        if g and g["resolved"] and g["diff"] < 0 and btok and tok > btok:
+            line += (" **Dominated at this registry size: less accurate AND more "
+                     "expensive in total** — the per-call schema saving is spent "
+                     "on the extra round trips.")
+        out.append(line)
+        lost = sorted((t, base["per_trap"].get(t, 0) - v)
+                      for t, v in (r.get("per_trap") or {}).items()
+                      # per_trap is rounded to 2dp: 0.83 - 0.33 is 0.4999... in float
+                      if base.get("per_trap") and base["per_trap"].get(t, 0) - v >= 0.5 - 1e-6)
+        if lost:
+            out.append(f"  Loses ≥0.5 on: {', '.join(f'`{t}`' for t, _ in lost)}. "
+                       f"Before naming a cause, read those traces: did the agent "
+                       f"search for the tool and the ranker miss it, or never "
+                       f"search at all? `python scripts/audit_tool_arms.py "
+                       f"traces/<run>` separates the two, from the traces alone.")
     return "\n".join(out)

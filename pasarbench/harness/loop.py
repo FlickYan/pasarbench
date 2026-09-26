@@ -163,6 +163,14 @@ def run_episode(
             if "__malformed__" in tc.arguments:
                 out = {"ok": False,
                        "error": "arguments were not valid JSON; re-emit them as a JSON object"}
+            elif tc.name not in names:
+                # A tool the arm did not show does not exist for the agent.
+                # Without this check every exposure arm leaked: the model saw
+                # only the visible schemas, but any registered tool ran if its
+                # name was guessed -- and `issue_refund` is easy to guess. The
+                # message says "unknown", not "hidden", so it leaks nothing.
+                out = {"ok": False, "error": f"unknown tool {tc.name!r}"}
+                trace.event("hidden_tool_call", tool=tc.name, step=tracker.steps)
             elif tracker.tool_calls >= budget.max_tool_calls:
                 # Still answer the call. An orphaned tool_call breaks the next request.
                 out = {"ok": False, "error": "tool call budget exhausted for this episode"}

@@ -1,6 +1,6 @@
 # What failed
 
-Thirteen real defects found while building this, in the order of how much
+Fifteen real defects found while building this, in the order of how much
 damage they would have done. Every one is reproducible from the git history.
 
 The pattern worth extracting: **almost none of the serious bugs were found by
@@ -230,7 +230,106 @@ correlate with the task's label. Mechanisable, and this repo did not have it.
 
 ---
 
-## 10. The kappa-paradox test did not contain a paradox
+## 10. I quantified an effect that did not replicate
+
+**What happened.** Comparing runs B and C, the `duplicate_refund_escalate` trap
+dropped 0.70 -> 0.41 after semantic order ids were replaced with hashes. The
+95% CI was [+0.120, +0.460] -- it excluded zero, so I reported it as a measured
+effect: *"a leaky identifier was worth 29 points."*
+
+**The replication.** Run D used the identical 186-task set with only the id
+change, and scored **0.55** on the same trap. Diff +0.150, CI [-0.029, +0.329].
+Crosses zero.
+
+C and D disagree by 14 points on the same trap running the same code. At ~55-65
+episodes per arm, a 15-point effect is unresolvable -- `required_n` says ~168
+episodes per arm -- and one CI happening to exclude zero is what small samples
+do sometimes.
+
+**Why this is the worst one on the list.** Every guard needed to prevent it was
+already in this repo and written by me. `serving_verdict` refuses to declare a
+win without non-inferiority. `required_n` exists to say "you cannot see this at
+your sample size." `README.md` states that 186 tasks cannot detect a 2-point
+regression. I bypassed all of it because a single number looked clean.
+
+**The correct claim.** The identifier leak was a real defect and removing it was
+right regardless. Its measured effect on pass rate: **not resolvable at n=930**
+(pass^1 +0.018, CI [-0.008, +0.044]). A confound does not need to move the
+number to be worth fixing.
+
+**Lesson.** Replication beats significance. One comparison at small n is a
+hypothesis, not a result -- especially when you are the one who wanted it to be
+true.
+
+---
+
+## 11. The simulator obeyed the rules only in some languages
+
+**What happened.** The persona prompt instructs the customer to reveal facts
+only when asked. Run D's leak audit: **132 leak events, and every single one in
+Indonesian, Malay or Thai. Zero in English, Singlish or Vietnamese.**
+
+**Why it is not a script or tokenisation story.** Indonesian and Malay are
+Latin-script. Thai is not. Vietnamese is Latin-with-diacritics and is perfectly
+clean. The split does not follow script, so it is instruction-following under
+language shift -- and specifically a NEGATIVE constraint ("do not say X until
+asked"), which is the hardest kind to hold.
+
+**Why it mattered more than a QA nuisance.** It biased exactly the measurement
+the suite exists for. Leaked facts make a task easier, so Indonesian, Malay and
+Thai were being scored under a more helpful customer than English was. The
+language null holds cleanly only for the languages with zero leaks.
+
+**Attempted fix, and it BACKFIRED.** Restating the hold-back rule in the target
+language raised the leak rate from 11.3% to 22.4%. Chinese, added in the same
+round, leaked heavily from the start. A plausible mechanism: a negative
+instruction that names the forbidden fact ("do not say your order number")
+raises that fact's salience -- the don't-think-of-an-elephant problem, and
+exactly the wrong tool for the job.
+
+**The actual fix: stop asking.** `--gate-facts` withholds each fact from the
+simulator's own prompt until the agent has asked for it. You cannot leak what
+you were never told. A fallback releases everything after six turns so a missed
+ask-pattern cannot stall an episode.
+
+**And the structural fix broke the experiment.** Gating dropped the leak rate
+(22.8% -> 15.3%) and destroyed the thing it was protecting. Indonesian fell to
+0.463 and Chinese to 0.585/0.650 while English held at 0.910, and EVERY trap
+dropped, including ones that had been at 1.00.
+
+The cause: the gate decides "has the agent asked?" using `ASK_PATTERNS`, which
+are English regexes plus a few translations and contain **nothing for Chinese**.
+The agent asks `请提供您的订单号`, no pattern matches, the fact is never
+released, the customer stonewalls, and the episode fails. That is a
+language-dependent handicap far LARGER than the leak it removed -- and it looks
+exactly like a model capability result.
+
+**Three attempts, three failures, escalating in damage:**
+
+| attempt | leak rate | what it cost |
+|---|---|---|
+| tighten the English prompt | 18.8% -> 14.6% | nothing, barely helped |
+| restate the rule in-language | 14.6% -> 22.4% | made it worse |
+| withhold facts until asked | 22.8% -> 15.3% | **broke the comparison entirely** |
+
+**Fix.** `--gate-facts` now raises on any language without ask-patterns rather
+than silently handicapping it. Run G is discarded.
+
+**Lesson, and it is the one worth telling.** I spent three runs and roughly ten
+dollars trying to eliminate a bias I had already measured and bounded. The
+correct move after attempt one was to report the bound: *Vietnamese and Singlish
+give a clean null; Indonesian, Malay, Thai and Chinese were measured under a
+more helpful customer, so their nulls are lower bounds.* A measured, stated
+limitation is a result. A fix that introduces a bigger confound is not.
+
+**The second-order finding.** The capability degradation this project set out to
+find in the *agent* showed up in the *simulator* instead -- because the
+simulator's instruction is harder. Answering a question in Thai is easy;
+declining to volunteer something in Thai is not.
+
+---
+
+## 12. The kappa-paradox test did not contain a paradox
 
 **What happened.** The test asserted that 96%-agreement data would produce a low
 kappa. It produced **kappa = 0.74**. The test failed and the implementation was
@@ -247,7 +346,7 @@ more in an interview than the statistic.
 
 ---
 
-## 11. A test asserted on state the code had already mutated
+## 13. A test asserted on state the code had already mutated
 
 **What happened.** The interrupt/resume test snapshotted an episode, restored
 it, resumed — then asserted `state2.step == 2`. But `run_episode` mutates
@@ -257,7 +356,7 @@ it, resumed — then asserted `state2.step == 2`. But `run_episode` mutates
 
 ---
 
-## 12. Two locale variants were byte-identical
+## 14. Two locale variants were byte-identical
 
 **What happened.** The Singlish and English openings for
 `identity_verification_failure` were the same string. The "twins differ in the
@@ -269,13 +368,253 @@ all is a silent duplicate inflating the English sample.
 
 ---
 
-## 13. The distractor pool ran out before 300
+## 15. The distractor pool ran out before 300
 
 **What happened.** `all-300` produced a 258-tool registry. Domain × field × verb
 combinatorics topped out at 235 distractors.
 
 **Fix.** More domains. Trivial — but the arm was mislabelled until it was
 caught, and a mislabelled arm is a wrong result, not a cosmetic one.
+
+---
+
+## 16. The label format could not tell one rater from two
+
+**What happened.** Round 2 of labelling finished 49 minutes after round 1. I
+read the timestamps as a same-sitting test-retest — recall contaminating the
+second pass — and shipped a caveat into `make_report.py` saying the ceiling was
+inflated and the judge's fraction of it therefore *conservative*. Round 2 had
+been labelled by a different person. `--labeller` defaulted to `"me"`, so the
+file recorded one rater twice, and the caveat asserted the wrong statistic with
+the wrong direction of bias.
+
+**Why it matters.** Test-retest (one rater, twice) and inter-annotator (two
+raters, once) are the same arithmetic on files with the same shape, and their
+biases on `fraction_of_ceiling` point in *opposite* directions. Same-sitting
+retest inflates the denominator and understates the judge; a second rater
+agrees less than you do with yourself, which shrinks the denominator and
+*flatters* the judge. Getting the kind wrong does not add noise to the
+headline number — it inverts how the headline can be read.
+
+**Fix.** The report now reads the `labeller` field, names which kind of
+agreement it is computing, and refuses to interpret when the rater is not
+recorded. `label set-rater` stamps a round after the fact without touching any
+label. For the inter-annotator case it prints each rater's satisfied rate and a
+per-language breakdown of the second rater's, because a second rater who
+cannot read Thai presses enter on Thai transcripts — and enter means
+SATISFIED. The aggregate rate averages that away; the per-language spread does
+not.
+
+**Lesson.** Metadata that decides how a number may be read belongs in the
+record, not in the memory of whoever ran the command. A default of `"me"` was
+a guess about the user dressed up as a value.
+
+---
+
+## 17. The naive baseline vanished from the report without an error
+
+**What happened.** 200 naive-judge verdicts were written to disk and the
+report showed nothing about them — no number, and no `NOT MEASURED` either.
+The report compared the naive judge's single bit, `overall_acceptable`,
+against the human's nine-criterion labels. The key exists on one side only, so
+`per_criterion` found no pairs, returned an empty dict, and the `if` guarding
+the output line was false. `run_judges.py` even wrote the matching human bit to
+`human_overall.jsonl` for exactly this comparison. Nothing read it.
+
+Two smaller defects surfaced in the same pass. The unmeasured count was
+`body.count("**NOT MEASURED**")`, which included the legend line explaining
+the marker, so it could never reach zero. And the diagnosis printed when the
+decomposed judge lost to the naive one blamed unparsed criteria defaulting to
+SATISFIED — a cause that can only make a judge *more lenient* — for a loss
+that, on the fixture that exposed it, was entirely false alarms.
+
+**Why it matters.** The report's design rule is that every gap prints
+`NOT MEASURED` with the command that fills it. This gap printed nothing,
+because the marker lives on the path for *no data*, and the data existed.
+Rule 4 — report the naive baseline — was violated by the tool that states it.
+
+**Fix.** One definition of the one-bit target, `rubric.overall_acceptable`,
+used for the human, the naive judge and the collapsed decomposed judge, so the
+two kappas answer the same question on the same transcripts. The comparison is
+a paired bootstrap of the difference, not two CIs side by side. A naive
+response with no valid 1–5 score is excluded rather than scored as a fail. If
+the data exists but nothing aligns, the section now says so under the marker.
+The count is per section and names them. The loss diagnosis reads the
+direction of disagreement — harsh or lenient — off the confusion matrix, and
+the per-criterion table carries both columns so the harsh criteria can be
+found. A test builds the exact shapes that failed and asserts the baseline
+reaches the page.
+
+**Lesson.** "Print a marker when data is missing" only covers the branch where
+the code notices. Absence has to be asserted where the *output* is built, not
+inferred from where the input is loaded.
+
+---
+
+## 18. The ceiling arm was below the floor — defect #5, rebuilt
+
+**What happened.** In the tool-scaling run the `oracle` arm — only the tools
+the task needs, the designed *ceiling* — scored 0.656. `all-20`, the plain
+registry, scored 0.938. Four traps scored exactly 0.00 under oracle and were
+passed under all-20.
+
+The oracle exposed "the tools the reference solution calls". The reference
+solution passes `order_item_id="OI3"` because it already knows; it never calls
+`get_order_items`. A real agent can only learn `OI3` from `get_order_items`, so
+on every trap whose resolution needs an item — returns, eligibility checks, a
+voucher capped at 20% of *item* value — the arm was unsolvable. The prediction
+"zero exactly where the verifier needs an item id" matched 15 of 16 traps; the
+sixteenth is the voucher, where the policy needs the item's price. The
+`random-100` control guarantees the same set, and on the 32 sampled tasks it
+happened to omit `get_order_items` for both tasks of exactly those four traps:
+the same four zeros.
+
+This is #5 again. `get_order` carries a comment saying a reference solution
+proves a task is solvable by something that knows the answer, not by something
+that has to find out. That lesson was applied to the database payload and not
+to the one other place that derives "what an agent needs" from a solution.
+
+Found in the same pass: the report read the run as **"no degradation at 100
+tools"** — every arm beat the broken oracle, so every "drop" was negative. The
+summary pointed all five arms' `trace_dir` at one directory that does not
+exist. And at 100 tools, 13–30 episodes per arm hit the per-episode token
+budget, so pass^1 mixed cost with tool choice.
+
+**Fix.** `needed_tools` adds, for every argument a solution hard-codes that a
+real agent must discover, the tool that reveals it; oracle and random-N share
+it. A test walks all 215 tasks and fails if any hard-coded id is undiscoverable
+in either arm. The report now checks the ceiling *before* reading anything
+against it, names structural zeros, reports budget stops and a finished-only
+pass rate as their own columns, and compares retrieval against the real
+registry. `trace_dir` records the cell.
+
+**Second pass — the first fix was a list of cases.** It added the lookup that
+reveals each value a solution hard-codes. The audit of the same run then showed
+random-100 agents calling `get_livestream_claims` on tasks whose solution never
+does: the policy lets a livestream claim override the return window, so a
+careful agent rules that out before denying a return. The reference solution
+skips the check because it already knows there is no claim — #5 a third time,
+now for *exceptions to rule out* rather than values to learn. Under the
+enforced loop the patched oracle would have rejected that call.
+
+So the rule became structural: **an oracle may remove choices, never
+information.** Every read-only lookup is exposed; only the write actions the
+task does not take are hidden. A test calls each lookup against a live
+database and fails if one changes a table — the rule rests on that promise.
+
+**Lesson.** The design had an invariant — ceiling ≥ baseline — and nothing
+asserted it. An invariant that is not checked in code is not a property of the
+experiment; it is a hope about it. And a fix that enumerates the cases found so
+far is a fix for those cases; the next one arrives with the next run.
+
+---
+
+## 19. The arms controlled what the agent was told, not what it could do
+
+**What happened.** Every exposure arm sent the model only the visible tool
+schemas, but the loop *dispatched* any registered tool by name. An agent that
+guessed `issue_refund` — not a hard guess — got a working tool the arm was
+supposed to hide. Found while testing the audit script: under `search-300` the
+scripted agent never searched and made 56 successful calls to tools it was
+never shown.
+
+**Why it matters.** A reduced arm measures "can the agent find and pick the
+right tool". With the leak it also measured "can it guess a tool name", and
+the two are inseparable from the pass rate. Default-exposure runs — every
+language and context result — show all real tools, so nothing was hidden and
+they are unaffected. The tool-scaling arms were.
+
+**Fix.** A call to a tool not visible at that step returns `unknown tool` —
+not "hidden", which would leak that it exists — never touches the database,
+and is logged as a `hidden_tool_call` event. `scripts/audit_tool_arms.py`
+replays each arm's visibility from traces recorded *before* the fix, matching
+the recorded schema cost at step 1 to decide which arm definition produced
+them, and counts how many calls in a past run went through the gap.
+
+**Lesson.** An exposure experiment has to control the action space, not just
+the prompt.
+
+---
+
+## 20. One arm's distractors leaked into the next arm's search
+
+**What happened.** Distractor tools register into one global registry, and the
+search ranker ranked over all of it. The arms of a sweep run in one process, in
+order: by the time `search-300` ran, `random-100` had registered 300
+distractors, so "search-300" was searching 320 tools. Run alone, or first, it
+would have searched 300. An arm's difficulty depended on which arms happened to
+run before it.
+
+**Why it went unnoticed.** Distractor lists are prefix-stable, so the extra 20
+were a consistent superset and every run with the same arm order reproduced
+exactly. Reproducible is not the same as correct: the label said 300.
+
+**Fix.** Each search arm ranks within its own tools only — the 20 real ones
+plus its own distractors — and the `search_tools` result the agent reads comes
+from the same pool as the visibility check, so the agent cannot be shown a
+tool it then cannot call. A test registers extra distractors first and asserts
+none ever reaches the ranking. The audit replays both behaviours and reports
+which one reproduces a trace at every step.
+
+---
+
+## 21. The tool-scaling verdict pointed the wrong way, and fired on noise
+
+**What happened.** On the first valid tool-scaling run, oracle passed 94 of 96
+episodes and both 100-tool arms passed 89. The report printed "SELECTION
+difficulty, not token cost". Two things were wrong with that line.
+
+It named a mechanism from a five-episode gap. Paired by task, that difference
+is a handful of tasks worse and none better — a sign test nowhere near
+significance. The reading code had no noise check at all; it compared point
+estimates against 0.7× and 0.3× thresholds.
+
+And the mapping was inverted. `all-100` and `random-100` hold the same number
+of tools at the same schema cost; they differ only in composition — `all-100`
+keeps every unneeded real write tool, `random-100` swaps most of them for
+distractors. So a loss that `random-100` shares cannot come from the real
+tools it dropped; it comes with the *number*. The code called that case
+"selection", and the module docstring beside it said the opposite. The labels
+also overclaimed: at a fixed N these arms cannot separate token cost from
+count-driven difficulty, because both move together.
+
+**Why it survived.** Its test asserted the same inverted mapping. A test
+written from the same misunderstanding as the code proves the two agree, not
+that either is right. It was found by asking what an exact tie between the two
+100-tool arms would *mean*, when the first real run produced one.
+
+**Fix.** Every contrast is a paired sign test over tasks before it is read;
+the unit is the task, not the episode. An unresolved loss prints INCONCLUSIVE
+with the numbers, and the cost — which is certain — beside it. The composition
+verdict is re-derived and named for what these arms can distinguish. A trap
+both 100-tool arms lose on is printed as a lead to read, not a result. The
+search comparison reports total tokens and steps, not only schema tokens per
+call — per call, search looked 55% cheaper; per episode it cost 22% more.
+
+---
+
+## 22. The distractors' disclaimer made them match the words it disclaimed
+
+**What happened.** Every distractor's description ends "Not used for customer
+refunds, returns or cancellations" — written to make them unmistakably
+irrelevant. A keyword ranker cannot read "not". Each distractor gained a point
+on any query containing *refund*, *return* or *cancel*. For "escalate duplicate
+refund claim", five `*_catalog_duplicate_listing` distractors scored 4 (name
+match on *duplicate* plus the disclaimer's *refund*), `escalate_to_human`
+scored 3, and the six-result limit cut it. Three of the thirteen escalation
+failures in the clean search run were this, not the agent.
+
+**How it was found.** The audit classified those three as "searched for it,
+ranker missed it" — the only non-discovery failures on escalation — and
+replaying the query through the ranker with scores showed where the points
+came from.
+
+**Not fixed, deliberately.** The clean tool-scaling run used these
+distractors; changing their text would make any later search arm
+incomparable with it. The writeup reports the three as retrieval failures and
+names the cause. A future run should drop the disclaimer, or add an embedding
+ranker as its own arm — negation blindness is a property of keyword search
+worth measuring, not only a bug to remove.
 
 ---
 

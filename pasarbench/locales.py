@@ -300,6 +300,33 @@ PERSONAS: dict[str, str] = {
 }
 
 
+# The single most important simulator rule, restated in the target language.
+# English-only instructions were being followed in en/sg-en/vi and ignored in
+# id/ms/th -- and the split is NOT by script (id and ms are Latin, th is not,
+# vi is Latin-with-diacritics and clean), so it is instruction-following under
+# language shift rather than a tokenisation effect.
+HOLD_BACK_RULE: dict[str, str] = {
+    "id": ("PENTING: Jangan sebutkan nomor pesanan atau 4 digit terakhir nomor "
+           "telepon Anda kecuali agen menanyakannya secara langsung. Ungkapkan "
+           "paling banyak satu informasi per pesan."),
+    "ms": ("PENTING: Jangan sebut nombor pesanan atau 4 digit terakhir nombor "
+           "telefon anda melainkan ejen bertanya secara langsung. Dedahkan "
+           "paling banyak satu maklumat setiap mesej."),
+    "th": ("สำคัญ: อย่าบอกหมายเลขคำสั่งซื้อหรือเลขท้าย 4 ตัวของเบอร์โทรศัพท์ "
+           "เว้นแต่เจ้าหน้าที่จะถามโดยตรง เปิดเผยข้อมูลได้ไม่เกินหนึ่งอย่างต่อข้อความ"),
+    "vi": ("QUAN TRỌNG: Không nói mã đơn hàng hoặc 4 số cuối điện thoại trừ khi "
+           "nhân viên hỏi trực tiếp. Mỗi tin nhắn chỉ tiết lộ tối đa một thông tin."),
+    "zh-SG": ("重要：除非客服明确询问，否则不要说出订单号或电话末四位。"
+              "每条消息最多只透露一项信息。"),
+    "zh-MY": ("重要：除非客服明确询问，否则不要说出订单号或电话末四位。"
+              "每条消息最多只透露一项信息。"),
+}
+
+
+def hold_back_rule(language: str) -> str:
+    return HOLD_BACK_RULE.get(language, "")
+
+
 def opening_for(trap: str, language: str) -> str:
     return OPENINGS[trap].get(language, OPENINGS[trap]["en"])
 

@@ -159,6 +159,19 @@ def derive_verdict(labels: dict[str, bool]) -> str:
 VERDICTS = ("good", "acceptable", "poor", "unacceptable")
 
 
+def overall_acceptable(labels: dict[str, Any]) -> bool:
+    """The single bit a one-score judge produces, derived from full labels.
+
+    This is what puts the human, the naive judge and the decomposed judge on
+    one target. A naive judge emits only `overall_acceptable`; human labels
+    carry nine criteria and no such key. Compared directly, the keys never
+    overlap, nothing gets scored, and the baseline drops out of the report
+    without an error -- which is how it went missing the first time. One
+    definition, imported everywhere, so the three bits cannot drift apart.
+    """
+    return derive_verdict(labels) in ("good", "acceptable")
+
+
 def rubric_text(include_guidance: bool = True) -> str:
     lines = []
     for c in CRITERIA:

@@ -259,6 +259,31 @@ def status(args) -> None:
             print(f"    {c.key:28s} violated {viol:3d} ({rate:.1%}){warn}")
 
 
+def set_rater(args) -> None:
+    """Record who labelled a round, after the fact.
+
+    One rater labelling twice (test-retest) and two raters labelling once
+    (inter-annotator) produce identical files and opposite biases in the
+    ceiling, so make_report has to know which it is. `--labeller` defaults to
+    "me", which means a second person who ran the plain command is recorded as
+    you. This fixes that without touching any label.
+    """
+    p = _path(f"human_round{args.round}.jsonl")
+    if not p.exists():
+        raise SystemExit(f"no {p.name}")
+    rows = [json.loads(l) for l in p.read_text().splitlines() if l.strip()]
+    before = Counter(r.get("labeller", "?") for r in rows)
+    backup = p.with_name(p.stem + ".before_set_rater.jsonl")
+    if not backup.exists():                 # never overwrite the first backup
+        backup.write_text(p.read_text())
+    for r in rows:
+        r["labeller"] = args.labeller
+    p.write_text("".join(json.dumps(r, ensure_ascii=False) + "\n" for r in rows))
+    print(f"round {args.round}: {len(rows)} rows  {dict(before)} -> "
+          f"{{'{args.labeller}': {len(rows)}}}")
+    print(f"backup: {backup}")
+
+
 def sample_cmd(args) -> None:
     items = load_transcripts(args.traces)
     if not items:
@@ -294,6 +319,12 @@ def main() -> None:
 
     t = sub.add_parser("status")
     t.set_defaults(fn=status)
+
+    r = sub.add_parser("set-rater",
+                       help="record who labelled a round (e.g. a second person)")
+    r.add_argument("--round", type=int, required=True)
+    r.add_argument("--labeller", required=True)
+    r.set_defaults(fn=set_rater)
 
     args = ap.parse_args()
     args.fn(args)

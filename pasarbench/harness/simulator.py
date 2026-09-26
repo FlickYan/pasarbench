@@ -88,29 +88,83 @@ class LLMUser:
     """
 
     def __init__(self, backend, persona: str, facts: dict[str, str],
-                 language: str = "en"):
+                 language: str = "en", gate_facts: bool = False,
+                 release_after_turn: int = 6):
         self.backend = backend
         self.persona = persona
         self.facts = facts
         self.language = language
-        self.name = f"llm-user:{getattr(backend, 'name', '?')}"
+        # gate_facts: withhold each fact from the simulator's own prompt until
+        # the agent has asked for it. Three prompt revisions failed to stop
+        # leaking -- including restating the rule in the target language, which
+        # made it WORSE, plausibly because a negative instruction naming the
+        # forbidden fact primes that fact. Withholding removes the failure mode
+        # instead of asking a model to resist it.
+        # The gate decides "has the agent asked?" with ASK_PATTERNS, which are
+        # English plus a handful of translations and contain NOTHING for
+        # Chinese. In a language with no patterns the fact is never released,
+        # the customer stonewalls, and the episode fails -- a language-dependent
+        # handicap far larger than the leak it was meant to remove. Refuse
+        # rather than produce numbers that look like a model result.
+        if gate_facts:
+            from ..simqa import ASK_PATTERNS
+            pats = " ".join(p for ps in ASK_PATTERNS.values() for p in ps)
+            covered = {"en", "sg-en", "id", "ms", "th", "vi"}
+            if language not in covered:
+                raise ValueError(
+                    f"--gate-facts has no ask-patterns for {language!r}. Gating "
+                    f"it would stonewall every episode and the result would be a "
+                    f"harness artefact, not a language effect. Add patterns to "
+                    f"simqa.ASK_PATTERNS first, or run without --gate-facts.")
+        self.gate_facts = gate_facts
+        self.release_after_turn = release_after_turn
+        self.name = (f"llm-user:{getattr(backend, 'name', '?')}"
+                     + ("+gated" if gate_facts else ""))
         # Accumulated across the episode. Without this every cost projection is
         # agent-only, which on a multi-turn benchmark understates the bill by
         # roughly half -- and the simulator is usually on a DIFFERENT provider
         # at a different price, so you cannot just scale the agent number.
         self.usage = Usage()
 
-    def _system(self) -> str:
-        facts = "\n".join(f"- {k}: {v}" for k, v in self.facts.items()) or "- (none)"
+    def _visible_facts(self, transcript) -> dict[str, str]:
+        """Facts the simulator is allowed to KNOW right now."""
+        if not self.gate_facts:
+            return self.facts
+        from ..simqa import _asked_for
+        agent_text = "\n".join(m.content for m in transcript
+                               if m.role == "assistant" and m.content)
+        turns = sum(1 for m in transcript if m.role == "user")
+        out = {}
+        for k, v in self.facts.items():
+            # Released once asked for, or after release_after_turn as a
+            # fallback so a missed pattern cannot stall the episode forever.
+            if _asked_for(k, agent_text) or turns >= self.release_after_turn:
+                out[k] = v
+        return out
+
+    def _system(self, visible: dict[str, str] | None = None) -> str:
+        src = self.facts if visible is None else visible
+        facts = "\n".join(f"- {k}: {v}" for k, v in src.items()) or (
+            "- (you cannot recall any details right now; if the agent asks for "
+            "something specific, say you will look it up)")
         base = USER_SYSTEM.format(persona=self.persona, facts=facts)
         if self.language != "en":
             base += f"\n\nWrite in {self.language}. Keep the register informal."
+            # Restate the hold-back rule in the target language. English-only
+            # instructions held in en/sg-en/vi and failed in id/ms/th; this is
+            # the mitigation, and its effect is measurable as a leak-rate drop.
+            from ..locales import hold_back_rule
+            rule = hold_back_rule(self.language)
+            if rule:
+                base += f"\n\n{rule}"
         return base
 
     def respond(self, transcript: list[Message], cursor: int) -> tuple[str, bool]:
         # Roles are inverted for the simulator: the agent's words are the
         # simulator's "user" turns.
-        convo: list[Message] = [Message(role="system", content=self._system())]
+        convo: list[Message] = [
+            Message(role="system",
+                    content=self._system(self._visible_facts(transcript)))]
         for m in transcript:
             if m.role == "assistant" and m.content and not m.tool_calls:
                 convo.append(Message(role="user", content=m.content))

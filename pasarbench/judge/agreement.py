@@ -143,6 +143,39 @@ def _bootstrap_ci(a: Sequence[Any], b: Sequence[Any], iters: int, seed: int
     return (round(lo, 4), round(hi, 4))
 
 
+def paired_kappa_diff(ref: Sequence[Any], a: Sequence[Any], b: Sequence[Any],
+                      iters: int = 2000, seed: int = 0) -> dict[str, Any]:
+    """Is judge B's agreement with the reference really different from A's?
+
+    Both kappas are computed on the SAME transcripts, so their errors are
+    correlated and two separate confidence intervals are the wrong test:
+    overlapping CIs do not mean "no difference", and non-overlapping ones
+    overstate it. Resample transcripts once per iteration, compute both
+    kappas on the same resample, and take the interval of the difference.
+    If it excludes zero, the difference is real at this sample size.
+    """
+    if not (len(ref) == len(a) == len(b)):
+        raise ValueError("rater sequences differ in length")
+    n = len(ref)
+    if n == 0:
+        return {"n": 0, "kappa_a": 0.0, "kappa_b": 0.0, "diff": 0.0,
+                "ci95": None, "resolved": False}
+    ka, kb = cohens_kappa(ref, a), cohens_kappa(ref, b)
+    rng = random.Random(seed)
+    diffs = []
+    for _ in range(iters):
+        pick = [rng.randrange(n) for _ in range(n)]
+        r = [ref[i] for i in pick]
+        diffs.append(cohens_kappa(r, [b[i] for i in pick])
+                     - cohens_kappa(r, [a[i] for i in pick]))
+    diffs.sort()
+    lo = diffs[int(0.025 * iters)]
+    hi = diffs[min(int(0.975 * iters), iters - 1)]
+    return {"n": n, "kappa_a": round(ka, 4), "kappa_b": round(kb, 4),
+            "diff": round(kb - ka, 4), "ci95": (round(lo, 4), round(hi, 4)),
+            "resolved": lo > 0 or hi < 0}
+
+
 def confusion(a: Sequence[Any], b: Sequence[Any]) -> dict[str, int]:
     """Where they disagree, not just how much. The asymmetry is the finding:
     a judge that says yes when you said no is a different bug from the reverse."""

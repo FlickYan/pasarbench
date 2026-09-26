@@ -172,10 +172,12 @@ def make_simulator(kind: str, args) -> callable:
                                   api_key=sim_key, temperature=0.7, max_tokens=256,
                                   extra_body=_extra_body(
                                       args.sim_extra_body or args.extra_body))
-        return lambda t: LLMUser(sim, t.persona, t.hidden_facts, t.language)
+        return lambda t: LLMUser(sim, t.persona, t.hidden_facts, t.language,
+                                 gate_facts=args.gate_facts)
     if kind == "anthropic":
         sim = AnthropicBackend(model=args.sim_model, temperature=0.7)
-        return lambda t: LLMUser(sim, t.persona, t.hidden_facts, t.language)
+        return lambda t: LLMUser(sim, t.persona, t.hidden_facts, t.language,
+                                 gate_facts=args.gate_facts)
     raise ValueError(kind)
 
 
@@ -249,10 +251,15 @@ def run_cell(strategy_name: str, backend_factory, simulator_factory, tasks: list
             "mean_tokens": round(sum(tokens) / len(tokens), 1) if tokens else 0,
             "mean_steps": round(sum(steps) / len(steps), 2) if steps else 0,
             "stop_reasons": dict(stops),
+            "token_budget": budget.max_tokens,
             "per_trap": trap_breakdown(by_task, tasks),
             "per_language": language_breakdown(by_task, tasks),
             "per_market": market_breakdown(by_task, tasks),
-            "trace_dir": str(Path(trace_root) / run_id / strategy_name),
+            # The CELL, not the strategy: traces are written to run_id/cell, and
+            # with --exposure every arm shares a strategy name. Recording the
+            # strategy pointed all five tool-scaling rows at one directory that
+            # does not exist, and anything that followed it read zero episodes.
+            "trace_dir": str(Path(trace_root) / run_id / cell),
             # For NoteTaking: how often the agent actually used the scratchpad.
             # Without this the strategy's result is uninterpretable -- an agent
             # that never writes notes silently degrades it to a naked window.
@@ -300,12 +307,12 @@ def trap_breakdown(by_task, tasks) -> dict[str, float]:
 
 
 def markdown_table(rows: list[dict]) -> str:
-    head = ("| strategy | pass^1 | pass^k | mean tokens | mean steps | stops |\n"
+    head = ("| cell | pass^1 | pass^k | mean tokens | mean steps | stops |\n"
             "|---|---|---|---|---|---|\n")
     body = ""
     for r in rows:
         stops = ", ".join(f"{k}:{v}" for k, v in sorted(r["stop_reasons"].items()))
-        body += (f"| `{r['strategy']}` | {r['pass^1']:.3f} | {r['pass^k']:.3f} | "
+        body += (f"| `{r.get('cell', r['strategy'])}` | {r['pass^1']:.3f} | {r['pass^k']:.3f} | "
                  f"{r['mean_tokens']:,} | {r['mean_steps']} | {stops} |\n")
     return head + body
 
@@ -336,6 +343,11 @@ def main() -> None:
                          'can exhaust max_tokens before a tool call is emitted.')
     ap.add_argument("--sim-extra-body", default="",
                     help="same, for the simulator only")
+    ap.add_argument("--gate-facts", action="store_true",
+                    help="withhold each hidden fact from the simulator until the "
+                         "agent asks for it. Prompt-based instructions failed to "
+                         "stop leaking in id/ms/th/zh; this removes the failure "
+                         "mode instead of asking a model to resist it.")
     ap.add_argument("--strategies", default="full,window8,window4,trim3,notes4",
                     help="also summarize<N>, which needs --summarizer-model")
     ap.add_argument("--summarizer-model", default="",
@@ -355,6 +367,11 @@ def main() -> None:
     ap.add_argument("--languages", default="", help="e.g. en,id,th")
     ap.add_argument("--tasks", default="", help="comma-separated ids, blank = all")
     ap.add_argument("--max-steps", type=int, default=30)
+    ap.add_argument("--token-budget", type=int, default=Budget().max_tokens,
+                    help="per-EPISODE token cap; an episode that hits it fails. "
+                         "Raise it for tool scaling: at 100 tools ~10k schema "
+                         "tokens ride on every call, the default binds, and "
+                         "pass^1 starts measuring cost instead of tool choice.")
     ap.add_argument("--workers", type=int, default=1,
                     help="concurrent episodes. 8-16 is usually safe; too many "
                          "triggers provider rate limits, which surface as "
@@ -374,7 +391,7 @@ def main() -> None:
           f"{len(tasks) * args.k * len(args.strategies.split(','))} episodes")
 
     run_id = args.run_id or f"{args.backend}-{args.policy_mode}"
-    budget = Budget(max_steps=args.max_steps)
+    budget = Budget(max_steps=args.max_steps, max_tokens=args.token_budget)
     bf = make_backend(args.backend, args)
     sf = make_simulator(args.simulator, args)
 
@@ -408,12 +425,12 @@ def main() -> None:
             for lang, rate in r["per_language"].items():
                 delta = f" ({rate - base:+.3f})" if base is not None and lang != "en" else ""
                 cells.append(f"{lang}={rate:.3f}{delta}")
-            print(f"  {r['strategy']:10s} " + "  ".join(cells))
+            print(f"  {r.get('cell', r['strategy']):16s} " + "  ".join(cells))
         print()
 
     print("per-trap pass rate (read this before the aggregate):")
     for r in rows:
-        print(f"\n  {r['strategy']}:")
+        print(f"\n  {r.get('cell', r['strategy'])}:")
         for trap, rate in r["per_trap"].items():
             flag = "  <-- weak" if rate < 0.5 else ""
             print(f"    {rate:.2f}  {trap}{flag}")
@@ -428,7 +445,8 @@ def main() -> None:
 
     if args.exposure:
         print("\n" + tool_scaling_report(
-            [{**r, "exposure": r["exposure"]} for r in rows]))
+            [{**r, "exposure": r["exposure"]} for r in rows],
+            run_dir=Path(args.trace_root) / run_id))
         if not ({"all-100", "random-100"} <= set(exposures) or
                 {"all-300", "random-300"} <= set(exposures)):
             print("\n!! no all-N / random-N pair in this sweep. Without both, a")
