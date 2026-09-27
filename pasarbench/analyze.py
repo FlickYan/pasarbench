@@ -119,7 +119,9 @@ def degradation_matrix(rows: list[dict[str, Any]], baseline: str = "full"
 
 def _verdict(n_hurt: int, n_traps: int, concentration: float | None) -> str:
     if n_hurt == 0:
-        return "no regression: cheaper at no measured cost"
+        # Per-trap only: whether it is also cheaper is the token test's call,
+        # and saying "cheaper" here contradicted it when it was not.
+        return "no trap regressed by more than 0.05"
     if n_hurt <= max(2, n_traps // 6):
         return (f"concentrated: loss sits in {n_hurt} trap(s) -- go read those "
                 f"traces, the mechanism is legible there")
@@ -236,28 +238,93 @@ def attribute_failures(run_dir: str | Path) -> dict[str, Any]:
 # Report
 # --------------------------------------------------------------------------
 
-def markdown_report(rows: list[dict[str, Any]], baseline: str = "full") -> str:
+def markdown_report(rows: list[dict[str, Any]], baseline: str = "full",
+                    paired: dict[str, dict[str, Any]] | None = None) -> str:
+    """`paired`: {strategy: {"pass": gap, "tokens": gap}} from
+    diagnose.paired_arm_gap against the baseline. When given, every verdict
+    comes from a paired sign test over tasks, not from point estimates. The
+    Pareto frontier alone once declared the baseline "dominated" by a strategy
+    six episodes better -- on a baseline that scored four points higher in a
+    different run of the same tasks (WHAT_FAILED #21 applied to this table).
+    """
     f = frontier_report(rows)
     deg = degradation_matrix(rows, baseline)
-
-    out = ["## Context ablation\n",
-           "| strategy | pass^1 | pass^k | mean tokens | vs baseline | frontier |",
-           "|---|---|---|---|---|---|"]
     base = next(r for r in rows if r["strategy"] == baseline)
+
+    def p_text(g: dict | None, what: str) -> str:
+        if not g:
+            return "-"
+        if what == "pass":
+            return (f"{g['diff']:+.3f}; {g['better']}↑ {g['worse']}↓, "
+                    f"p={g['p']:.3f}")
+        # tokens: a negative difference is CHEAPER
+        return f"{g['worse']} cheaper, {g['better']} costlier, p={g['p']:.3f}"
+
+    if paired:
+        out = ["## Context ablation\n",
+               f"| strategy | pass^1 | pass^k | mean tokens | token saving vs "
+               f"`{baseline}` | pass vs `{baseline}`, paired by task | "
+               f"tokens vs `{baseline}`, paired by task |",
+               "|---|---|---|---|---|---|---|"]
+    else:
+        out = ["## Context ablation\n",
+               "| strategy | pass^1 | pass^k | mean tokens | vs baseline | frontier |",
+               "|---|---|---|---|---|---|"]
     for r in rows:
         save = (f"{1 - r['mean_tokens'] / base['mean_tokens']:+.1%}"
                 if base["mean_tokens"] else "-")
-        mark = "**yes**" if r["strategy"] in f["frontier"] else "dominated"
-        out.append(f"| `{r['strategy']}` | {r['pass^1']:.3f} | {r['pass^k']:.3f} | "
-                   f"{r['mean_tokens']:,.0f} | {save} | {mark} |")
+        if paired:
+            g = paired.get(r["strategy"]) or {}
+            cells = ("baseline", "baseline") if r["strategy"] == baseline else (
+                p_text(g.get("pass"), "pass"), p_text(g.get("tokens"), "tokens"))
+            out.append(f"| `{r['strategy']}` | {r['pass^1']:.3f} | {r['pass^k']:.3f} | "
+                       f"{r['mean_tokens']:,.0f} | {save} | {cells[0]} | {cells[1]} |")
+        else:
+            mark = "**yes**" if r["strategy"] in f["frontier"] else "dominated"
+            out.append(f"| `{r['strategy']}` | {r['pass^1']:.3f} | {r['pass^k']:.3f} | "
+                       f"{r['mean_tokens']:,.0f} | {save} | {mark} |")
 
-    if f["dominated"]:
+    if paired:
+        others = [r["strategy"] for r in rows if r["strategy"] != baseline]
+        acc = [s for s in others if (paired.get(s) or {}).get("pass")
+               and paired[s]["pass"]["resolved"]]
+        cost = [s for s in others if (paired.get(s) or {}).get("tokens")
+                and paired[s]["tokens"]["resolved"]]
+        out.append("")
+        if not acc:
+            n = next((paired[s]["pass"]["n"] for s in others
+                      if (paired.get(s) or {}).get("pass")), 0)
+            out.append(f"**INCONCLUSIVE on accuracy** — no strategy's pass rate "
+                       f"differs from `{baseline}` beyond noise over {n} tasks. "
+                       f"Do not rank strategies by the pass^1 column.")
+        for s_ in acc:
+            g = paired[s_]["pass"]
+            out.append(f"- `{s_}` is **{'better' if g['diff'] > 0 else 'worse'}** "
+                       f"than `{baseline}` on accuracy ({p_text(g, 'pass')}).")
+        for s_ in cost:
+            g = paired[s_]["tokens"]
+            out.append(f"- `{s_}` is **{'cheaper' if g['diff'] < 0 else 'costlier'}** "
+                       f"than `{baseline}` in tokens per episode "
+                       f"({p_text(g, 'tokens')}).")
+        if not cost:
+            out.append(f"No strategy's token cost differs from `{baseline}` "
+                       f"beyond noise either.")
+    elif f["dominated"]:
         out.append(f"\nDominated (worse on both axes, drop from the "
                    f"recommendation): {', '.join('`' + d + '`' for d in f['dominated'])}")
 
     out.append("\n### Where each strategy loses\n")
     for name, d in deg.items():
-        out.append(f"**`{name}`** -- {d['verdict']}")
+        g = (paired or {}).get(name, {}).get("pass") if paired else None
+        if g and not g["resolved"] and d["regressions"]:
+            # A strategy whose overall pass rate is not resolved has no loss to
+            # locate; a -0.17 on a trap is one episode in six. Naming it
+            # "diffuse" or "concentrated" read a mechanism into noise.
+            out.append(f"**`{name}`** -- {len(d['regressions'])} trap(s) lower by "
+                       f"more than 0.05, but the strategy is not resolved overall "
+                       f"({p_text(g, 'pass')}): leads to read, not losses")
+        else:
+            out.append(f"**`{name}`** -- {d['verdict']}")
         if d["regressions"]:
             for trap, delta in list(d["regressions"].items())[:4]:
                 out.append(f"  - `{trap}` {delta:+.2f}")
@@ -272,6 +339,11 @@ def markdown_report(rows: list[dict[str, Any]], baseline: str = "full") -> str:
         for r in langs:
             cells = [f"{r['per_language'].get(k, float('nan')):.3f}" for k in keys]
             out.append(f"| `{r['strategy']}` | " + " | ".join(cells) + " |")
-        out.append("\nLocale twins share identical checks and an identical world, "
-                   "so any gap in this table is language and nothing else.")
+        # Not twins: each language here is whatever tasks it drew in this run,
+        # so a gap in this table mixes language with task difficulty. The
+        # paired comparison is where a language effect is measured.
+        out.append("\nUnpaired rates over whatever tasks each language drew in "
+                   "this run: a gap here mixes language with task difficulty. A "
+                   "language effect is measured on locale twins, in the "
+                   "multilingual section.")
     return "\n".join(out)

@@ -44,6 +44,8 @@ from .run import SOLUTIONS
 from .tasks import TASKS as CORE_TASKS
 from .tasks import Task
 from .verifier import pass_hat_k, verify
+from .models import check_agent_simulator
+from types import SimpleNamespace
 
 
 GEN_TASKS, GEN_SOLUTIONS = generate()
@@ -128,7 +130,8 @@ def make_backend(kind: str, args) -> callable:
     if kind == "mute":
         return lambda t: MuteBackend()
     if kind == "openai":
-        return lambda t: OpenAICompatBackend(model=args.model, base_url=args.base_url,
+        route = fold_router(args)
+        return lambda t: OpenAICompatBackend(model=route(t), base_url=args.base_url,
                                              api_key=args.api_key,
                                              temperature=args.temperature,
                                              max_tokens=args.max_tokens,
@@ -136,6 +139,84 @@ def make_backend(kind: str, args) -> callable:
     if kind == "anthropic":
         return lambda t: AnthropicBackend(model=args.model, temperature=args.temperature)
     raise ValueError(kind)
+
+
+def fold_router(args):
+    """Which model answers a task. Without --fold-models, always --model.
+
+    With it, every task goes to the model that was NOT trained on its fold --
+    `--fold-models A=Qwen/Qwen3-8B:pasar-rft-A,B=Qwen/Qwen3-8B:pasar-rft-B`
+    sends fold-A tasks to the model trained on B and vice versa -- so one sweep
+    evaluates both fine-tunes on held-out tasks only, and the trace header
+    records which model answered."""
+    if not args.fold_models:
+        return lambda t: args.model
+    if not args.folds:
+        raise SystemExit("--fold-models needs --folds (the split the models were "
+                         "trained on)")
+    from .rl.split import load_folds, other_fold
+    folds = load_folds(args.folds, ALL_TASKS)
+    trained_on = dict(kv.split("=", 1) for kv in args.fold_models.split(","))
+    if set(trained_on) != set(folds["folds"]):
+        raise SystemExit(f"--fold-models must name one model per fold "
+                         f"{folds['folds']}, got {sorted(trained_on)}")
+
+    def route(t: Task) -> str:
+        fold = folds["task_fold"].get(t.task_id)
+        if fold is None:
+            raise SystemExit(f"{t.task_id} is not in {args.folds}")
+        return trained_on[other_fold(fold)]
+    return route
+
+
+def _local(url: str) -> bool:
+    return any(h in url for h in ("localhost", "127.0.0.1", "0.0.0.0"))
+
+
+def check_served(base_url: str, names: list[str]) -> str:
+    """Refuse to start unless the server will answer every name with that model.
+
+    SGLang serves a LoRA adapter under `<base>:<adapter>`, and it answers a
+    request naming the bare adapter with the BASE model, without an error --
+    although its /v1/models lists the adapter under that bare name. An
+    evaluation of the fine-tunes would quietly score the model they started
+    from. So on SGLang (its model cards say `owned_by: sglang`) a name must be
+    `<served base>:<loaded adapter>` or the base itself; elsewhere (vLLM routes
+    a bare adapter name to the adapter) it must be listed as it is."""
+    import urllib.error
+    import urllib.request
+    url = base_url.rstrip("/") + "/models"
+    try:
+        req = urllib.request.Request(url, headers={"Authorization": "Bearer EMPTY"})
+        with urllib.request.urlopen(req, timeout=30) as r:
+            cards = json.loads(r.read()).get("data", [])
+    except (urllib.error.URLError, OSError, ValueError) as e:
+        raise SystemExit(f"cannot list the models at {url} ({e}); is the agent "
+                         f"server up? (serve_sglang.sh rft)") from None
+    ids = {c.get("id") for c in cards}
+    bases = {c.get("id") for c in cards if not c.get("parent")}
+    adapters = {c.get("id") for c in cards if c.get("parent")}
+    sglang = any(c.get("owned_by") == "sglang" for c in cards)
+
+    def served(name: str) -> bool:
+        if not sglang:
+            return name in ids
+        if ":" in name:
+            base, adapter = name.split(":", 1)
+            return base in bases and adapter in adapters
+        return name in bases
+
+    missing = [n for n in names if not served(n)]
+    if missing:
+        bare = [n for n in missing if sglang and n in adapters]
+        raise SystemExit(
+            f"the server at {base_url} would not answer {missing} with that model"
+            + (f": SGLang answers a bare adapter name with the BASE model. Ask for "
+               f"<base>:<adapter>, e.g. {sorted(bases)[0] if bases else 'Qwen/Qwen3-8B'}"
+               f":{bare[0]}." if bare else
+               f". It serves {sorted(bases)} with adapters {sorted(adapters)}"
+               + (" (name one as <base>:<adapter>)." if sglang else ".")))
+    return f"the server answers every fold model with its own weights: {', '.join(names)}"
 
 
 def make_simulator(kind: str, args) -> callable:
@@ -146,7 +227,11 @@ def make_simulator(kind: str, args) -> callable:
     if kind == "openai":
         sim_url = args.sim_url or args.base_url
         sim_key = args.sim_api_key or resolve_sim_api_key()
-        if sim_url == args.base_url:
+        if _local(sim_url):
+            # A local server needs no key, and a real one set in the environment
+            # for some provider has no business being sent to it.
+            sim_key = "EMPTY"
+        elif sim_url == args.base_url:
             sim_key = sim_key or args.api_key
         elif not sim_key:
             # HARD FAIL, never fall back. Reusing the agent's key here does not
@@ -181,9 +266,35 @@ def make_simulator(kind: str, args) -> callable:
     raise ValueError(kind)
 
 
+def _finished(path: Path) -> dict | None:
+    """Header and footer of a trace that ran to the end, else None. A crash
+    mid-episode leaves a header with no footer, and that episode is re-run."""
+    try:
+        recs = [json.loads(l) for l in path.read_text().splitlines() if l.strip()]
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not recs or recs[-1].get("type") != "footer" or recs[0].get("type") != "header":
+        return None
+    return {"header": recs[0], "footer": recs[-1],
+            "has_messages": any(r.get("type") == "messages" for r in recs)}
+
+
+def _resumed(task: Task, done: dict):
+    """Stand-ins for (verdict, result) built from a finished trace's footer, so
+    a resumed sweep's summary counts the episodes it did not have to re-run."""
+    f = done["footer"]
+    b = f.get("budget") or {}
+    v = SimpleNamespace(passed=bool(f.get("passed")), failures=f.get("failures") or [])
+    res = SimpleNamespace(budget={"tokens": b.get("tokens", 0), "steps": b.get("steps", 0)},
+                          stop_reason=SimpleNamespace(value=f.get("stop_reason", "?")),
+                          steps=[], state=SimpleNamespace(messages=[]), resumed=True)
+    return task, v, res
+
+
 def run_cell(strategy_name: str, backend_factory, simulator_factory, tasks: list[Task],
              k: int, budget: Budget, policy_mode: str, trace_root: str, run_id: str,
-             summarizer=None, exposure_spec: str = "", workers: int = 1) -> dict:
+             summarizer=None, exposure_spec: str = "", workers: int = 1,
+             save_messages: bool = False, resume: bool = False) -> dict:
     strategy = make_strategy(strategy_name, summarizer)
     exposure = build_exposure(exposure_spec, ALL_SOLUTIONS) if exposure_spec else None
     cell = strategy_name if not exposure_spec else f"{strategy_name}+{exposure_spec}"
@@ -207,12 +318,45 @@ def run_cell(strategy_name: str, backend_factory, simulator_factory, tasks: list
                           run_index=seed)
         v = verify(task, db, n_turns=res.budget["steps"],
                    tokens=res.budget["tokens"])
+        if save_messages:
+            w.messages([m.to_dict() for m in res.state.messages],
+                       tool_names=[st.tool_names for st in res.steps],
+                       context_messages=[st.context_messages for st in res.steps])
         w.close_episode(res.stop_reason.value, v.passed, v.failures, res.budget)
         w.close()
         return task, v, res
 
     jobs = [(t, i) for t in tasks for i in range(k)]
     results = []
+    if resume:
+        # A rented GPU that dies at episode 1,400 of 1,720 should cost the
+        # episode in flight, not the run. Finished traces are kept -- but only
+        # if they came from the same agent and customer, or the summary would
+        # average two different experiments.
+        cell_dir = Path(trace_root) / run_id / cell
+        todo = []
+        for task, seed in jobs:
+            done = _finished(cell_dir / f"{task.task_id}__r{seed}.jsonl")
+            if done is None:
+                todo.append((task, seed))
+                continue
+            head = done["header"]
+            want = backend_factory(task)
+            want_sim = simulator_factory(task)
+            if (head.get("requested_model") != getattr(want, "model", None)
+                    or head.get("simulator") != getattr(want_sim, "name", "?")
+                    or head.get("context") != strategy.name):
+                raise SystemExit(
+                    f"--resume: {cell_dir} already holds episodes from a different "
+                    f"setup (model {head.get('requested_model')!r}, simulator "
+                    f"{head.get('simulator')!r}). Use a new --run-id.")
+            if save_messages and not done["has_messages"]:
+                todo.append((task, seed))
+                continue
+            results.append(_resumed(task, done))
+        if results:
+            print(f"    resuming: {len(results)} finished, {len(todo)} to run", flush=True)
+        jobs = todo
     if workers > 1:
         with ThreadPoolExecutor(max_workers=workers) as pool:
             futures = [pool.submit(one_episode, j) for j in jobs]
@@ -235,7 +379,7 @@ def run_cell(strategy_name: str, backend_factory, simulator_factory, tasks: list
             schema_toks.append(sum(st.schema_tokens for st in res.steps)
                                / len(res.steps))
             tool_counts.append(res.steps[0].n_tools)
-        if getattr(strategy, "extra_tools", None):
+        if getattr(strategy, "extra_tools", None) and not getattr(res, "resumed", False):
             d = note_discipline(res.state.messages)
             notes_written += d["wrote_any"]
             notes_possible += 1
@@ -345,9 +489,11 @@ def main() -> None:
                     help="same, for the simulator only")
     ap.add_argument("--gate-facts", action="store_true",
                     help="withhold each hidden fact from the simulator until the "
-                         "agent asks for it. Prompt-based instructions failed to "
-                         "stop leaking in id/ms/th/zh; this removes the failure "
-                         "mode instead of asking a model to resist it.")
+                         "agent asks for it, as judged by simqa.ASK_PATTERNS. Built "
+                         "to stop leaks that turned out to be the detector's "
+                         "(WHAT_FAILED #26); a request the patterns miss stalls "
+                         "the customer, so it is off by default and discarded "
+                         "for run G.")
     ap.add_argument("--strategies", default="full,window8,window4,trim3,notes4",
                     help="also summarize<N>, which needs --summarizer-model")
     ap.add_argument("--summarizer-model", default="",
@@ -378,10 +524,39 @@ def main() -> None:
                          "backend_error stop reasons rather than as a crash.")
     ap.add_argument("--trace-root", default="traces")
     ap.add_argument("--run-id", default=None)
+    ap.add_argument("--save-messages", action="store_true",
+                    help="write each episode's full conversation into its trace; "
+                         "post-training builds its examples from these")
+    ap.add_argument("--resume", action="store_true",
+                    help="keep finished episodes already in this run and cell, "
+                         "run only the rest")
+    ap.add_argument("--folds", default="",
+                    help="split file from `python -m pasarbench.rl.split`")
+    ap.add_argument("--fold-models", default="",
+                    help="A=<model trained on A>,B=<model trained on B>: each task "
+                         "is answered by the model that did not train on it. On "
+                         "SGLang name an adapter <base>:<adapter>")
+    ap.add_argument("--allow-same-family", action="store_true",
+                    help="permit an agent and simulated customer from one model "
+                         "family (only to measure that bias on purpose)")
     args = ap.parse_args()
 
+    if args.backend == "openai" and _local(args.base_url):
+        # A local server gets the placeholder key: serve_sglang.sh listens on
+        # localhost without one, and a provider key picked up from the
+        # environment has no business leaving the machine for a local process.
+        args.api_key = "EMPTY"
     if args.backend in ("openai", "anthropic"):
         check_key(args)
+    fold_models = ([kv.split("=", 1)[-1] for kv in args.fold_models.split(",")]
+                   if args.fold_models else [])
+    if args.backend in ("openai", "anthropic") and args.simulator in ("openai", "anthropic"):
+        for note in dict.fromkeys(check_agent_simulator(m, args.sim_model,
+                                                        args.allow_same_family)
+                                  for m in [args.model, *fold_models]):
+            print(note)
+    if fold_models and args.backend == "openai" and _local(args.base_url):
+        print(check_served(args.base_url, fold_models))
 
     tasks = select_tasks(args)
     if not tasks:
@@ -410,7 +585,9 @@ def main() -> None:
                   flush=True)
             rows.append(run_cell(name, bf, sf, tasks, args.k, budget,
                                  args.policy_mode, args.trace_root, run_id,
-                                 summarizer, exp, args.workers))
+                                 summarizer, exp, args.workers,
+                                 save_messages=args.save_messages,
+                                 resume=args.resume))
 
     print("\n" + markdown_table(rows))
 
@@ -457,6 +634,14 @@ def main() -> None:
     if len(rows) > 1 and len(exposures) == 1 and any(r["strategy"] == base for r in rows):
         print("\n" + markdown_report(rows, baseline=base))
 
+    # What produced this run, for the report: which model answered, which
+    # customer asked, at what temperature, and -- for a held-out evaluation --
+    # which model was trained on which fold of which split.
+    for r in rows:
+        r["setup"] = {"model": args.model, "sim_model": args.sim_model,
+                      "temperature": args.temperature, "k": args.k,
+                      "fold_models": args.fold_models or None,
+                      "folds": args.folds or None}
     run_path = os.path.join(args.trace_root, run_id)
     os.makedirs(run_path, exist_ok=True)
     with open(os.path.join(run_path, "summary.json"), "w") as f:

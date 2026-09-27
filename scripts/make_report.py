@@ -98,13 +98,52 @@ def _choose(cands: list[tuple[str, int, Any]], pinned: str, flag: str
         name, n, payload = max(hit, key=lambda c: c[1])
         why = f"pinned with `{flag}`"
     else:
-        name, n, payload = max(cands, key=lambda c: (c[1], c[0]))
-        why = (f"the largest of {len(cands)} qualifying run(s); pin another "
-               f"with `{flag} <name>`") if len(cands) > 1 else "the only qualifying run"
+        top = max(c[1] for c in cands)
+        tied = sorted(c for c in cands if c[1] == top)
+        # A tie is broken alphabetically -- deterministic, but ARBITRARY, and
+        # the report says so. Breaking it silently once put a broken run
+        # (the gated one) behind a finding (WHAT_FAILED #25).
+        name, n, payload = tied[0]
+        if len(tied) > 1:
+            why = (f"**a tie at {n} episodes with "
+                   f"{', '.join('`' + c[0] + '`' for c in tied[1:])} — the pick is "
+                   f"arbitrary; pin the run you mean with `{flag} <name>`**")
+        elif len(cands) > 1:
+            why = (f"the largest of {len(cands)} qualifying run(s); pin another "
+                   f"with `{flag} <name>`")
+        else:
+            why = "the only qualifying run"
     others = ", ".join(f"`{c[0]}` ({c[1]})" for c in sorted(cands) if c[0] != name)
     note = (f"*Source: `traces/{name}` — {n} episodes, {why}.*"
             + (f"  \n*Also qualifying: {others}.*" if others else "") + "\n\n")
     return payload, note
+
+
+def section_noise(traces: Path, pair: str) -> str:
+    """The same configuration, run twice: how far a result moves on its own.
+
+    Named explicitly, never inferred -- the report cannot tell from traces that
+    two runs used the same model, simulator and flags, and a noise floor built
+    from two DIFFERENT configurations would be a finding dressed as noise.
+    """
+    if not pair:
+        return ""
+    from pasarbench.diagnose import load_episodes, paired_episodes
+    a, b = [x.strip() for x in pair.split(",")][:2]
+    ea, eb = load_episodes(traces / a), load_episodes(traces / b)
+    if not ea or not eb:
+        return f"\n## Noise floor\n\n{MISSING} — no episodes under `{a}` or `{b}`\n"
+    g = paired_episodes(ea, eb)
+    if not g:
+        return f"\n## Noise floor\n\n{MISSING} — `{a}` and `{b}` share too few tasks\n"
+    pa, pb = sum(e["passed"] for e in ea), sum(e["passed"] for e in eb)
+    return (f"\n## Noise floor\n\n*The same configuration run twice: `{a}` and "
+            f"`{b}` (identical by your assertion, not by inference).*\n\n"
+            f"{pa}/{len(ea)} vs {pb}/{len(eb)} passed: {g['diff']:+.3f}, "
+            f"{g['better']} tasks better and {g['worse']} worse in the second run, "
+            f"sign test p={g['p']:.3f} over {g['n']} shared tasks. A gap between "
+            f"arms of about this size is what re-running does on its own; it is "
+            f"not a finding until it clears its own paired test.\n")
 
 
 def section_context(runs: list[Path], pinned: str = "") -> str:
@@ -114,10 +153,16 @@ def section_context(runs: list[Path], pinned: str = "") -> str:
         rows = _load_json(run / "summary.json")
         if rows and len(rows) > 1 and any(r.get("exposure", "default") == "default"
                                           for r in rows):
-            cands.append((run.name, _episodes(rows), rows))
-    rows, note = _choose(cands, pinned, "--context-run")
-    if rows is not None:
-        return note + markdown_report(rows, baseline=rows[0]["strategy"])
+            cands.append((run.name, _episodes(rows), (rows, run)))
+    picked, note = _choose(cands, pinned, "--context-run")
+    if picked is not None:
+        from pasarbench.diagnose import paired_arm_gap
+        rows, run = picked
+        base = rows[0]
+        paired = {r["strategy"]: {"pass": paired_arm_gap(base, r, run),
+                                  "tokens": paired_arm_gap(base, r, run, metric="tokens")}
+                  for r in rows[1:]}
+        return note + markdown_report(rows, baseline=base["strategy"], paired=paired)
     return _missing(
         "context ablation not run against a real model",
         "python -m pasarbench.sweep --backend openai --model <m> --suite all \\\n"
@@ -143,6 +188,67 @@ def section_tools(runs: list[Path], pinned: str = "") -> str:
         "    --strategies full --exposure oracle,all-20,all-100,random-100,search-300")
 
 
+def _replication(chosen: list[tuple[str, list[dict], str]]) -> str:
+    """The paired language gap in every pinned run, side by side.
+
+    One run's gap is a measurement; the same gap in an independent run is a
+    finding. And a gap that flips sign between runs of identical tasks is the
+    run-to-run noise, measured.
+    """
+    from pasarbench.diagnose import _sign_p, paired_language_gap
+    per = {name: paired_language_gap(eps)["languages"] for name, eps, _ in chosen}
+    names = [n for n, _, _ in chosen]
+    langs = sorted({l for v in per.values() for l in v})
+    out = ["### Replication: the paired gap in each run\n",
+           "Gap = English minus this language on the SAME tasks (positive: this "
+           "language does worse). Sign test over the twin pairs that differ.\n",
+           "| lang | " + " | ".join(f"`{n}`" for n in names) + " | reading |",
+           "|---|" + "---|" * len(names) + "---|"]
+    for lang in langs:
+        cells, res = [], []
+        for n in names:
+            r = per[n].get(lang)
+            if not r or not r.get("pairs"):
+                cells.append("-")
+                continue
+            p = _sign_p(r["pairs_where_worse"], r["pairs_where_better"])
+            res.append((r["paired_gap"], p, n))
+            cells.append(f"{r['paired_gap']:+.3f} ({r['pairs_where_worse']}↓ "
+                         f"{r['pairs_where_better']}↑, p={p:.2f})")
+        sig = [g for g, p, _ in res if p < 0.05]
+        if len(res) < 2:
+            reading = "one run only — not replicated"
+        elif len(sig) == len(res) and len({g > 0 for g in sig}) == 1:
+            reading = "**replicates**"
+        elif not sig:
+            flips = len({g > 0 for g, _, _ in res if abs(g) > 1e-9}) > 1
+            reading = "null in every run" + (" — and the sign flips" if flips else "")
+            # "null" must not hide a large gap that only just missed: say which
+            # run came close, so nobody reads +0.45 at p=0.07 as nothing.
+            g, p, n = min(res, key=lambda x: x[1])
+            if p < 0.10:
+                reading += f"; closest: `{n}` {g:+.3f}, p={p:.2f}"
+        else:
+            reading = "significant in some runs only — does not replicate"
+        out.append(f"| `{lang}` | " + " | ".join(cells) + f" | {reading} |")
+    # A run whose customer was gated measures the gate. Say so from the traces
+    # themselves, rather than trusting whoever reads the table to remember.
+    gated = [n for n, eps, _ in chosen
+             if any("+gated" in str(e.get("simulator", "")) for e in eps)]
+    if gated:
+        out.append("")
+        out.append("> " + ", ".join(f"`{n}`" for n in gated)
+                   + " ran with the fact gate (`+gated` in the trace headers): the "
+                   "customer withholds each fact until the ask-patterns recognise a "
+                   "request for it, so a request they miss stalls the customer. "
+                   "Check the stall rate by language before reading its gaps: "
+                   "`python scripts/inspect_trace.py traces/<run> --leaks-only`. "
+                   "In run G the patterns could not read how the agent asks in "
+                   "Indonesian and Chinese, and its gaps there measure the gate, "
+                   "not the language (WHAT_FAILED #26).")
+    return "\n".join(out)
+
+
 def section_multilingual(runs: list[Path], judge: list[dict],
                          pinned: str = "") -> str:
     from pasarbench.diagnose import load_episodes, report
@@ -158,9 +264,19 @@ def section_multilingual(runs: list[Path], judge: list[dict],
             eps = load_episodes(cell)
             if eps and len({e["language"] for e in eps}) > 1:
                 cands.append((f"{run.name}/{cell.name}", len(eps), eps))
-    eps, note = _choose(cands, pinned, "--multilingual-run")
-    if eps is not None:
-        return note + report(eps, judge or None)
+    pins = [x.strip() for x in pinned.split(",") if x.strip()] if pinned else [""]
+    chosen = []
+    for pin in pins:
+        eps, note = _choose(cands, pin, "--multilingual-run")
+        if eps is not None:
+            name = next(c[0] for c in cands if c[2] is eps)
+            chosen.append((name, eps, note))
+    if chosen:
+        name, eps, note = chosen[0]
+        text = note + report(eps, judge or None)
+        if len(chosen) > 1:
+            text += "\n\n" + _replication(chosen)
+        return text
     return _missing(
         "no multi-language run found in traces/",
         "python -m pasarbench.sweep --backend openai --model <m> --suite all -k 3")
@@ -231,7 +347,7 @@ def _reading(note: str) -> str:
 
 
 def _naive_vs_decomposed(r1: list[dict], naive: list[dict],
-                         dec: list[dict]) -> list[str]:
+                         dec: list[dict], no_variance: bool = False) -> list[str]:
     """The naive baseline, scored like for like.
 
     Rule 4 says report the naive baseline; this is where it lives. Everything
@@ -305,6 +421,23 @@ def _naive_vs_decomposed(r1: list[dict], naive: list[dict],
     lo, hi = p["ci95"]
     head = (f"\nDecomposed minus naive: {p['diff']:+.3f}, paired 95% CI "
             f"[{lo:+.3f}, {hi:+.3f}] — ")
+    if no_variance:
+        # Both kappas are zero by construction, so their difference is too, and
+        # "indistinguishable" would be read as a result. Raw agreement is not
+        # undefined, and here it can be far apart.
+        text = (f"\nWith no variance in the human labels both kappas are zero "
+                f"by construction, so their difference says nothing. Raw "
+                f"agreement does: the single score matches the human verdict on "
+                f"{an.p_o:.0%} of transcripts, the nine-criterion judge on "
+                f"{ad.p_o:.0%}.")
+        if harsh and not lenient:
+            text += (" Every one of the nine-criterion judge's disagreements goes "
+                     "the harsh way — the *harsh* column above shows which "
+                     "criterion. These judges saw the transcript without the tool "
+                     "results (WHAT_FAILED #23); how they do with them is under "
+                     "*Judges against the verifier*.")
+        out.append(text)
+        return out
     if not p["resolved"]:
         out.append(head + f"**not resolved at n = {p['n']}.** On the overall "
                    "verdict the two judges are indistinguishable. What the "
@@ -353,7 +486,33 @@ def section_judge() -> str:
             "python -m pasarbench.judge.label annotate --round 1")
 
     keys = [c.key for c in CRITERIA]
-    out = [f"Human labels: round 1 = {len(r1)}, round 2 (retest) = {len(r2)}\n"]
+    # Round 2 is a retest or a second rater depending on who labelled it; the
+    # ceiling line below says which, so the header does not guess.
+    out = [f"Human labels: round 1 = {len(r1)}, round 2 = {len(r2)}\n"]
+
+    # Before any agreement number: is there anything to agree ABOUT? A kappa
+    # needs both raters to say "violated" sometimes. When the human labels
+    # almost never do, every statistic below is undefined, and a table of
+    # zeros would read as "the judge disagrees" when it means "nothing varied".
+    n_j = sum(1 for r in r1 for k in keys if r.get("labels", {}).get(k) is not None)
+    n_v = sum(1 for r in r1 for k in keys if r.get("labels", {}).get(k) is False)
+    no_variance = bool(n_j) and n_v / n_j < 0.01
+    if no_variance:
+        sample = {x["transcript_id"]: x for x in _load_jsonl(root / "sample.jsonl")}
+        failed = [r for r in r1 if sample.get(r["transcript_id"], {}).get("passed") is False]
+        ok_failed = sum(1 for r in failed if not any(
+            r["labels"].get(k) is False for k in keys))
+        out.append(
+            f"> **These labels cannot calibrate a judge.** {n_v} of {n_j} human "
+            f"judgments are 'violated' ({n_v / n_j:.2%}). With almost no variance "
+            f"every agreement statistic below is undefined: each KAPPA PARADOX "
+            f"means *nothing to agree about*, not *the judge disagrees*."
+            + (f" {ok_failed} of the {len(failed)} sampled transcripts that FAILED "
+               f"the verifier were rated clean on every criterion — this rubric "
+               f"scores what the agent said, and these agents fail in what they "
+               f"do." if failed else "")
+            + " See WHAT_FAILED #24; the judges are evaluated against the "
+              "database under *Judges against the verifier*.\n")
 
     if dec:
         from pasarbench.judge.agreement import confusion
@@ -383,7 +542,7 @@ def section_judge() -> str:
                             "write data/labels/judge_decomposed.jsonl"))
 
     if naive and dec:
-        out.extend(_naive_vs_decomposed(r1, naive, dec))
+        out.extend(_naive_vs_decomposed(r1, naive, dec, no_variance))
     else:
         out.append("\nNaive baseline: " + MISSING +
                    " — without it the decomposed judge has nothing to beat")
@@ -401,13 +560,26 @@ def section_judge() -> str:
                 else f"inter-annotator ({' / '.join(sorted(who1))} vs "
                      f"{' / '.join(sorted(who2))})")
 
+        s1, s2 = _strictness(r1, keys), _strictness(r2, keys)
+        if no_variance:
+            # A ceiling is a kappa between two raters; with nothing violated
+            # there is no kappa, so no ceiling and no fraction of one. Printing
+            # "0% of achievable agreement" here would read as a finding about
+            # the judge when it is a fact about the labels.
+            rates = (f" Round 1 rated {s1:.1%} of judgments satisfied and round 2 "
+                     f"{s2:.1%}." if s1 is not None and s2 is not None else "")
+            out.append(f"\n**Ceiling — {kind}: undefined.**{rates} Two raters "
+                       f"who almost never say 'violated' have nothing to agree "
+                       f"or disagree about (see the notice above), so there is "
+                       f"no ceiling to measure a judge against.")
+            return "\n".join(out)
+
         out.append(f"\n**Ceiling — {kind}:** mean human-human kappa "
                    f"{c['mean_self_kappa']:+.3f}, mean judge kappa "
                    f"{c['mean_judge_kappa']:+.3f}, "
                    f"**{(c['mean_fraction_of_ceiling'] or 0):.0%} of achievable "
                    f"agreement**")
 
-        s1, s2 = _strictness(r1, keys), _strictness(r2, keys)
         if s1 is not None and s2 is not None:
             out.append(f"\nSatisfied rate: round 1 {s1:.1%}, round 2 {s2:.1%} "
                        f"(gap {abs(s1 - s2):+.1%} in round 2's favour "
@@ -513,6 +685,13 @@ def section_judge() -> str:
                             f"default. Drop them from the ceiling and say so, "
                             f"or have them relabelled by someone who reads the "
                             f"language.")
+                    elif min(rates.values()) >= 0.99:
+                        # Flat at the top is not reassurance: a rater who
+                        # accepted every default looks exactly like this.
+                        out.append(f"\n> Round 2 rated nearly every judgment "
+                                   f"satisfied in every language, so the spread "
+                                   f"({spread:.0%}) cannot tell a careful second "
+                                   f"rater from one who accepted every default.")
                     else:
                         out.append(f"\n> Spread across languages is "
                                    f"{spread:.0%} — no sign of a language the "
@@ -524,38 +703,203 @@ def section_judge() -> str:
     return "\n".join(out)
 
 
+def section_judge_vs_verifier() -> str:
+    """The same judges scored against the database instead of human labels,
+    under each view of the evidence they were given (run_judges.py --traces)."""
+    from pasarbench.judge.vs_verifier import load_runs, markdown
+    runs = load_runs(Path("data/judge_vs_verifier"))
+    if not runs:
+        return ""                     # optional experiment; absence is not a gap
+    return ("\n\n### Judges against the verifier\n\n"
+            "Human labels measure whether a judge reads a transcript the way a "
+            "person does. This measures whether it can tell a solved case from "
+            "an unsolved one, with the database as ground truth, and how that "
+            "depends on what it is shown.\n\n" + markdown(runs))
+
+
 def section_serving() -> str:
     from pasarbench.serving.cost import ServingConfig, compare, markdown
     cfgs = _load_json(Path("data/serving/configs.json"))
     if not cfgs:
         return _missing(
             "serving configurations not measured",
-            "./scripts/serve_vllm.sh agent-32b\n"
+            "./scripts/serve_sglang.sh agent\n"
             "# snapshot /metrics, run the sweep, snapshot again, then write\n"
             "# data/serving/configs.json as a list of ServingConfig kwargs")
     return markdown(compare([ServingConfig(**c) for c in cfgs]))
 
 
-def section_training() -> str:
-    stats = _load_json(Path("data/rft/stats.json"))
-    if not stats:
+REFERENCE_CMD = (
+    "python -m pasarbench.sweep --backend openai --model deepseek-v4-pro \\\n"
+    "  --base-url https://api.deepseek.com/v1 --extra-body '{\"thinking\":{\"type\":\"disabled\"}}' \\\n"
+    "  --simulator openai --sim-model RedHatAI/gemma-4-31B-it-FP8-Dynamic --sim-url http://localhost:8001/v1 --sim-extra-body '{}' \\\n"
+    "  --suite all -k 5 --temperature 0 --strategies full --workers 8 --run-id P-ref --resume")
+
+
+def _headers(cell: Path) -> dict[str, dict]:
+    out = {}
+    for f in sorted(cell.glob("*.jsonl")):
+        try:
+            with f.open() as fh:
+                out[f.stem] = json.loads(fh.readline())
+        except (OSError, json.JSONDecodeError):
+            continue
+    return out
+
+
+def _passk(eps: list[dict]) -> tuple[float, float, int]:
+    by: dict[str, list[bool]] = {}
+    for e in eps:
+        by.setdefault(e["task_id"], []).append(e["passed"])
+    k = max(len(v) for v in by.values())
+    return (sum(e["passed"] for e in eps) / len(eps),
+            sum(all(v) for v in by.values()) / len(by), k)
+
+
+def section_training(traces: Path = Path("traces"),
+                     spec: str = "base=P-base,rft=P-rft,reference=P-ref") -> str:
+    """Base, the fold-swapped fine-tunes and the API reference, one table.
+
+    Everything a reader needs to trust the RFT row is checked here rather than
+    asserted in prose: the same customer and temperature in every run, the
+    tasks unchanged since the split, and every held-out episode answered by
+    the model that did not train on its fold."""
+    from pasarbench.diagnose import load_episodes, paired_episodes
+    from pasarbench.rl.split import other_fold
+
+    runs = dict(kv.split("=", 1) for kv in spec.split(",") if "=" in kv)
+    cells = {role: traces / name / "full" for role, name in runs.items()}
+    eps = {role: load_episodes(c) for role, c in cells.items() if c.exists()}
+    eps = {r: e for r, e in eps.items() if e}
+    heads = {role: _headers(cells[role]) for role in eps}
+
+    if "base" not in eps:
         return _missing(
-            "no rollouts collected — post-training has not started",
-            "./scripts/serve_vllm.sh agent-8b\n"
-            "python scripts/train_rft.py collect --k 8 --temperature 1.0")
-    dead = stats.get("traps_with_zero_signal") or []
-    out = [f"Rollouts: {stats['rollouts']}, pass rate {stats['pass_rate']:.3f}, "
-           f"mean reward {stats['mean_reward']:+.3f}, "
-           f"{stats['gated_by_forbidden']} gated by a forbidden action\n"]
-    if dead:
-        out.append(f"**{len(dead)} trap(s) never solved**, so RFT cannot teach "
-                   f"them and they will still fail after training: "
-                   f"{', '.join('`' + d + '`' for d in dead)}\n")
-    out.append("| model | pass^1 | pass^4 | $/resolved |")
-    out.append("|---|---|---|---|")
-    for name in ("base 8B", "RFT 8B", "GRPO 8B", "72B reference"):
-        out.append(f"| {name} | {MISSING} | {MISSING} | {MISSING} |")
-    out.append("\nThe gap-closing claim goes here once all four rows are filled.")
+            "the base model has not been run with the post-training customer",
+            "# on the GPU node (docs/RUNBOOK.md, phase 4)\n"
+            "bash scripts/setup_node.sh\n"
+            "bash scripts/gpu_pipeline.sh smoke\n"
+            "bash scripts/gpu_pipeline.sh stage1   # split, train_rft.py baseline and collect, examples")
+
+    folds = _load_json(Path("data/splits/folds.json"))
+    labels = {"base": "base", "rft": "RFT, each on its held-out fold",
+              "reference": "reference"}
+    out = []
+    if folds:
+        out.append(f"*Split `{folds['split_digest']}`: two folds by family — locale "
+                   f"twins together, every trap in both. Each fine-tune is scored "
+                   f"only on the fold it did not train on, so between them all "
+                   f"{len(folds['task_fold'])} tasks are held out. This measures new "
+                   f"worlds, markets and languages for traps the model has seen.*\n")
+
+    out.append("| model | run | tasks | pass^1 | pass^k | tokens per resolved "
+               "| vs base, paired by task |")
+    out.append("|---|---|---|---|---|---|---|")
+    verdicts = []
+    for role in ("base", "rft", "reference"):
+        if role not in eps:
+            out.append(f"| {labels[role]} | `{runs.get(role, '-')}` | {MISSING} | "
+                       f"{MISSING} | {MISSING} | {MISSING} | {MISSING} |")
+            continue
+        e = eps[role]
+        models = sorted({h.get("requested_model") or "?" for h in heads[role].values()})
+        p1, pk, k = _passk(e)
+        resolved = sum(x["passed"] for x in e)
+        tpr = sum(x["tokens"] for x in e) / resolved if resolved else float("nan")
+        g = paired_episodes(eps["base"], e) if role != "base" else None
+        vs = ("—" if g is None else
+              f"{g['diff']:+.3f}; {g['better']} tasks better, {g['worse']} worse, "
+              f"p={g['p']:.3f}")
+        name = labels[role] + (f" `{models[0]}`" if len(models) == 1 else "")
+        out.append(f"| {name} | `{runs[role]}` | {len({x['task_id'] for x in e})} | "
+                   f"{p1:.3f} | {pk:.3f} (k={k}) | {tpr:,.0f} | {vs} |")
+        if g:
+            verdicts.append((role, g))
+
+    out.append("")
+    for role, g in verdicts:
+        what = labels[role].split(",")[0]
+        if g["resolved"]:
+            out.append(f"- **{what} is {'better' if g['diff'] > 0 else 'worse'} than "
+                       f"base** on held-out tasks (p={g['p']:.3f}).")
+        else:
+            out.append(f"- {what} vs base: **INCONCLUSIVE** — {g['better']} tasks "
+                       f"better and {g['worse']} worse is within noise (p={g['p']:.3f}).")
+    if "rft" not in eps:
+        out.append(f"\nRFT: {MISSING}\n\n```bash\n"
+                   "bash scripts/gpu_pipeline.sh stage1   # if not yet run\n"
+                   "# read logs/sim_audit.txt, logs/check-A.txt, data/rft/stats.json\n"
+                   "bash scripts/gpu_pipeline.sh stage2   # one LoRA per fold, held-out eval\n```")
+    if "reference" not in eps:
+        out.append(f"\nReference: {MISSING}, same customer, through the API:\n\n"
+                   f"```bash\n{REFERENCE_CMD}\n```")
+
+    # -- checks
+    checks = []
+    sims = {h.get("simulator") for hs in heads.values() for h in hs.values()}
+    checks.append((len(sims) == 1, f"one customer in every run: "
+                   f"{', '.join('`' + str(x) + '`' for x in sorted(map(str, sims)))}"))
+    temps = {role: {h.get("agent_temperature") for h in hs.values()}
+             for role, hs in heads.items()}
+    ok_t = all(t == {0.0} for t in temps.values())
+    checks.append((ok_t, "agent temperature 0 in every scored run" if ok_t else
+                   f"agent temperatures differ or are unrecorded: "
+                   f"{ {r: sorted(map(str, t)) for r, t in temps.items()} }"))
+    ks = {role: _passk(e)[2] for role, e in eps.items()}
+    checks.append((len(set(ks.values())) == 1, f"k per task: {ks}"))
+    if folds:
+        moved = sorted({h["task_id"] for hs in heads.values() for h in hs.values()
+                        if h.get("task_digest") and folds["task_digest"].get(h["task_id"])
+                        and h["task_digest"] != folds["task_digest"][h["task_id"]]})
+        checks.append((not moved, "tasks unchanged since the split" if not moved else
+                       f"{len(moved)} task(s) changed since the split: {moved[:5]}"))
+    if "rft" in eps:
+        rows = _load_json(traces / runs["rft"] / "summary.json") or [{}]
+        fm = ((rows[0] or {}).get("setup") or {}).get("fold_models")
+        if not folds or not fm:
+            checks.append((False, "cannot confirm the held-out routing: "
+                           + ("no data/splits/folds.json" if not folds
+                              else "the RFT run records no --fold-models")))
+        else:
+            trained = dict(kv.split("=", 1) for kv in fm.split(","))
+            wrong = [h["task_id"] for h in heads["rft"].values()
+                     if h.get("requested_model") !=
+                     trained.get(other_fold(folds["task_fold"].get(h["task_id"], "A")))]
+            n = len(heads["rft"])
+            checks.append((not wrong, f"{n - len(wrong)}/{n} RFT episodes answered by "
+                           f"the model that did not train on that task's fold"
+                           + (f" — LEAKED: {sorted(set(wrong))[:5]}" if wrong else "")))
+    out.append("\nChecks:\n")
+    out += [f"- {'✓ ' if ok else '✗ **'}{msg}{'' if ok else '**'}" for ok, msg in checks]
+
+    # -- per trap
+    if "rft" in eps:
+        def by_trap(e):
+            d: dict[str, list[bool]] = {}
+            for x in e:
+                d.setdefault(x["trap"], []).append(x["passed"])
+            return {t: sum(v) / len(v) for t, v in d.items()}
+        bt, rt = by_trap(eps["base"]), by_trap(eps["rft"])
+        out.append("\n| trap | base | RFT | change |")
+        out.append("|---|---|---|---|")
+        for t in sorted(bt, key=lambda t: rt.get(t, 0) - bt[t]):
+            if t in rt:
+                out.append(f"| `{t}` | {bt[t]:.2f} | {rt[t]:.2f} | {rt[t] - bt[t]:+.2f} |")
+        out.append("\n*Per-trap moves are leads to read in the traces, not results: "
+                   "each trap is ~13 tasks, and only the paired test above says "
+                   "whether anything moved at all.*")
+
+    stats = _load_json(Path("data/rft/stats.json"))
+    if stats and "per_trap_pass_rate" in stats:
+        dead = stats.get("traps_with_zero_signal") or {}
+        out.append(f"\nCollection (`{stats.get('source')}`): {stats['episodes']} "
+                   f"episodes at temperature 1.0, pass rate {stats['pass_rate']:.3f}; "
+                   f"examples per fold {stats['examples']}.")
+        for fold, traps in dead.items():
+            if traps:
+                out.append(f"- fold {fold} never solved {len(traps)} trap(s), so "
+                           f"rft-{fold} had nothing to learn for: "
+                           f"{', '.join('`' + t + '`' for t in traps)}")
     return "\n".join(out)
 
 
@@ -570,7 +914,7 @@ is shown inline. **Do not fill these in by hand** — re-run and regenerate.
 ## The suite
 
 {suite}
-
+{noise}
 ## 1. Context ablation
 
 {context}
@@ -616,12 +960,19 @@ def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--traces", default="traces")
     ap.add_argument("--out", default="RESULTS.md")
+    ap.add_argument("--noise-pair", default="",
+                    help="two cells YOU know ran the same configuration, e.g. "
+                         "H-context/full,I-tools2/full+all-20 -- reported as the "
+                         "run-to-run noise floor every other comparison sits on")
     ap.add_argument("--context-run", default="",
                     help="run under traces/ for section 1 (default: largest)")
     ap.add_argument("--tools-run", default="",
                     help="run under traces/ for section 2 (default: largest)")
     ap.add_argument("--multilingual-run", default="",
-                    help="run, or run/cell, for section 3 (default: largest)")
+                    help="run, or run/cell, for section 3 (default: largest). "
+                         "Several, comma-separated, adds a replication table")
+    ap.add_argument("--post-training", default="base=P-base,rft=P-rft,reference=P-ref",
+                    help="runs for section 6: base, fold-swapped RFT, API reference")
     args = ap.parse_args()
 
     runs = sorted(p for p in Path(args.traces).glob("*") if p.is_dir()) \
@@ -634,11 +985,14 @@ def main() -> None:
         "tools": ("2. Tool scaling", section_tools(runs, args.tools_run)),
         "multilingual": ("3. Multilingual diagnosis",
                          section_multilingual(runs, judge, args.multilingual_run)),
-        "judge": ("4. Judge calibration", section_judge()),
+        "judge": ("4. Judge calibration",
+                  section_judge() + section_judge_vs_verifier()),
         "serving": ("5. Serving and cost", section_serving()),
-        "training": ("6. Post-training", section_training()),
+        "training": ("6. Post-training",
+                     section_training(Path(args.traces), args.post_training)),
     }
     body = TEMPLATE.format(missing=MISSING, suite=section_suite(),
+                           noise=section_noise(Path(args.traces), args.noise_pair),
                            **{k: text for k, (_, text) in sections.items()})
     Path(args.out).write_text(body)
 

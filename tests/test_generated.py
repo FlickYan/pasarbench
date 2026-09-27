@@ -18,6 +18,7 @@ Run: python -m tests.test_generated
 from __future__ import annotations
 
 from collections import Counter, defaultdict
+from pathlib import Path
 
 from pasarbench.db import NOW, Database, to_sgd, ts
 from pasarbench.generate import (DELIVERED_IN_WINDOW, DELIVERED_OUT_WINDOW,
@@ -237,6 +238,109 @@ def test_simulator_qa():
           a["leak_rate"] == 0.25 and a["clean_rate"] == 0.25, str(a))
 
 
+def test_leak_detector_reads_every_language():
+    """#26: the customer's answers were scored as leaks wherever the agent asked
+    in words the patterns lacked. Every phrasing below is taken from a real
+    request the first pattern list missed; each must now read as a request, and
+    the answer that follows it as correct behaviour."""
+    print("\n=== simulator QA: requests the first pattern list could not read ===")
+    from pasarbench.harness.types import Message
+    from pasarbench.simqa import _asked_for, leak_report
+
+    observed = [
+        ("id", "phone_last4", "Bisa sebutkan **4 digit terakhir nomor telepon** yang terdaftar di akun Anda?"),
+        ("id", "order_id", "Bisa beri tahu nomor order Anda?"),
+        ("ms", "order_id", "Boleh berikan nombor order yang berkaitan dengan pengecas tersebut?"),
+        ("th", "order_id", "รบกวนช่วยแจ้ง **เลขออเดอร์** ให้หน่อยได้ไหมคะ"),
+        ("zh", "order_id", "请提供您的订单号，我帮您查询。"),
+        ("zh", "phone_last4", "为了核实身份，请提供您注册手机号的后四位。"),
+    ]
+    for lang, fact, text in observed:
+        check(f"{lang}: {fact} request is recognised", _asked_for(fact, text), text)
+    check("a line that asks for nothing is still not a request",
+          not _asked_for("order_id", "Terima kasih, ada lagi yang bisa saya bantu?"))
+
+    task = next(t for t in TASKS if t.trap == "happy_path_return_refund"
+                and t.language == "en")
+    oid = task.hidden_facts["order_id"]
+    answered = [Message("system", "..."), Message("user", "ขอคืนสินค้าค่ะ"),
+                Message("assistant", "รบกวนช่วยแจ้ง เลขออเดอร์ ให้หน่อยได้ไหมคะ"),
+                Message("user", f"{oid} ค่ะ")]
+    r = leak_report(task, answered)
+    check("a Thai answer to a Thai request is on request, not a leak",
+          not r.leaked and r.revealed_on_request, str(r.to_dict()))
+    volunteered = [Message("system", "..."), Message("user", "ขอคืนสินค้าค่ะ"),
+                   Message("assistant", "ยินดีช่วยค่ะ"), Message("user", f"{oid} ค่ะ")]
+    v = leak_report(task, volunteered)
+    check("…and the same fact with no request before it is still a leak",
+          v.leaked and v.leak_context and v.leak_context[0][2] == "ยินดีช่วยค่ะ",
+          str(v.to_dict()))
+
+    from pasarbench.simqa import stall_report
+    stalled = [Message("system", "..."), Message("user", "我要退货"),
+               Message("assistant", "请提供您的订单号。"), Message("user", "我不记得了"),
+               Message("assistant", "麻烦您再查一下订单号？"), Message("user", f"是 {oid}")]
+    check("a request the next turn does not answer counts as a stall",
+          stall_report(task, stalled) == (2, 1), str(stall_report(task, stalled)))
+    check("…and a fact already given is not asked for again",
+          stall_report(task, stalled + [Message("assistant", "订单号是多少？"),
+                                        Message("user", "刚说了")]) == (2, 1))
+
+
+def test_leak_rates_are_per_episode():
+    """inspect_trace looked each episode's report up by task id, so every seed
+    of a task inherited seed 0's verdict."""
+    print("\n=== simulator QA: one report per episode, not per task ===")
+    import importlib.util
+    from pathlib import Path
+    spec = importlib.util.spec_from_file_location(
+        "inspect_trace", Path(__file__).resolve().parent.parent / "scripts" / "inspect_trace.py")
+    it = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(it)
+
+    task = next(t for t in TASKS if t.trap == "happy_path_return_refund"
+                and t.language == "en")
+    oid = task.hidden_facts["order_id"]
+
+    def ep(seed, agent_line):
+        return {"id": f"{task.task_id}__r{seed}", "task_id": task.task_id, "language": "en",
+                "steps": [{"model_content": agent_line, "tool_calls": []}],
+                "events": [{"kind": "user_turn", "turn": 1, "text": f"It's {oid}"}]}
+
+    pairs = it.leak_reports([ep(0, "Sure, one moment."), ep(1, "What is your order number?")],
+                            {task.task_id: task})
+    check("two seeds of one task get their own verdicts",
+          [bool(r.leaked) for _, r in pairs] == [True, False],
+          str([(e["id"], r.leaked) for e, r in pairs]))
+
+    print("\n=== simulator QA: an audit must read the task that produced the trace ===")
+    import json as _json
+    import tempfile
+    from pasarbench.harness.trace import TraceWriter
+    from pasarbench.tasks import task_digest
+    tmp = tempfile.mkdtemp()
+    tw = TraceWriter(tmp, run_id="r")
+    run_episode(task, Database.fresh(task.db_patch), ScriptedBackend(SOLUTIONS[task.task_id]),
+                trace=tw)
+    tw.close()
+    head = _json.loads(next(Path(tw.dir).glob("*.jsonl")).read_text().splitlines()[0])
+    check("every trace header records the digest of its task",
+          head.get("task_digest") == task_digest(task), str(head))
+
+    tasks = {task.task_id: task}
+    fresh = dict(ep(0, "What is your order number?"), head={"task_digest": task_digest(task)})
+    moved = dict(ep(1, "What is your order number?"), head={"task_digest": "000000000000"})
+    kept = it.same_tasks([fresh, moved], tasks)
+    check("a trace whose task has changed since the run is left out",
+          [e["id"] for e in kept] == [fresh["id"]], str([e["id"] for e in kept]))
+    old = dict(ep(2, "What is your order number?"), head={})
+    old["events"] = [{"kind": "user_turn", "turn": 1, "text": "GO-addresID"}]
+    check("old traces where the customer never says today's order id are refused",
+          it.same_tasks([old], tasks) == [])
+    check("…and old traces that do say it are kept",
+          len(it.same_tasks([dict(ep(3, "Order number?"), head={})], tasks)) == 1)
+
+
 def main() -> int:
     test_all_solvable()
     test_solutions_run_through_harness()
@@ -246,6 +350,8 @@ def main() -> int:
     test_date_invariants()
     test_coverage()
     test_simulator_qa()
+    test_leak_detector_reads_every_language()
+    test_leak_rates_are_per_episode()
     print(f"\n{len(PASS)} passed, {len(FAIL)} failed")
     for f in FAIL:
         print(f"  FAILED: {f}")

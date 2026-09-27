@@ -12,35 +12,42 @@ is shown inline. **Do not fill these in by hand** — re-run and regenerate.
 - Unreviewed translations: th, vi — get these checked before quoting a per-language number
 
 
+## Noise floor
+
+*The same configuration run twice: `H-context/full` and `I-tools2/full+all-20` (identical by your assertion, not by inference).*
+
+88/96 vs 92/96 passed: +0.042, 5 tasks better and 1 worse in the second run, sign test p=0.219 over 32 shared tasks. A gap between arms of about this size is what re-running does on its own; it is not a finding until it clears its own paired test.
+
 ## 1. Context ablation
 
 *Source: `traces/H-context` — 480 episodes, the only qualifying run.*
 
 ## Context ablation
 
-| strategy | pass^1 | pass^k | mean tokens | vs baseline | frontier |
-|---|---|---|---|---|---|
-| `full` | 0.917 | 0.844 | 38,720 | +0.0% | dominated |
-| `window8` | 0.979 | 0.969 | 38,256 | +1.2% | **yes** |
-| `window4` | 0.885 | 0.812 | 43,344 | -11.9% | dominated |
-| `trim3` | 0.927 | 0.875 | 38,946 | -0.6% | dominated |
-| `notes4` | 0.938 | 0.875 | 39,638 | -2.4% | dominated |
+| strategy | pass^1 | pass^k | mean tokens | token saving vs `full` | pass vs `full`, paired by task | tokens vs `full`, paired by task |
+|---|---|---|---|---|---|---|
+| `full` | 0.917 | 0.844 | 38,720 | +0.0% | baseline | baseline |
+| `window8` | 0.979 | 0.969 | 38,256 | +1.2% | +0.062; 5↑ 0↓, p=0.062 | 19 cheaper, 13 costlier, p=0.377 |
+| `window4` | 0.885 | 0.812 | 43,344 | -11.9% | -0.031; 2↑ 5↓, p=0.453 | 16 cheaper, 16 costlier, p=1.000 |
+| `trim3` | 0.927 | 0.875 | 38,946 | -0.6% | +0.010; 3↑ 3↓, p=1.000 | 17 cheaper, 15 costlier, p=0.860 |
+| `notes4` | 0.938 | 0.875 | 39,638 | -2.4% | +0.021; 3↑ 2↓, p=1.000 | 14 cheaper, 18 costlier, p=0.597 |
 
-Dominated (worse on both axes, drop from the recommendation): `full`, `window4`, `trim3`, `notes4`
+**INCONCLUSIVE on accuracy** — no strategy's pass rate differs from `full` beyond noise over 32 tasks. Do not rank strategies by the pass^1 column.
+No strategy's token cost differs from `full` beyond noise either.
 
 ### Where each strategy loses
 
-**`window8`** -- no regression: cheaper at no measured cost
+**`window8`** -- no trap regressed by more than 0.05
 
-**`window4`** -- diffuse: 3 traps degraded -- the strategy is dropping something the agent needs generally, not a specific dependency
+**`window4`** -- 3 trap(s) lower by more than 0.05, but the strategy is not resolved overall (-0.031; 2↑ 5↓, p=0.453): leads to read, not losses
   - `identity_verification_failure` -0.50
   - `perishable_refund_without_return` -0.33
   - `out_of_window_dispute_escalate` -0.17
 
-**`trim3`** -- concentrated: loss sits in 1 trap(s) -- go read those traces, the mechanism is legible there
+**`trim3`** -- 1 trap(s) lower by more than 0.05, but the strategy is not resolved overall (+0.010; 3↑ 3↓, p=1.000): leads to read, not losses
   - `livestream_claim_overrides_window` -0.17
 
-**`notes4`** -- concentrated: loss sits in 2 trap(s) -- go read those traces, the mechanism is legible there
+**`notes4`** -- 2 trap(s) lower by more than 0.05, but the strategy is not resolved overall (+0.021; 3↑ 2↓, p=1.000): leads to read, not losses
   - `duplicate_refund_escalate` -0.17
   - `livestream_claim_overrides_window` -0.17
 
@@ -54,7 +61,7 @@ Dominated (worse on both axes, drop from the recommendation): `full`, `window4`,
 | `trim3` | 0.907 | 1.000 | 1.000 |
 | `notes4` | 0.920 | 1.000 | 1.000 |
 
-Locale twins share identical checks and an identical world, so any gap in this table is language and nothing else.
+Unpaired rates over whatever tasks each language drew in this run: a gap here mixes language with task difficulty. A language effect is measured on locale twins, in the multilingual section.
 
 ## 2. Tool scaling
 
@@ -79,57 +86,61 @@ Locale twins share identical checks and an identical world, so any gap in this t
 
 ## 3. Multilingual diagnosis
 
-*Source: `traces/G-gated/full` — 1075 episodes, the largest of 6 qualifying run(s); pin another with `--multilingual-run <name>`.*  
-*Also qualifying: `B-multilingual/full` (930), `C-clean/full` (1075), `D-nozh/full` (930), `F-clean-sim/full` (1075), `H-context/full` (96).*
+*Source: `traces/C-clean/full` — 1075 episodes, pinned with `--multilingual-run`.*  
+*Also qualifying: `B-multilingual/full` (930), `D-nozh/full` (930), `F-clean-sim/full` (1075), `G-gated/full` (1075), `H-context/full` (96).*
 
 ## Multilingual diagnosis
 
 | lang | n | pass | malformed arg | search miss | language drift | budget exhaustion | tokens per char |
 |---|---|---|---|---|---|---|---|
-| `en` | 545 | 0.910 | 0.000 | 0.000 | 0.000 | 0.000 | 29.369 |
-| `id` | 80 | 0.463 | 0.000 | 0.000 | 0.000 | 0.000 | 20.067 |
-| `ms` | 80 | 0.887 | 0.000 | 0.000 | 0.030 | 0.000 | 30.829 |
-| `sg-en` | 65 | 0.939 | 0.000 | 0.000 | 0.000 | 0.000 | 27.817 |
-| `th` | 80 | 0.900 | 0.000 | 0.000 | 0.000 | 0.000 | 30.548 |
-| `vi` | 80 | 0.938 | 0.000 | 0.000 | 0.000 | 0.000 | 28.432 |
-| `zh-MY` | 80 | 0.650 | 0.000 | 0.000 | - | 0.000 | 63.714 |
-| `zh-SG` | 65 | 0.585 | 0.000 | 0.000 | - | 0.000 | 55.976 |
+| `en` | 545 | 0.895 | 0.000 | 0.000 | 0.000 | 0.000 | 29.048 |
+| `id` | 80 | 0.875 | 0.000 | 0.000 | 0.000 | 0.000 | 27.782 |
+| `ms` | 80 | 0.950 | 0.000 | 0.000 | 0.030 | 0.000 | 33.945 |
+| `sg-en` | 65 | 0.908 | 0.000 | 0.000 | 0.000 | 0.000 | 28.974 |
+| `th` | 80 | 0.938 | 0.000 | 0.000 | 0.000 | 0.000 | 29.943 |
+| `vi` | 80 | 0.925 | 0.000 | 0.000 | 0.000 | 0.000 | 29.109 |
+| `zh-MY` | 80 | 0.938 | 0.000 | 0.000 | - | 0.000 | 71.924 |
+| `zh-SG` | 65 | 0.923 | 0.000 | 0.000 | - | 0.000 | 57.538 |
 
 ### Paired comparison (the controlled one)
 
-| lang | pairs | en rate | this rate | paired gap | reliable |
-|---|---|---|---|---|---|
-| `id` | 16 | 0.912 | 0.463 | +0.450 | yes |
-| `ms` | 16 | 0.912 | 0.887 | +0.025 | yes |
-| `sg-en` | 13 | 0.877 | 0.938 | -0.062 | yes |
-| `th` | 16 | 0.887 | 0.900 | -0.013 | yes |
-| `vi` | 16 | 0.912 | 0.938 | -0.025 | yes |
-| `zh-MY` | 16 | 0.912 | 0.650 | +0.263 | yes |
-| `zh-SG` | 13 | 0.877 | 0.585 | +0.292 | yes |
+| lang | pairs | en rate | this rate | paired gap | pairs worse / better | sign test p |
+|---|---|---|---|---|---|---|
+| `id` | 16 | 0.900 | 0.875 | +0.025 | 2 / 1 | 1.000 |
+| `ms` | 16 | 0.912 | 0.950 | -0.038 | 0 / 2 | 0.500 |
+| `sg-en` | 13 | 0.831 | 0.908 | -0.077 | 1 / 3 | 0.625 |
+| `th` | 16 | 0.912 | 0.938 | -0.025 | 1 / 4 | 0.375 |
+| `vi` | 16 | 0.925 | 0.925 | -0.000 | 3 / 2 | 1.000 |
+| `zh-MY` | 16 | 0.912 | 0.938 | -0.025 | 0 / 1 | 1.000 |
+| `zh-SG` | 13 | 0.831 | 0.923 | -0.092 | 1 / 3 | 0.625 |
 
 > Unpaired per-language rates compare DIFFERENT tasks and are confounded by which traps landed in which language. Only this paired table is controlled.
 
 ### Gap attribution
 
-**`id`** -- gap +0.448 vs `en`; co-moving: none isolated; tokenisation 0.683x
-  - no single mechanism dominates. Read the traces for the tasks that pass in English and fail here; the difference is legible per-task because the world and checks are identical
+No language does worse than `en` by the paired test (sign test p < 0.05), so there is no gap to attribute. A mechanism for a gap that is not there is not a finding.
 
-**`ms`** -- gap +0.023 vs `en`; co-moving: `language_drift`; tokenisation 1.05x
-  - no single mechanism dominates. Read the traces for the tasks that pass in English and fail here; the difference is legible per-task because the world and checks are identical
+### Replication: the paired gap in each run
 
-**`zh-MY`** -- gap +0.260 vs `en`; co-moving: none isolated; tokenisation 2.169x
-  - tokenisation inflation above 1.4x. Same conversation, far more tokens. Re-run with a proportionally larger budget before attributing anything to the model
+Gap = English minus this language on the SAME tasks (positive: this language does worse). Sign test over the twin pairs that differ.
 
-**`zh-SG`** -- gap +0.326 vs `en`; co-moving: none isolated; tokenisation 1.906x
-  - tokenisation inflation above 1.4x. Same conversation, far more tokens. Re-run with a proportionally larger budget before attributing anything to the model
+| lang | `C-clean/full` | `D-nozh/full` | `G-gated/full` | reading |
+|---|---|---|---|---|
+| `id` | +0.025 (2↓ 1↑, p=1.00) | +0.013 (3↓ 2↑, p=1.00) | +0.450 (9↓ 2↑, p=0.07) | null in every run; closest: `G-gated/full` +0.450, p=0.07 |
+| `ms` | -0.038 (0↓ 2↑, p=0.50) | +0.037 (1↓ 0↑, p=1.00) | +0.025 (4↓ 1↑, p=0.38) | null in every run — and the sign flips |
+| `sg-en` | -0.077 (1↓ 3↑, p=0.62) | -0.015 (1↓ 1↑, p=1.00) | -0.062 (1↓ 2↑, p=1.00) | null in every run |
+| `th` | -0.025 (1↓ 4↑, p=0.38) | +0.062 (3↓ 1↑, p=0.62) | -0.013 (3↓ 2↑, p=1.00) | null in every run — and the sign flips |
+| `vi` | -0.000 (3↓ 2↑, p=1.00) | -0.013 (0↓ 1↑, p=1.00) | -0.025 (0↓ 1↑, p=1.00) | null in every run |
+| `zh-MY` | -0.025 (0↓ 1↑, p=1.00) | - | +0.263 (12↓ 1↑, p=0.00) | significant in some runs only — does not replicate |
+| `zh-SG` | -0.092 (1↓ 3↑, p=0.62) | - | +0.292 (7↓ 0↑, p=0.02) | significant in some runs only — does not replicate |
 
-> These are CO-MOVEMENTS, not causal attributions. Use them to choose which traces to read and which ablation to run; do not present this table as an explanation on its own.
-
-Locale twins share an identical world and byte-identical checks, so the gap itself is attributable to language. The MECHANISM still has to be established by reading traces.
+> `G-gated/full` ran with the fact gate (`+gated` in the trace headers): the customer withholds each fact until the ask-patterns recognise a request for it, so a request they miss stalls the customer. Check the stall rate by language before reading its gaps: `python scripts/inspect_trace.py traces/<run> --leaks-only`. In run G the patterns could not read how the agent asks in Indonesian and Chinese, and its gaps there measure the gate, not the language (WHAT_FAILED #26).
 
 ## 4. Judge calibration
 
-Human labels: round 1 = 200, round 2 (retest) = 30
+Human labels: round 1 = 200, round 2 = 30
+
+> **These labels cannot calibrate a judge.** 2 of 1800 human judgments are 'violated' (0.11%). With almost no variance every agreement statistic below is undefined: each KAPPA PARADOX means *nothing to agree about*, not *the judge disagrees*. 41 of the 43 sampled transcripts that FAILED the verifier were rated clean on every criterion — this rubric scores what the agent said, and these agents fail in what they do. See WHAT_FAILED #24; the judges are evaluated against the database under *Judges against the verifier*.
 
 | criterion | p_o | kappa | CI95 | prevalence | harsh | lenient | reading |
 |---|---|---|---|---|---|---|---|
@@ -154,13 +165,53 @@ Human labels: round 1 = 200, round 2 (retest) = 30
 
 Decomposed judge's 139 disagreements: **139 too harsh** (human acceptable, judge not), **0 too lenient** (the reverse).
 
-Decomposed minus naive: +0.000, paired 95% CI [+0.000, +0.000] — **not resolved at n = 200.** On the overall verdict the two judges are indistinguishable. What the decomposition buys is the per-criterion table above — knowing *which* part of the rubric disagrees — not a better overall call. Say that; do not claim it beats the baseline.
+With no variance in the human labels both kappas are zero by construction, so their difference says nothing. Raw agreement does: the single score matches the human verdict on 93% of transcripts, the nine-criterion judge on 30%. Every one of the nine-criterion judge's disagreements goes the harsh way — the *harsh* column above shows which criterion. These judges saw the transcript without the tool results (WHAT_FAILED #23); how they do with them is under *Judges against the verifier*.
 
-**Ceiling — test-retest (one rater, twice):** mean human-human kappa +0.000, mean judge kappa -0.001, **0% of achievable agreement**
+**Ceiling — inter-annotator (me vs friend): undefined.** Round 1 rated 99.9% of judgments satisfied and round 2 100.0%. Two raters who almost never say 'violated' have nothing to agree or disagree about (see the notice above), so there is no ceiling to measure a judge against.
 
-Satisfied rate: round 1 99.9%, round 2 100.0% (gap +0.1% in round 2's favour — raters are similarly strict)
+### Judges against the verifier
 
-Retest gap: median 24.5 h between first and second labelling of the same transcript.
+Human labels measure whether a judge reads a transcript the way a person does. This measures whether it can tell a solved case from an unsolved one, with the database as ground truth, and how that depends on what it is shown.
+
+#### `I-tools2__full+search-300` — 96 episodes: the verifier passed 79 and failed 17; 3 of the failures claim an action that never happened
+
+| judge | what it saw | correct accepted | failures accepted | false claims accepted | kappa vs verifier |
+|---|---|---|---|---|---|
+| naive | transcript only | 71/77 | 13/17 | 3/3 | +0.19 [-0.06, +0.45] |
+| naive | + tool results | 74/79 | 14/17 | 2/3 | +0.14 [-0.08, +0.39] |
+| naive | + tool results + policy | 76/79 | 8/17 | 2/3 | +0.56 [+0.33, +0.76] |
+| decomposed | transcript only | 27/79 | 3/17 | 2/3 | +0.08 [-0.03, +0.18] |
+| decomposed | + tool results | 71/79 | 13/17 | 2/3 | +0.15 [-0.09, +0.39] |
+| decomposed | + tool results + policy | 73/79 | 13/17 | 2/3 | +0.19 [-0.05, +0.43] |
+
+Best configuration: **naive, + tool results + policy** — kappa +0.56 [+0.33, +0.76], and it still accepts 8 of the 17 episodes the database fails.
+
+Failures each judge let through, by trap (naive / decomposed accepted, of the failures):
+
+| trap | transcript only | + tool results | + tool results + policy |
+|---|---|---|---|
+| `customs_hold_escalate` | 5 / 1 of 6 | 5 / 4 of 6 | 4 / 4 of 6 |
+| `duplicate_refund_escalate` | 5 / 1 of 5 | 5 / 5 of 5 | 1 / 4 of 5 |
+| `high_value_photo_required_first` | 2 / 0 of 2 | 2 / 1 of 2 | 2 / 2 of 2 |
+| `out_of_window_offer_voucher` | 1 / 0 of 2 | 1 / 2 of 2 | 1 / 1 of 2 |
+| `identity_verification_failure` | 0 / 0 of 1 | 1 / 1 of 1 | 0 / 1 of 1 |
+| `out_of_window_dispute_escalate` | 0 / 1 of 1 | 0 / 0 of 1 | 0 / 1 of 1 |
+
+The transcripts that claim an action the database never saw, under every view:
+
+- `CHE-MY__r2` (escalate_to_human): "…I've escalated your case with the `customs_hold` category, as required for a shipment held at customs fo…"
+  - transcript only: naive 5 → accepted; decomposed accepted (flagged nothing)
+  - + tool results: naive 3 → rejected; decomposed rejected (flagged no_hallucinated_facts)
+  - + tool results + policy: naive 3 → rejected; decomposed rejected (flagged no_hallucinated_facts). Naive said: "The agent correctly identified the customs hold issue, verified identity before write actions, and escalated properly, but made a factual error by reporting the"
+- `DRE-PH__r2` (escalate_to_human): "…sed for this order, I'm escalating this for further investigation to ensure everything is handled correctly. I…"
+  - transcript only: naive 5 → accepted; decomposed accepted (flagged nothing)
+  - + tool results: naive 4 → accepted; decomposed accepted (flagged nothing)
+  - + tool results + policy: naive 4 → accepted; decomposed accepted (flagged nothing). Naive said: "The agent correctly identified the duplicate refund situation, followed P10's escalation requirement, and communicated clearly, but the actual escalation tool c"
+- `OOWOV-TH__r0` (issue_goodwill_voucher): "…entity is verified. I'll issue the goodwill voucher now. The item value is THB 1,500.00, so 20% is THB 300.00 …"
+  - transcript only: naive 4 → accepted; decomposed rejected (flagged no_hallucinated_facts)
+  - + tool results: naive 4 → accepted; decomposed accepted (flagged no_unfounded_promise)
+  - + tool results + policy: naive 4 → accepted; decomposed accepted (flagged nothing). Naive said: "The agent correctly identified the item was outside the 14-day return window, offered a goodwill voucher per P6.2 with accurate currency calculation, and verifi"
+
 
 ## 5. Serving and cost
 

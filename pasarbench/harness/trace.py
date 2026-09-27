@@ -49,6 +49,15 @@ class TraceWriter:
     def event(self, kind: str, **payload: Any) -> None:
         self._write({"type": "event", "kind": kind, **payload})
 
+    def messages(self, messages: list[dict[str, Any]], **payload: Any) -> None:
+        """The conversation exactly as the agent saw it, for training.
+
+        Traces otherwise keep which tools were called, not what came back
+        (#23), which is enough to audit an episode and not enough to train on
+        it: a training example is the prompt the model saw, token for token.
+        Written only when a sweep asks for it (--save-messages)."""
+        self._write({"type": "messages", "messages": messages, **payload})
+
     def close_episode(self, stop_reason: str, passed: bool | None = None,
                       failures: list[str] | None = None,
                       budget: dict[str, Any] | None = None) -> None:
@@ -79,6 +88,7 @@ class NullTrace:
                      run_index: int | None = None, **kw: Any) -> None: ...
     def step(self, record: dict[str, Any]) -> None: ...
     def event(self, kind: str, **payload: Any) -> None: ...
+    def messages(self, messages: list[dict[str, Any]], **payload: Any) -> None: ...
     def close_episode(self, *a: Any, **kw: Any) -> None: ...
     def close(self) -> None: ...
 

@@ -40,6 +40,21 @@ class Task:
     max_turns: int = 20
 
 
+def task_digest(task: "Task") -> str:
+    """A short hash of what trace analyses regenerate from the task definition:
+    the customer's opening and the facts it holds back.
+
+    Traces record it in their header. An audit that rebuilds tasks from today's
+    generator can then tell whether a trace was produced by the same task --
+    run B predates the order-id fix of #9, so no fact the leak audit looked for
+    appeared in it, and the audit printed a clean-looking 1.2% anyway (#26)."""
+    import hashlib
+    import json
+    blob = json.dumps({"opening": task.opening, "facts": task.hidden_facts},
+                      sort_keys=True, ensure_ascii=False)
+    return hashlib.sha1(blob.encode("utf-8")).hexdigest()[:12]
+
+
 DELIVER_O1003 = {
     "orders": {"O1003": {"status": "delivered"}},
     "order_items": {"OI3": {"item_status": "delivered"}},

@@ -123,6 +123,57 @@ def test_histogram_quantiles():
           "interpolations rather than measurements" in lat["resolution_note"])
 
 
+SGLANG_BEFORE = """
+# TYPE sglang:prompt_tokens_total counter
+sglang:prompt_tokens_total{model_name="Qwen/Qwen3-8B",is_streaming="false"} 400000
+sglang:generation_tokens_total{model_name="Qwen/Qwen3-8B",is_streaming="false"} 40000
+sglang:cached_tokens_total{model_name="Qwen/Qwen3-8B",cache_source="device"} 100000
+sglang:cache_hit_rate{model_name="Qwen/Qwen3-8B"} 0.97
+sglang:time_to_first_token_seconds_bucket{model_name="Qwen/Qwen3-8B",is_streaming="false",le="0.1"} 5
+sglang:time_to_first_token_seconds_bucket{model_name="Qwen/Qwen3-8B",is_streaming="false",le="0.5"} 10
+sglang:time_to_first_token_seconds_bucket{model_name="Qwen/Qwen3-8B",is_streaming="false",le="+Inf"} 10
+"""
+
+SGLANG_AFTER = """
+sglang:prompt_tokens_total{model_name="Qwen/Qwen3-8B",is_streaming="false"} 1400000
+sglang:generation_tokens_total{model_name="Qwen/Qwen3-8B",is_streaming="false"} 100000
+sglang:cached_tokens_total{model_name="Qwen/Qwen3-8B",cache_source="device"} 800000
+sglang:cached_tokens_total{model_name="Qwen/Qwen3-8B",cache_source="host"} 100000
+sglang:cache_hit_rate{model_name="Qwen/Qwen3-8B"} 0.10
+sglang:time_to_first_token_seconds_bucket{model_name="Qwen/Qwen3-8B",is_streaming="false",le="0.1"} 45
+sglang:time_to_first_token_seconds_bucket{model_name="Qwen/Qwen3-8B",is_streaming="false",le="0.5"} 90
+sglang:time_to_first_token_seconds_bucket{model_name="Qwen/Qwen3-8B",is_streaming="false",le="+Inf"} 100
+sglang:time_to_first_token_seconds_bucket{model_name="Qwen/Qwen3-8B",is_streaming="true",le="0.1"} 10
+sglang:time_to_first_token_seconds_bucket{model_name="Qwen/Qwen3-8B",is_streaming="true",le="0.5"} 10
+sglang:time_to_first_token_seconds_bucket{model_name="Qwen/Qwen3-8B",is_streaming="true",le="+Inf"} 10
+"""
+
+
+def test_sglang_metrics():
+    print("\n=== the same numbers from SGLang's counters ===")
+    before = MetricsSnapshot.from_text(SGLANG_BEFORE)
+    after = MetricsSnapshot.from_text(SGLANG_AFTER)
+    check("the engine is recognised from the metric names",
+          after.engine() == "sglang" and MetricsSnapshot.from_text(METRICS_AFTER).engine() == "vllm")
+    d = before.diff(after)
+    pc = d.prefix_cache_hit_rate()
+    check("hit rate = cached tokens over prompt tokens, this run only, every cache tier",
+          pc["hit_rate"] == round(800_000 / 1_000_000, 4)
+          and pc["metric"] == "sglang:prompt_tokens_total", str(pc))
+    check("…not the gauge, which says something else entirely",
+          pc["hit_rate"] != 0.10)
+    tp = d.throughput(wall_seconds=100.0)
+    check("throughput reads SGLang's token counters",
+          tp["prompt_tokens"] == 1_000_000 and tp["output_tok_per_s"] == 600.0, str(tp))
+    lat = d.latency()
+    check("TTFT sums the streaming and non-streaming series edge by edge",
+          lat["n"] == 100 and lat["metric"] == "sglang:time_to_first_token_seconds",
+          str(lat))
+    check("…so the buckets never repeat an edge",
+          [le for le, _ in after.buckets("sglang:time_to_first_token_seconds")]
+          == [0.1, 0.5, float("inf")])
+
+
 def test_cost_inversion():
     print("\n=== THE finding: cheap per token, expensive per resolution ===")
     # Small model: 3x cheaper to run, escalates far more, passes less
@@ -276,6 +327,7 @@ def main() -> int:
     test_parsing()
     test_counter_diffing()
     test_histogram_quantiles()
+    test_sglang_metrics()
     test_cost_inversion()
     test_break_even()
     test_quality_guard()

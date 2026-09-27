@@ -106,6 +106,20 @@ Rate the agent's performance from 1 (terrible) to 5 (excellent).
 Reply with only a JSON object: {"score": <1-5>, "reason": "<one sentence>"}"""
 
 
+def _with_context(context: str, transcript: str) -> str:
+    """Put material the agent had -- its policy -- in front of the transcript.
+
+    render_transcript drops system messages, and in preload mode the agent's
+    system prompt WAS the policy. A judge asked whether statements are
+    "correct per policy.md" without policy.md is guessing. Empty by default so
+    the calibration run, where the humans had no policy in view either, is
+    unchanged.
+    """
+    if not context:
+        return transcript
+    return f"{context}\n\n=== TRANSCRIPT ===\n{transcript}"
+
+
 class NaiveJudge:
     """One prompt, one ordinal score. This is what most people ship, and it is
     the baseline the decomposed judge has to beat.
@@ -117,12 +131,13 @@ class NaiveJudge:
     """
     name = "naive-1to5"
 
-    def __init__(self, backend, threshold: int = 4):
+    def __init__(self, backend, threshold: int = 4, context: str = ""):
         self.backend = backend
         self.threshold = threshold   # >= threshold maps to acceptable
+        self.context = context       # e.g. the policy the agent was bound by
 
     def judge(self, transcript_id: str, messages: list[Message]) -> dict[str, Any]:
-        text = render_transcript(messages)
+        text = _with_context(self.context, render_transcript(messages))
         try:
             resp = self.backend.chat(
                 [Message("system", NAIVE_SYSTEM), Message("user", text)], tools=[])
@@ -190,15 +205,16 @@ class DecomposedJudge:
          reward verbosity by default and in customer service that is backwards
     """
 
-    def __init__(self, backend, mode: str = "batched"):
+    def __init__(self, backend, mode: str = "batched", context: str = ""):
         if mode not in ("batched", "per_criterion"):
             raise ValueError("mode must be 'batched' or 'per_criterion'")
         self.backend = backend
         self.mode = mode
+        self.context = context
         self.name = f"decomposed-{mode}"
 
     def judge(self, transcript_id: str, messages: list[Message]) -> dict[str, Any]:
-        text = render_transcript(messages)
+        text = _with_context(self.context, render_transcript(messages))
         labels, evidence, errors = blank_labels(), {}, []
 
         if self.mode == "batched":

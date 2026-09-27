@@ -87,7 +87,7 @@ database state rather than text, which also makes it a verifiable reward.
 - rl: verifier-as-reward with tested anti-hacking guarantees
 - judge: 9-criterion binary rubric, kappa with prevalence/PABAK and bootstrap
   CIs, human test-retest ceiling, position and length bias probes
-- serving: vLLM metrics, cost per RESOLVED conversation, non-inferiority guard
+- serving: SGLang and vLLM metrics, cost per RESOLVED conversation, non-inferiority guard
 
 9 test suites, ~300 assertions, zero dependencies outside the training track."
 

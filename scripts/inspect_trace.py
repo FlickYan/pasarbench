@@ -169,10 +169,118 @@ def empties(eps: list[dict]) -> None:
           f"--extra-body disabled thinking")
 
 
-def leaks(eps: list[dict]) -> None:
+# Chat-format tokens that reached the text: `<|turn>`, `<channel|>`, `<|im_end|>`,
+# a `<think>` block, or a `<tool_call>` the server did not parse. SGLang keeps
+# Gemma 4's special tokens in the decoded text for its parsers, so a customer
+# served without the right one hands the agent "<|channel>thought...", and every
+# audit below reads it as speech. An unparsed tool call on the agent's side is
+# worse: the harness sends it to the customer as a message.
+MARKUP = re.compile(r"<\|[a-z_\"]+\|?>|<[a-z_]+\|>|</?think>|</?tool_call>")
+
+
+def markup(eps: list[dict]) -> int:
+    """Turns on either side that contain chat-format tokens; prints examples."""
+    print("\n" + "=" * 72)
+    print("0. CHAT-FORMAT TOKENS IN THE TEXT  (a server parser missing or wrong)")
+    print("=" * 72)
+    sides = {
+        "customer": [(e, ev.get("text") or "") for e in eps for ev in e["events"]
+                     if ev.get("kind") == "user_turn"],
+        "agent": [(e, st.get("model_content") or "") for e in eps for st in e["steps"]],
+    }
+    total = 0
+    for side, rows in sides.items():
+        bad = [(e, t, m) for e, t in rows for m in [MARKUP.search(t)] if m]
+        total += len(bad)
+        if not bad:
+            print(f"  {side}: none in {len(rows)} turns")
+            continue
+        print(f"  !! {side}: {len(bad)} of {len(rows)} turns contain chat-format tokens. "
+              f"Fix the server before trusting anything else in this report.")
+        for e, t, m in bad[:3]:
+            print(f"     {e['id']}: {m.group()!r} in {t[max(0, m.start() - 40):m.end() + 60]!r}")
+    return total
+
+
+def transcript(e: dict, task) -> list:
+    """Rebuild one episode's conversation IN ORDER. A fact given after the
+    agent asked for it is correct behaviour; only an unprompted one is a leak,
+    and you cannot tell the two apart without the interleaving."""
+    from pasarbench.harness.types import Message
+    msgs = [Message("system", ""), Message("user", task.opening)]
+    events = {ev["turn"]: ev for ev in e["events"] if ev.get("kind") == "user_turn"}
+    turn = 1
+    for st in e["steps"]:
+        if st.get("model_content"):
+            msgs.append(Message("assistant", st["model_content"]))
+        if not st.get("tool_calls"):
+            ev = events.get(turn)
+            if ev and ev.get("text"):
+                msgs.append(Message("user", ev["text"]))
+            turn += 1
+    return msgs
+
+
+def leak_reports(eps: list[dict], tasks: dict, patterns: dict | None = None
+                 ) -> list[tuple[dict, object]]:
+    """One (episode, report) pair per episode.
+
+    The first version looked each episode's report up by task id, so all k
+    seeds of a task shared seed 0's verdict and every per-language count came
+    out a multiple of k."""
+    from pasarbench.simqa import leak_report
+    out = []
+    for e in eps:
+        task = tasks.get(e["task_id"])
+        if task:
+            out.append((e, leak_report(task, transcript(e, task), patterns=patterns)))
+    return out
+
+
+def same_tasks(eps: list[dict], tasks: dict) -> list[dict]:
+    """Keep the traces that were produced by the task definition we are about
+    to read them against.
+
+    The audit rebuilds each task from today's generator. If the generator has
+    changed since the run, no fact it looks for is in the transcript, and it
+    reports a clean-looking rate about nothing: run B predates the order-id fix
+    of #9 and scored 1.2% (#26). Traces since then carry a digest of the task;
+    older ones are checked by whether the customer ever says the order id."""
+    from pasarbench.tasks import task_digest
+    stale = {e["id"] for e in eps if e["head"].get("task_digest")
+             and e["task_id"] in tasks
+             and e["head"]["task_digest"] != task_digest(tasks[e["task_id"]])}
+    if stale:
+        print(f"  {len(stale)} of {len(eps)} traces came from a different version "
+              f"of their task (digest mismatch) and are left out.")
+    eps = [e for e in eps if e["id"] not in stale]
+
+    def says_order_id(e: dict, task) -> bool:
+        said = task.opening + " ".join(ev.get("text") or "" for ev in e["events"]
+                                       if ev.get("kind") == "user_turn")
+        return str(task.hidden_facts["order_id"]).lower() in said.lower()
+
+    old = [e for e in eps if not e["head"].get("task_digest")
+           and e["task_id"] in tasks and tasks[e["task_id"]].hidden_facts.get("order_id")]
+    if old:
+        seen = sum(says_order_id(e, tasks[e["task_id"]]) for e in old)
+        if seen / len(old) < 0.5:
+            print(f"  NOT COMPUTED. In {len(old) - seen} of {len(old)} of these traces the "
+                  f"customer never says the order id its task holds today: they were "
+                  f"produced by an earlier version of the task generator, and every "
+                  f"leak or stall number would be about facts that are not in them.")
+            return []
+    return eps
+
+
+def leaks(eps: list[dict], pattern_set: str = "current") -> None:
     print("\n" + "=" * 72)
     print("3. DID THE SIMULATOR LEAK FACTS BEFORE BEING ASKED?")
     print("=" * 72)
+    from pasarbench.simqa import ASK_PATTERNS, ASK_PATTERNS_V1
+    patterns = {"current": ASK_PATTERNS, "v1": ASK_PATTERNS_V1}[pattern_set]
+    if pattern_set != "current":
+        print(f"  ask-patterns: {pattern_set} (the list before WHAT_FAILED #26)")
     try:
         from pasarbench.generate import generate
         from pasarbench.tasks import BY_ID
@@ -181,34 +289,16 @@ def leaks(eps: list[dict]) -> None:
         print(f"  (could not load tasks: {ex})")
         return
 
-    from pasarbench.harness.types import Message
-    from pasarbench.simqa import audit, leak_report
+    from pasarbench.simqa import audit
 
-    reports = []
-    for e in eps:
-        task = tasks.get(e["task_id"])
-        if not task:
-            continue
-        # Rebuild the transcript IN ORDER. A fact given after the agent asked
-        # for it is correct behaviour; only an unprompted one is a leak, and
-        # you cannot tell the two apart without the interleaving.
-        msgs = [Message("system", ""), Message("user", task.opening)]
-        events = {ev["turn"]: ev for ev in e["events"]
-                  if ev.get("kind") == "user_turn"}
-        turn = 1
-        for st in e["steps"]:
-            if st.get("model_content"):
-                msgs.append(Message("assistant", st["model_content"]))
-            if not st.get("tool_calls"):
-                ev = events.get(turn)
-                if ev and ev.get("text"):
-                    msgs.append(Message("user", ev["text"]))
-                turn += 1
-        reports.append(leak_report(task, msgs))
-
-    if not reports:
+    eps = same_tasks(eps, tasks)
+    if not eps:
+        return
+    pairs = leak_reports(eps, tasks, patterns)
+    if not pairs:
         print("  (no matching tasks)")
         return
+    reports = [r for _, r in pairs]
     a = audit(reports)
     on_request = sum(len(r.revealed_on_request) for r in reports)
 
@@ -217,32 +307,55 @@ def leaks(eps: list[dict]) -> None:
     # trying to measure. An aggregate hides the bias where it matters.
     from collections import defaultdict
     per = defaultdict(lambda: [0, 0])
-    for e in eps:
-        r = next((x for x in reports if x.task_id == e["task_id"]), None)
-        if r is None:
-            continue
-        lang = e.get("language", "?")
-        per[lang][1] += 1
-        if r.leaked:
-            per[lang][0] += 1
+    for e, r in pairs:
+        per[e.get("language", "?")][1] += 1
+        per[e.get("language", "?")][0] += bool(r.leaked)
     print("  leak rate BY LANGUAGE (this is the number that matters):")
     for lang, (bad, tot) in sorted(per.items(), key=lambda kv: -kv[1][0] / max(kv[1][1], 1)):
         rate = bad / tot if tot else 0
         flag = "  <- contaminated" if rate > 0.15 else ("  <- clean" if rate == 0 else "")
         print(f"    {lang:7s} {rate:6.1%}  ({bad}/{tot} episodes){flag}")
+    # A rate that follows language is a claim about the simulator OR about the
+    # detector's ask-patterns, and the table cannot tell which (#26).
+    base = per.get("en", [0, 0])
+    base_rate = base[0] / base[1] if base[1] else 0.0
+    odd = [lang for lang, (bad, tot) in per.items()
+           if tot and bad / tot > max(0.05, 3 * base_rate) and lang not in ("en", "sg-en")]
+    if odd:
+        print(f"\n  CHECK THE DETECTOR BEFORE THE SIMULATOR: {', '.join(sorted(odd))} "
+              f"leak far more often than English. Read the agent line under each "
+              f"leak below -- if it asks for the fact in words simqa.ASK_PATTERNS "
+              f"lacks, the customer answered a question and the pattern list is "
+              f"short (WHAT_FAILED #26).")
+    # The mirror image: requests the customer did not answer. Flat across
+    # languages on an honest simulator; a gate that cannot read a language's
+    # requests stalls there instead of leaking (#26).
+    from pasarbench.simqa import stall_report
+    stall = defaultdict(lambda: [0, 0])
+    for e, _ in pairs:
+        task = tasks[e["task_id"]]
+        asked, unanswered = stall_report(task, transcript(e, task), patterns)
+        stall[e.get("language", "?")][0] += asked
+        stall[e.get("language", "?")][1] += unanswered
+    print("\n  requests for a fact the customer did NOT answer in the next turn:")
+    for lang, (asked, unanswered) in sorted(stall.items()):
+        if asked:
+            print(f"    {lang:7s} {unanswered / asked:6.1%}  ({unanswered}/{asked} requests)")
     print()
     print(f"  episodes {a['transcripts']}   leak rate {a['leak_rate']:.1%}   "
           f"clean {a['clean_rate']:.1%}")
     print(f"  facts revealed ON REQUEST (correct behaviour): {on_request}")
-    for r in reports:
-        for fact, t in r.leaked:
-            print(f"  LEAK {r.task_id}: volunteered `{fact}` at turn {t}, "
-                  f"before the agent asked")
+    for e, r in pairs:
+        for fact, t, agent in r.leak_context:
+            print(f"  LEAK {e['id']} [{e.get('language', '?')}]: `{fact}` at turn {t}, "
+                  f"no request recognised")
+            print(f"       agent before it: {agent[-140:]!r}")
     if a["leak_rate"] == 0:
         print("  no leaks -- the customer made the agent ask for everything")
     elif a["leak_rate"] > 0.15:
-        print("  above 15%: the benchmark has drifted toward single-turn. "
-              "Strengthen the persona prompt before trusting any pass rate.")
+        print("  above 15%: either the benchmark has drifted toward single-turn, or "
+              "the detector cannot read the agent's requests. The lines above "
+              "decide which.")
 
 
 def cache_and_cost(eps: list[dict]) -> None:
@@ -362,6 +475,10 @@ def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("trace_dir")
     ap.add_argument("--task", default="", help="show the full tool sequence for one task")
+    ap.add_argument("--ask-patterns", choices=["current", "v1"], default="current",
+                    help="v1 = the list before WHAT_FAILED #26, to reproduce it")
+    ap.add_argument("--leaks-only", action="store_true",
+                    help="print only the simulator leak audit")
     args = ap.parse_args()
 
     files = sorted(glob.glob(os.path.join(args.trace_dir, "*.jsonl")))
@@ -369,7 +486,13 @@ def main() -> None:
         raise SystemExit(f"no traces in {args.trace_dir}")
     eps = [load(f) for f in files]
 
+    if args.leaks_only:
+        markup(eps)
+        leaks(eps, args.ask_patterns)
+        return
+
     config(eps)
+    markup(eps)
     verdicts(eps)
     if args.task:
         matches = [x for x in eps if args.task in (x["id"], x["task_id"])]
@@ -382,7 +505,7 @@ def main() -> None:
 
     reliability(eps)
     empties(eps)
-    leaks(eps)
+    leaks(eps, args.ask_patterns)
     cache_and_cost(eps)
     growth(eps)
 

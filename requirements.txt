@@ -1,18 +1,10 @@
 # The benchmark, harness and reward layer have ZERO dependencies (Python 3.10+).
-# Model backends use urllib. Everything below is only for the training track.
+# Model backends use urllib. Everything below is only for the training track,
+# and scripts/setup_node.sh installs it on the GPU node in this order.
 
-# serving + rollout
-# vllm>=0.8.5
+# serving + rollout (pins torch, transformers and tokenizers; needs driver >= 580)
+# sglang==0.5.20
 
-# post-training (4x H100)
-# torch>=2.6
-# transformers>=4.51
-# trl>=0.17
-# accelerate>=1.6
-# datasets>=3.5
-# deepspeed>=0.16          # ZeRO-3 for 8B full-parameter SFT
-# peft>=0.15               # LoRA, for the 32B variant
-# flash-attn>=2.7          # FA-3 path is Hopper-only
-
-# optional: verl, if you take path A for GRPO
-# verl>=0.3
+# post-training: LoRA on 1-2 H100s, installed against SGLang's pins
+# peft
+# accelerate

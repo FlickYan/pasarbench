@@ -41,6 +41,7 @@ wrong.
 from __future__ import annotations
 
 import json
+import math
 from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Any, Iterable
@@ -91,6 +92,7 @@ def load_episodes(run_dir: str | Path) -> list[dict[str, Any]]:
             "prose_chars": prose_chars,
             "user_chars": user_chars,
             "first_failure": (foot.get("failures") or [None])[0],
+            "simulator": head.get("simulator", "?"),
         })
     return out
 
@@ -177,11 +179,15 @@ def paired_language_gap(episodes: list[dict[str, Any]], baseline: str = "en"
                                  "compared at all"}
             continue
         deltas = [rate[b] - rate[o] for b, o in pairs]
+        # fsum: plain sum() of floats changed in Python 3.12, and a mean that
+        # lands on a rounding boundary (0.9125) printed 0.912 on one machine
+        # and 0.913 on another. Exact summation makes the report the same file
+        # wherever it is regenerated.
         out[lang] = {
             "pairs": len(pairs),
-            "baseline_rate": round(sum(rate[b] for b, _ in pairs) / len(pairs), 3),
-            "language_rate": round(sum(rate[o] for _, o in pairs) / len(pairs), 3),
-            "paired_gap": round(sum(deltas) / len(deltas), 3),
+            "baseline_rate": round(math.fsum(rate[b] for b, _ in pairs) / len(pairs), 3),
+            "language_rate": round(math.fsum(rate[o] for _, o in pairs) / len(pairs), 3),
+            "paired_gap": round(math.fsum(deltas) / len(deltas), 3),
             "pairs_where_worse": sum(1 for d in deltas if d > 0),
             "pairs_where_better": sum(1 for d in deltas if d < 0),
             "reliable": len(pairs) >= 10,
@@ -286,27 +292,51 @@ def report(episodes: list[dict[str, Any]],
 
     paired = paired_language_gap(episodes, baseline)
     out.append("\n### Paired comparison (the controlled one)\n")
-    out.append("| lang | pairs | en rate | this rate | paired gap | reliable |")
-    out.append("|---|---|---|---|---|---|")
+    # "enough pairs" is not "significant": the sign test over the twin pairs
+    # that differ is what says whether a gap is more than noise.
+    out.append("| lang | pairs | en rate | this rate | paired gap | pairs worse / better "
+               "| sign test p |")
+    out.append("|---|---|---|---|---|---|---|")
     for lang, r in paired["languages"].items():
         if not r["pairs"]:
-            out.append(f"| `{lang}` | 0 | - | - | - | no twins |")
+            out.append(f"| `{lang}` | 0 | - | - | - | no twins | - |")
             continue
+        p = _sign_p(r["pairs_where_worse"], r["pairs_where_better"])
+        few = "" if r["reliable"] else " (too few pairs)"
         out.append(f"| `{lang}` | {r['pairs']} | {r['baseline_rate']:.3f} | "
                    f"{r['language_rate']:.3f} | {r['paired_gap']:+.3f} | "
-                   f"{'yes' if r['reliable'] else 'too few pairs'} |")
+                   f"{r['pairs_where_worse']} / {r['pairs_where_better']} | "
+                   f"{'**' if p < 0.05 else ''}{p:.3f}{'**' if p < 0.05 else ''}{few} |")
     out.append(f"\n> {paired['warning']}")
 
     out.append("\n### Gap attribution\n")
+    # Only a gap the paired test resolves has a mechanism to look for. The
+    # unpaired gap below 0.02 was the old bar, and it sent readers hunting for
+    # the cause of a 2-point difference the sign test calls noise.
+    resolved = {lang for lang, r in paired["languages"].items()
+                if r["pairs"] and r["paired_gap"] > 0
+                and _sign_p(r["pairs_where_worse"], r["pairs_where_better"]) < 0.05}
+    shown = 0
     for lang, row in attr["languages"].items():
-        if row["pass_gap"] <= 0.02:
+        if lang not in resolved:
             continue
+        shown += 1
         mechs = ", ".join(f"`{m}`" for m in row["ranked_mechanisms"]) or "none isolated"
         infl = row["signals"].get("token_inflation")
-        out.append(f"**`{lang}`** -- gap {row['pass_gap']:+.3f} vs `{baseline}`; "
-                   f"co-moving: {mechs}"
+        out.append(f"**`{lang}`** -- paired gap {paired['languages'][lang]['paired_gap']:+.3f} "
+                   f"vs `{baseline}`; co-moving: {mechs}"
                    + (f"; tokenisation {infl}x" if infl else ""))
         out.append(f"  - {row['next_step']}\n")
+    if not shown:
+        if not any(r["pairs"] for r in paired["languages"].values()):
+            out.append("No locale twins in this run, so no language gap can be "
+                       "measured, let alone attributed. Run the full suite.")
+        else:
+            out.append(f"No language does worse than `{baseline}` by the paired "
+                       f"test (sign test p < 0.05), so there is no gap to "
+                       f"attribute. A mechanism for a gap that is not there is "
+                       f"not a finding.")
+        return "\n".join(out)
 
     out.append("> " + attr["caveat"])
     out.append("\nLocale twins share an identical world and byte-identical "
@@ -348,8 +378,32 @@ def _sign_p(worse: int, better: int) -> float:
     return min(1.0, 2 * sum(comb(n, i) for i in range(k + 1)) / 2 ** n)
 
 
+def paired_episodes(ea: list[dict[str, Any]], eb: list[dict[str, Any]],
+                    metric: str = "passed") -> dict[str, Any] | None:
+    """Two sets of episodes over shared tasks: per-task mean difference and an
+    exact sign test over the tasks that differ. The episode sets may come from
+    different runs -- that is how the noise floor is measured."""
+    ra, rb = defaultdict(list), defaultdict(list)
+    for e in ea:
+        ra[e["task_id"]].append(e[metric])
+    for e in eb:
+        rb[e["task_id"]].append(e[metric])
+    ra = {k: sum(v) / len(v) for k, v in ra.items()}
+    rb = {k: sum(v) / len(v) for k, v in rb.items()}
+    keys = sorted(set(ra) & set(rb))
+    if len(keys) < 5:
+        return None
+    diffs = [rb[k] - ra[k] for k in keys]
+    worse = sum(1 for x in diffs if x < -1e-9)
+    better = sum(1 for x in diffs if x > 1e-9)
+    p = _sign_p(worse, better)
+    return {"unit": "task", "n": len(keys), "diff": sum(diffs) / len(diffs),
+            "worse": worse, "better": better, "p": p, "resolved": p < 0.05}
+
+
 def paired_arm_gap(a: dict[str, Any], b: dict[str, Any],
-                   run_dir: str | Path | None = None) -> dict[str, Any] | None:
+                   run_dir: str | Path | None = None,
+                   metric: str = "passed") -> dict[str, Any] | None:
     """Arm B against arm A on the SAME tasks: mean per-task difference, and an
     exact sign test over the tasks where the two arms differ.
 
@@ -359,21 +413,17 @@ def paired_arm_gap(a: dict[str, Any], b: dict[str, Any],
     here: when a handful of tasks all differ in one direction, a percentile
     interval can exclude zero while the sign test on those same tasks is
     nowhere near significance. Falls back to per-trap rates without traces,
-    and says so.
+    and says so. `metric` is any per-episode field: "passed" (the default) or
+    "tokens", for a cost comparison with the same pairing.
     """
     ea, eb = _arm_episodes(a, run_dir), _arm_episodes(b, run_dir)
     if ea and eb:
-        unit = "task"
-        ra, rb = defaultdict(list), defaultdict(list)
-        for e in ea:
-            ra[e["task_id"]].append(e["passed"])
-        for e in eb:
-            rb[e["task_id"]].append(e["passed"])
-        ra = {k: sum(v) / len(v) for k, v in ra.items()}
-        rb = {k: sum(v) / len(v) for k, v in rb.items()}
-    else:
+        return paired_episodes(ea, eb, metric)
+    elif metric == "passed":
         unit = "trap"
         ra, rb = a.get("per_trap") or {}, b.get("per_trap") or {}
+    else:
+        return None                   # no per-trap fallback for other metrics
     keys = sorted(set(ra) & set(rb))
     if len(keys) < 5:
         return None

@@ -34,6 +34,7 @@ from ..tools import call as tool_call
 from ..tools import schemas
 from .exposure import schema_tokens
 from .context import ContextStrategy, FullContext
+from ..tasks import task_digest
 from .prompts import system_prompt
 from .simulator import SilentUser, UserSimulator
 from .trace import NullTrace
@@ -101,6 +102,15 @@ def run_episode(
         "trap": task.trap,
         "market": task.market,
         "language": task.language,
+        # lets an audit that regenerates tasks check it is reading the same one
+        "task_digest": task_digest(task),
+        # Request flags that change what the model sees, e.g. Qwen's
+        # chat_template_kwargs {"enable_thinking": false}. Training data has to
+        # be rendered with the same ones or it teaches a different prompt.
+        "agent_extra_body": dict(getattr(backend, "extra_body", None) or {}) or None,
+        # Collection samples at temperature 1.0 and evaluation at 0.0; a report
+        # that compares runs has to be able to tell which one it is reading.
+        "agent_temperature": getattr(backend, "temperature", None),
     })
 
     steps: list[StepRecord] = []
@@ -194,6 +204,7 @@ def run_episode(
                    "cached": usage.cached_tokens},
             latency_ms=latency_ms, budget=tracker.snapshot(),
             n_tools=len(names), schema_tokens=schema_tokens(names),
+            tool_names=list(names),
         ))
         trace.step(steps[-1].to_dict())
 

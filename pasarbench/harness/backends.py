@@ -123,7 +123,8 @@ def _post(url: str, payload: dict, headers: dict, timeout: float = 120.0) -> dic
 
 
 class OpenAICompatBackend:
-    """Works with OpenAI, vLLM's server, Together, DeepSeek, Modal-hosted vLLM.
+    """Works with OpenAI, SGLang's and vLLM's servers, Together, DeepSeek,
+    Modal-hosted vLLM.
 
     For a local vLLM served on Modal:
         OpenAICompatBackend(model="Qwen/Qwen3-8B",

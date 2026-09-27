@@ -1,7 +1,8 @@
 # What failed
 
-Fifteen real defects found while building this, in the order of how much
-damage they would have done. Every one is reproducible from the git history.
+Twenty-seven real defects found while building this. The first fifteen are in
+the order of how much damage they would have done; the rest are in the order
+they were found. Every one is reproducible from the git history.
 
 The pattern worth extracting: **almost none of the serious bugs were found by
 reading code.** They were found by mechanisms built to catch a whole class — a
@@ -9,8 +10,9 @@ reference solution that must pass, an adversarial solution that must fail, a
 scale-up that exercises a code path differently, a real model run. That is the
 argument for spending the first two weeks on guarantees rather than features.
 
-The exception is #9, which no mechanism here could have caught and a human
-reading transcripts did. Automation catches the classes you thought of.
+The exceptions are #9, which no mechanism here could have caught and a human
+reading transcripts did, and #26, a measured "finding" that one printed line
+per case undid. Automation catches the classes you thought of.
 
 ---
 
@@ -264,6 +266,13 @@ true.
 ---
 
 ## 11. The simulator obeyed the rules only in some languages
+
+> **Correction — see #26.** The simulator was not leaking. The leak detector
+> could not read how the agent asks for a fact in Indonesian, Malay, Thai or
+> Chinese, so the customer's answers were scored as volunteered facts. With the
+> agent's own phrasings added, no reveal outside English is unprompted in any
+> of the four runs that can be checked. The entry is kept as written: the three
+> fixes and the broken gate happened. The diagnosis did not.
 
 **What happened.** The persona prompt instructs the customer to reveal facts
 only when asked. Run D's leak audit: **132 leak events, and every single one in
@@ -618,6 +627,237 @@ worth measuring, not only a bug to remove.
 
 ---
 
+## 23. The judges graded transcripts with the tool results cut out
+
+**What happened.** Scored against the verifier on the search arm, the
+decomposed judge rejected 52 of the 79 episodes the database passed. Traces
+store each call's name, arguments, ok/error and payload length — not the
+payload. The judge saw "the item value is THB 1,500" with no lookup result
+behind it, and did exactly what its rules say: "a claim is hallucinated if no
+tool result in the transcript supports it."
+
+Given the results, the same judge accepted 71 of 79 correct episodes instead
+of 27. Its apparent strictness on failures went with it: it had accepted only
+3 of 17 failures, which looked like discrimination; with the results it
+accepted 13 of 17. It had been rejecting nearly everything, and the failures
+were simply included.
+
+**How it was found.** The limitation was written into `run_judges.py` from the
+first version, as a caveat to "state in the writeup". It was never measured.
+What forced it was a number that could not be taken at face value: a judge
+failing two thirds of work the database called correct.
+
+**Fix.** The environment is deterministic — fixed clock, counter ids, no
+randomness — so `harness/replay.py` regenerates every result by replaying the
+recorded calls against the task's fresh database, and accepts a result only if
+it matches the recorded payload length. Byte-identical on all 640 calls of the
+215 reference solutions; 629 of 629 verified on the real run. `--payloads`
+gives the judge those results. Found alongside it: neither judge saw the
+policy either — the trace keeps a placeholder system message, and the renderer
+drops system messages — so `policy_accurate`, "correct per policy.md", was
+judged without policy.md. `--policy` closes that. The calibration run against
+human labels keeps the old view on purpose: the humans labelled from it too.
+
+**Lesson.** A documented limitation is not a measured one. This caveat was the
+difference between a judge that rejects two thirds of correct work and one
+that rejects a tenth.
+
+---
+
+## 24. The calibration sample had nothing in it for the rubric to find
+
+**What happened.** 200 transcripts, labelled on nine criteria: 1,800 human
+judgments, of which 2 were "violated". Every per-criterion kappa came out 0 —
+not because the judge disagreed, but because there was nothing to agree about.
+The report printed a table of zeros annotated KAPPA PARADOX, which reads as a
+failed judge when it means an unmeasurable one.
+
+**Why.** The sample was stratified to over-represent failures, and it did: 43
+of the 200 transcripts failed the verifier. 41 of those 43 were labelled clean
+on every criterion — and that is very likely correct. All 43 were *action*
+failures: 28 left the wrong end state, 14 skipped a required action, one took a
+forbidden one. None was a failure of language, and the rubric scores language:
+leaks, invented facts, wrong statements of policy, tone. An agent that
+politely does the wrong thing satisfies all nine. The labelling tool made
+"satisfied" a single keystroke, which cannot have helped, but is not needed to
+explain the result.
+
+**What it cost, and what replaced it.** The human-agreement numbers measure
+nothing and are reported as such. The judges were instead scored against the
+verifier on the search arm, where 17 of 96 episodes fail — a ground truth with
+variance, and the experiment that produced the project's clearest judge result.
+
+**Lesson.** Look at label variance after the first twenty labels, not after two
+hundred. And sample for the property the rubric measures: a set stratified on
+*task* failure is not a set rich in *communication* failure.
+
+---
+
+## 25. A tie-break put a broken run behind the headline language finding
+
+**What happened.** The report picks the largest qualifying run for the
+multilingual section. Three runs tied at 1,075 episodes; the tie broke
+alphabetically in reverse, which chose `G-gated` — the run whose fact-gating
+had no Chinese ask-patterns and stonewalled (#11, #26). That run holds the only
+significant language gaps in the project: zh-MY +26 points (p < 0.01) and
+zh-SG +29 points (p = 0.02). In `C-clean`, the same tasks without gating, both
+are within nine points of English with p ≥ 0.62. The report attributed the
+fake gap to tokenisation.
+
+**Why it matters.** Nothing flagged it. The section named its source run in
+italics, but a tie read as a choice, and "largest run" sounded principled.
+
+**Fix.** A tie is announced in bold with the runs it tied against, and broken
+the same way every time; `--multilingual-run` takes several runs and adds a
+replication table with a sign test per language per run. The language claim
+now rests on `C-clean` and `D-nozh` together, where it is a null in both.
+
+**Lesson.** A selection rule that is silent in the tie case is a coin flip
+with a principled name.
+
+---
+
+## 26. The simulator never leaked. The detector could not read the questions
+
+**What happened.** #11 reported that the simulated customer volunteered facts
+before being asked: 11.3% of episodes in run D, every one in Indonesian, Malay
+or Thai. Three runs went into fixing it. Checking whether the language result
+still needed #11's caveat, I printed the agent's message before each flagged
+leak. Outside English, every one asked for the fact. The agent writes
+"4 digit terakhir", "nomor order", "เลขออเดอร์", "订单号", "手机号"; the patterns
+knew "4 angka", "nomor pesanan", "หมายเลขคำสั่ง", and no Chinese at all. The
+customer answered a question the detector could not read, and the answer was
+counted as a leak.
+
+The requests it missed in runs C and D: "4 digit" 148, "订单号" 132, "手机号" 107,
+"nomor order" 55, "เลขออเดอร์" 35, "nombor order" 21, "id pesanan" 3.
+
+| run | flagged, first patterns | flagged, with the agent's phrasings |
+|---|---|---|
+| C | 233 of 1,075 (21.7%) | 2 |
+| D | 105 of 930 (11.3%) | 0 |
+| F | 241 of 1,075 (22.4%) | 1 |
+| G | 139 of 1,075 (12.9%) | 0 |
+
+The three left are English: two customers who had failed identity
+verification repeating their order number while pushing back, and one
+answering "is this the order you meant?".
+
+A fifth run cannot be checked at all, and finding that out was a second
+defect. Run B predates the order-id fix of #9: its customers say
+`GO-addresID`, today's generator gives the same task `GO-B6FE71`, and in 850 of
+its 850 generated episodes the order id the audit looks for never appears. The
+audit printed 1.2% for it anyway — a clean-looking rate about nothing.
+
+**What it undoes.**
+
+- **#11's backfire.** Restating the rule in the target language "raised the
+  leak rate from 11.3% to 22.4%" — that is run D to run F. F also added
+  Chinese, which the detector could not read at all. Without its Chinese
+  episodes, F flags 105 of 930: the same count as D. The restatement changed
+  nothing, and the elephant mechanism explained a number that was not there.
+- **The language caveat.** Indonesian, Malay, Thai and Chinese were never
+  measured under a more helpful customer. Their nulls are not lower bounds.
+- **Run G.** The gate used the same patterns, so it withheld exactly the facts
+  the detector could not see being asked for. The customer left the agent's
+  request unanswered in the next turn 74% of the time in Indonesian and 85–86%
+  in Chinese, against 17% in English; ungated, the same languages sit at
+  10–25%. #11 blamed the missing Chinese patterns, but Indonesian was
+  "covered" and fell further, to 0.463.
+- **#25.** Those are the gaps a tie-break then put in the report as the
+  language finding. One pattern list, four symptoms: a leak rate, a fix that
+  seemed to backfire, a fix that broke the comparison, and a false result.
+
+**Why it survived.** The rate looked like a finding: concentrated in some
+languages, zero in others, with a plausible mechanism. The audit printed each
+case as "volunteered `order_id` at turn 2, before the agent asked" — the
+conclusion, not the evidence. It also looked each episode up by task id, so all
+five seeds of a task shared seed 0's verdict and every per-language count was a
+multiple of five.
+
+**Fix.** The patterns include the phrasings the agent uses in every language,
+and a test holds six requests in the phrasings the first list missed. Every
+flagged leak prints the agent's message before it, and the audit reports the
+mirror image — requests the customer did not answer — by language, which is how
+a stalling gate shows up. A language that leaks far more often than English
+gets a warning to check the detector before the simulator. Counts are per
+episode. The gate runs only in languages whose patterns were checked this way.
+Traces now record a digest of the task that produced them, and the audit
+leaves out any trace whose task has changed since — or, for older traces
+without one, refuses a run in which the customer mostly never says today's
+order id.
+
+**Lesson.** A detector's rate is a claim about the detector until someone reads
+what it flagged. Here the deciding evidence was one line per case, in traces I
+had for three runs.
+
+---
+
+## 27. The training pipeline was built for the week-1 suite
+
+**What happened.** Before renting GPUs for post-training, I read the training
+scripts against the suite as it is now. They had been written in week 1 and
+never re-read. As written they would have:
+
+- **trained on 16 tasks.** `train_rft.py` and `train_grpo.py` imported the
+  hand-written `TASKS`; the 199 generated tasks, and their reference solutions,
+  were never loaded.
+- **evaluated on translations of training data.** The held-out split was by
+  task id, so `HRWR-ID` could train while its twin `HRWR-ID.id` — the same
+  world, the same checks, the same correct actions — was scored as unseen.
+- **trained on prompts the model never saw.** The whole conversation was
+  rendered once and masked to the assistant turns. Qwen3's template in
+  non-thinking mode puts the empty `<think></think>` block only on the *last*
+  assistant turn, but the model generated every turn after one; every earlier
+  turn was a target under a prefix that never existed at inference.
+  `tests/test_training.py` reproduces it with a Qwen3-style template.
+- **trained without the tool list** the model is shown at inference, and
+  **written no traces**, so none of the audits in this document could have run
+  on the rollouts.
+- **used a customer that cannot write half the languages.** The default
+  simulator was Llama-3.1-8B, whose supported languages include Thai but not
+  Indonesian, Malay, Vietnamese or Chinese. The published customer, Qwen,
+  cannot be reused either: the agent under training is Qwen.
+- **pointed the reference tier at `Qwen/Qwen3-72B-Instruct`**, which is not
+  among Qwen3's released sizes.
+
+**Fix.** The pipeline runs on all 215 tasks through the sweep, so every episode
+is a trace and every audit applies. The split is by family, two folds, every
+trap in both (`pasarbench/rl/split.py`); each fine-tune is scored only on the
+fold it did not train on, and the report verifies that episode by episode.
+Each example is one agent turn, rendered with the model's own template, with a
+prefix assertion that fails loudly on a template that renders differently in
+and out of context; the prompt's token ids come from the serving engine
+itself, and `train_rft.py check` re-renders a sample through it token by
+token. The customer is Gemma 4 31B, and the sweep refuses an agent and
+customer from one family. The reference is deepseek-v4-pro through its API,
+against the same customer.
+
+**Moving the serving to SGLang** (from vLLM, before any GPU time was spent)
+needed three more of these, all found by reading its source:
+
+- It answers a request naming a bare LoRA adapter with the **base model**,
+  without an error, although `/v1/models` lists the adapter under that very
+  name. The evaluation would have scored Qwen3-8B as its own fine-tune.
+  Adapters are now requested as `Qwen/Qwen3-8B:pasar-rft-A`, and the sweep
+  checks every fold model against the server before the first episode.
+- It hands the chat template each tool as its own pydantic dump —
+  `"strict": false`, `"defer_loading": null`, description before name — so
+  every training prompt rendered locally would have differed from the one the
+  model saw, in the tool block. Prompts now come from the server's
+  `/tokenize`; that endpoint cannot render a finished turn, so the turn is
+  tokenized locally.
+- It keeps Gemma 4's special tokens in the decoded text so its parsers can
+  read them. The customer is served with `--reasoning-parser gemma4`, and the
+  audit counts chat-format tokens on both sides of every conversation.
+
+**Lesson.** Unlike most of this list, this was found by reading, and it was
+found because GPU time costs money and API time had not. Code written against
+an early version of the data encodes assumptions that were true when written;
+the suite grew by thirteen times and the training scripts did not notice.
+
+---
+
 ## What this list is for
 
 Two things.
@@ -626,9 +866,11 @@ Two things.
 Anyone can produce a clean repo; a specific, load-bearing failure list is hard
 to fake.
 
-**In an interview**, #1 and #6 are the two to tell. #1 because the bug class —
-silent corruption invisible at the default configuration — is the one senior
-engineers actually worry about, and because the fix came from a *guarantee*
-rather than from code review. #6 because "my benchmark penalised the better
-model until I found the ambiguity" demonstrates the instinct that separates
-people who build evals from people who run them.
+**In an interview**, #1, #6 and #26 are the three to tell. #1 because the bug
+class — silent corruption invisible at the default configuration — is the one
+senior engineers actually worry about, and because the fix came from a
+*guarantee* rather than from code review. #6 because "my benchmark penalised
+the better model until I found the ambiguity" demonstrates the instinct that
+separates people who build evals from people who run them. #26 because a
+measured bias, three runs of fixes and a false headline all came from one
+unchecked pattern list, and one printed line per case settled it.

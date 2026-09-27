@@ -31,10 +31,47 @@ from typing import Any
 
 from .harness.types import Message
 
-# Signals that the agent asked for a given kind of fact. Deliberately broad:
-# a false "the agent asked" reading makes the leak detector too lenient, so
-# these are kept tight and the ambiguous cases are reported separately.
+# Signals that the agent asked for a given kind of fact.
+#
+# A pattern that misses how the agent actually asks does not fail loudly: the
+# customer's correct answer is counted as a LEAK. Both errors are therefore
+# costly -- too broad and real leaks read as answers, too narrow and answers read
+# as leaks -- but only the second one concentrates in whichever languages the
+# list covers worst, which is exactly the axis this suite measures (#26).
+#
+# The first list was English plus one textbook phrase per language. The agent
+# writes "4 digit terakhir", "nomor order", "เลขออเดอร์", "订单号", and every one of
+# its requests in those words was scored as the customer volunteering the fact.
+# The phrasings below are the ones the agent used in 2,005 episodes (runs C and
+# D); with them, no reveal outside English is unprompted in any of the four runs
+# whose traces still match today's tasks.
+# A new agent model can ask differently: read the contexts `inspect_trace.py`
+# prints under each flagged leak before believing a per-language rate.
 ASK_PATTERNS: dict[str, list[str]] = {
+    "order_id": [r"order\s*(id|number|no)", r"which order", r"order.*\bref",
+                 # id / ms
+                 r"nomor pesanan", r"nombor pesanan", r"nomor order", r"nombor order",
+                 r"id pesanan", r"no\.?\s*pesanan",
+                 # vi / th
+                 r"mã đơn", r"số đơn", r"หมายเลขคำสั่ง", r"เลขออเดอร์", r"หมายเลขออเดอร์",
+                 r"เลขที่คำสั่งซื้อ", r"เลขคำสั่งซื้อ",
+                 # zh
+                 r"订单号", r"订单编号", r"訂單號", r"单号"],
+    "phone_last4": [r"last\s*(4|four)", r"digits", r"verify", r"phone number",
+                    # id / ms
+                    r"4 angka", r"\b4\s*digit", r"empat digit", r"digit terakhir",
+                    r"angka terakhir", r"nomor (telepon|hp)", r"nombor telefon",
+                    # vi / th
+                    r"số điện thoại", r"4 số cuối", r"เบอร์โทร", r"ตัวท้าย",
+                    # zh
+                    r"手机号", r"电话号码", r"[后末]\s*[4四]\s*位"],
+    "new_address": [r"new address", r"address.*change", r"where.*deliver",
+                    r"alamat baru", r"ที่อยู่ใหม่", r"địa chỉ mới", r"新地址", r"新的地址"],
+}
+
+# The first list, kept so #26 can be reproduced: run the leak audit with it
+# (`inspect_trace.py --ask-patterns v1`) and the "leaks" come back.
+ASK_PATTERNS_V1: dict[str, list[str]] = {
     "order_id": [r"order\s*(id|number|no)", r"which order", r"order.*\bref",
                  r"nomor pesanan", r"nombor pesanan", r"mã đơn", r"หมายเลขคำสั่ง"],
     "phone_last4": [r"last\s*(4|four)", r"digits", r"verify", r"phone number",
@@ -57,6 +94,10 @@ class LeakReport:
     broke_character: list[tuple[str, int]] = field(default_factory=list)
     invented_ids: list[tuple[str, int]] = field(default_factory=list)
     user_turns: int = 0
+    # (fact, turn, the agent's last message before it) for every leak -- the
+    # line a reader needs to tell a volunteered fact from a question the
+    # patterns could not read.
+    leak_context: list[tuple[str, int, str]] = field(default_factory=list)
 
     @property
     def clean(self) -> bool:
@@ -65,31 +106,35 @@ class LeakReport:
     def to_dict(self) -> dict[str, Any]:
         return {"task_id": self.task_id, "clean": self.clean,
                 "leaked": self.leaked, "revealed_on_request": self.revealed_on_request,
+                "leak_context": self.leak_context,
                 "broke_character": self.broke_character,
                 "invented_ids": self.invented_ids, "user_turns": self.user_turns}
 
 
-def _asked_for(fact: str, agent_text: str) -> bool:
-    pats = ASK_PATTERNS.get(fact)
+def _asked_for(fact: str, agent_text: str,
+               patterns: dict[str, list[str]] | None = None) -> bool:
+    pats = (ASK_PATTERNS if patterns is None else patterns).get(fact)
     if not pats:
         return True          # unknown fact kind: do not accuse
     low = agent_text.lower()
     return any(re.search(p, low) for p in pats)
 
 
-def leak_report(task, messages: list[Message], known_ids: set[str] | None = None
-                ) -> LeakReport:
+def leak_report(task, messages: list[Message], known_ids: set[str] | None = None,
+                patterns: dict[str, list[str]] | None = None) -> LeakReport:
     """Scan one transcript. `messages[0]` is the system prompt, `messages[1]`
     the opening -- the opening counts as turn 0 and a fact appearing there is
     always a leak, since the agent has said nothing yet."""
     rep = LeakReport(task_id=task.task_id)
     facts = {k: str(v) for k, v in task.hidden_facts.items() if v}
     agent_so_far = ""
+    last_agent = ""
     turn = 0
 
     for m in messages:
         if m.role == "assistant" and m.content:
             agent_so_far += "\n" + m.content
+            last_agent = m.content
             continue
         if m.role != "user":
             continue
@@ -101,10 +146,11 @@ def leak_report(task, messages: list[Message], known_ids: set[str] | None = None
         for fact, value in facts.items():
             if value.lower() not in text.lower():
                 continue
-            if _asked_for(fact, agent_so_far):
+            if _asked_for(fact, agent_so_far, patterns):
                 rep.revealed_on_request.append((fact, turn))
             else:
                 rep.leaked.append((fact, turn))
+                rep.leak_context.append((fact, turn, last_agent[-200:]))
 
         for pat in BREAK_CHARACTER:
             if re.search(pat, text, re.I):
@@ -117,6 +163,38 @@ def leak_report(task, messages: list[Message], known_ids: set[str] | None = None
         turn += 1
 
     return rep
+
+
+def stall_report(task, messages: list[Message],
+                 patterns: dict[str, list[str]] | None = None) -> tuple[int, int]:
+    """(requests, unanswered): how often the agent asked for a fact the customer
+    holds and has not given yet, and how many of those requests the very next
+    customer turn left unanswered.
+
+    The mirror image of a leak. An honest simulator answers at a similar rate in
+    every language; a gated one whose patterns cannot read a language's requests
+    withholds the fact and stalls there (#26: run G's Indonesian and Chinese)."""
+    pats = ASK_PATTERNS if patterns is None else patterns
+    facts = {k: str(v) for k, v in task.hidden_facts.items() if v and k in pats}
+    given = ""
+    pending: set[str] = set()
+    asked = unanswered = 0
+    for m in messages:
+        if m.role == "assistant" and m.content:
+            pending |= {k for k, v in facts.items()
+                        if v.lower() not in given and _asked_for(k, m.content, patterns)}
+            continue
+        if m.role != "user":
+            continue
+        text = (m.content or "").lower()
+        if text.startswith("["):
+            continue
+        for k in pending:
+            asked += 1
+            unanswered += facts[k].lower() not in text
+        pending = set()
+        given += "\n" + text
+    return asked, unanswered
 
 
 def audit(reports: list[LeakReport]) -> dict[str, Any]:
@@ -143,11 +221,15 @@ def audit(reports: list[LeakReport]) -> dict[str, Any]:
 VERDICT = """
 HOW TO READ THIS
 
-  leak_rate > 0.15         The persona prompt is not holding. Strengthen the
-                           "reveal ONLY when asked" instruction, or move to a
-                           stronger simulator model. Do NOT report pass rates
-                           collected under a leaky simulator -- they measure an
-                           easier benchmark than the one you describe.
+  leak_rate > 0.15         Either the persona prompt is not holding, or the
+                           detector cannot read how the agent asks. Tell them
+                           apart FIRST: read the agent line printed under each
+                           leak. If it asks for the fact, the pattern list is
+                           short, not the simulator (#26 -- every "leak" outside
+                           English in four runs was this). If it does not, the
+                           prompt is not holding: strengthen "reveal ONLY when
+                           asked" or move to a stronger simulator model, and do
+                           not report pass rates collected under it.
 
   mean_user_turns < 2      Episodes are effectively single-turn. Either the
                            agent is resolving everything in one shot (check the

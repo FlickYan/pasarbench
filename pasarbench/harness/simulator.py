@@ -95,27 +95,29 @@ class LLMUser:
         self.facts = facts
         self.language = language
         # gate_facts: withhold each fact from the simulator's own prompt until
-        # the agent has asked for it. Three prompt revisions failed to stop
-        # leaking -- including restating the rule in the target language, which
-        # made it WORSE, plausibly because a negative instruction naming the
-        # forbidden fact primes that fact. Withholding removes the failure mode
-        # instead of asking a model to resist it.
-        # The gate decides "has the agent asked?" with ASK_PATTERNS, which are
-        # English plus a handful of translations and contain NOTHING for
-        # Chinese. In a language with no patterns the fact is never released,
-        # the customer stonewalls, and the episode fails -- a language-dependent
-        # handicap far larger than the leak it was meant to remove. Refuse
-        # rather than produce numbers that look like a model result.
+        # the agent has asked for it, as judged by simqa.ASK_PATTERNS.
+        # It was built to stop leaks in id/ms/th/zh that were never there: the
+        # patterns could not read how the agent asks in those languages, so its
+        # answers were scored as volunteered facts (WHAT_FAILED #26). The gate
+        # inherited the same blind spot and turned it into a real handicap --
+        # the fact is never released, the customer stonewalls until the
+        # release_after_turn fallback, and the episode fails. Run G's Chinese
+        # and Indonesian "gaps" were this, not the agent.
+        # Gating is therefore allowed only in languages where the patterns have
+        # been checked against real requests: on an UNGATED run, every reveal
+        # the detector flags has been read and none was a question it missed.
+        # That check was done for these, with deepseek-v4-pro as the agent; a
+        # different agent can phrase its requests differently.
         if gate_facts:
-            from ..simqa import ASK_PATTERNS
-            pats = " ".join(p for ps in ASK_PATTERNS.values() for p in ps)
-            covered = {"en", "sg-en", "id", "ms", "th", "vi"}
-            if language not in covered:
+            checked = {"en", "sg-en", "id", "ms", "th", "vi", "zh-MY", "zh-SG"}
+            if language not in checked:
                 raise ValueError(
-                    f"--gate-facts has no ask-patterns for {language!r}. Gating "
-                    f"it would stonewall every episode and the result would be a "
-                    f"harness artefact, not a language effect. Add patterns to "
-                    f"simqa.ASK_PATTERNS first, or run without --gate-facts.")
+                    f"--gate-facts: the ask-patterns have not been checked against "
+                    f"real requests in {language!r}. Gating it would stall the "
+                    f"customer on every request the patterns miss, and the result "
+                    f"would be a harness artefact, not a language effect. Run "
+                    f"ungated, read the flagged leaks with scripts/inspect_trace.py, "
+                    f"extend simqa.ASK_PATTERNS, then add the language here.")
         self.gate_facts = gate_facts
         self.release_after_turn = release_after_turn
         self.name = (f"llm-user:{getattr(backend, 'name', '?')}"
@@ -150,9 +152,9 @@ class LLMUser:
         base = USER_SYSTEM.format(persona=self.persona, facts=facts)
         if self.language != "en":
             base += f"\n\nWrite in {self.language}. Keep the register informal."
-            # Restate the hold-back rule in the target language. English-only
-            # instructions held in en/sg-en/vi and failed in id/ms/th; this is
-            # the mitigation, and its effect is measurable as a leak-rate drop.
+            # Restate the hold-back rule in the target language. It was the
+            # fix for leaks that turned out to be the detector's (#26) and has
+            # no measurable effect; it stays so the prompt is stable across runs.
             from ..locales import hold_back_rule
             rule = hold_back_rule(self.language)
             if rule:

@@ -1,9 +1,9 @@
 # PasarBench
 
 A verifiable tool-agent **environment** for Southeast Asian e-commerce customer
-service. 199 tasks across 6 markets and 8 language varieties, 20 tools (303 with
-distractors), one policy document, and verification on final database state
-rather than text.
+service. 215 tasks (16 hand-written, 199 generated) across 6 markets and 8
+language varieties, 20 tools (303 with distractors), one policy document, and
+verification on final database state rather than text.
 
 Because verification is programmatic, it is also a **reward function** — so the
 same artefact measures agents and trains them.
@@ -14,10 +14,30 @@ rollouts ──▶ verifier ──▶ group advantage ──▶ policy update �
                                        no human, no reward model in the loop
 ```
 
-`pasar` = market (Malay/Indonesian). Hardware assumed: 1× A100 to 4× H100.
+`pasar` = market (Malay/Indonesian). Hardware: a laptop for everything but serving and post-training, which are sized for two rented H100s.
 
 **[Runbook →](docs/RUNBOOK.md)** · **[Results →](RESULTS.md)** · **[What failed →](docs/WHAT_FAILED.md)** ·
 **[Writeup kit →](docs/WRITEUP.md)** · **[Build log →](docs/README_weekly.md)**
+
+## What it found
+
+Agent `deepseek-v4-pro`; simulated customer and judges `qwen3.8-flash`. Every
+number is regenerated from traces by `scripts/make_report.py` and
+`scripts/audit_tool_arms.py`.
+
+- **Search-based tool exposure lost on both axes**: 13.5 points below exposing
+  all 20 tools (9 tasks worse, 1 better, p = 0.021) at 22% more tokens. Of 23
+  times a failed episode needed a hidden tool, the agent never searched for it
+  17 times — always a tool the policy describes but never names.
+- **The agent claimed actions it never took** — in this run, only when the tool
+  was out of sight: 3 of 16 readable search-arm failures, 0 of 20 elsewhere.
+- **An LLM judge could not stand in for the database.** Its best configuration —
+  with every tool result and the policy — reached κ = 0.56 and still accepted 8
+  of 17 failed episodes. Given everything, no judge rejected a false claim for
+  being false.
+- **No language differed from English beyond noise**, in two independent runs.
+  The only significant gaps in the project came from a fact-gating bug, and the
+  simulator "leaks" behind it were the detector's ([WHAT_FAILED #26](docs/WHAT_FAILED.md)).
 
 ---
 
@@ -36,11 +56,13 @@ python -m pasarbench.run          # null agent → 0.0, reference agent → 1.0
 python -m tests.test_traps        # 10 naive solutions, all must be rejected
 python -m tests.test_harness      # 28 harness invariants
 python -m tests.test_reward       # 30 reward + dataset invariants
-python -m tests.test_generated    # 47 checks over all 170 generated tasks
+python -m tests.test_generated    # 63 checks over all 199 generated tasks + simulator QA
 python -m tests.test_context      # 39 context-strategy + analysis invariants
-python -m tests.test_judge        # 51 judge + agreement-statistics invariants
-python -m tests.test_exposure     # 47 tool-scaling + diagnosis invariants
-python -m tests.test_serving      # 48 metrics, cost and quality-guard invariants
+python -m tests.test_judge        # 81 judge + agreement-statistics invariants
+python -m tests.test_exposure     # 105 tool-scaling + diagnosis invariants
+python -m tests.test_serving      # 54 metrics (SGLang and vLLM), cost and quality-guard invariants
+python -m tests.test_report       # 30 report invariants: paired verdicts, ties, replication, calibration, noise floor, post-training
+python -m tests.test_training     # 75 checks: split, customer family, collection, examples against an SGLang-like server, adapter routing, serve scripts, a LoRA step (47 without transformers/torch)
 
 python -m pasarbench.sweep --backend scripted --suite all
 python scripts/make_report.py     # regenerates RESULTS.md; never hand-fill it
@@ -69,7 +91,7 @@ nothing. This is the line most homemade benchmarks get wrong in the safe
 direction.
 
 **Every generated task ships with a generated reference solution.** At 16 tasks
-you can check a suite by reading it. At 186 you cannot, so the guarantee is
+you can check a suite by reading it. At 199 you cannot, so the guarantee is
 mechanical: the suite asserts every task is solved by its own solution, fails
 under the null agent, and fails under a tool-spam adversary.
 
@@ -229,7 +251,7 @@ A model 6× cheaper to run can be 3.8× more expensive per resolution.
 
 **No speed win is declared without a proven quality result.** `serving_verdict`
 returns WIN only on non-inferiority at a stated margin. The third verdict is the
-honest one: at 186 tasks a 2-point regression is undetectable (`required_n` says
+honest one: at 215 tasks a 2-point regression is undetectable (`required_n` says
 ~6,000 per arm), so INCONCLUSIVE is frequently correct.
 
 ### Post-training
@@ -245,6 +267,20 @@ the gain with no RL infrastructure, and it is the only meaningful GRPO baseline.
 A GRPO number reported against the base model conflates "RL worked" with
 "training on correct trajectories worked."
 
+The design, sized for two rented H100s (`docs/RUNBOOK.md`, phase 4):
+
+- **Two folds by family.** Locale twins stay together and every trap is in
+  both folds; each fine-tune is scored only on the fold it did not train on, so
+  all 215 tasks are held out once, paired by task against the base model.
+- **One example per agent turn**, with loss on that turn only and the prompt's
+  token ids taken from the serving SGLang's `/tokenize` — the server renders
+  the tool list from its own dump of it, so a local render of the same
+  template is not what the model saw. A whole-conversation render is wrong for
+  Qwen3 (`pasarbench/rl/sft.py`).
+- **A customer from another model family** (Gemma 4 31B for a Qwen agent),
+  enforced by the sweep, with the API reference re-run against the same
+  customer. Serving is SGLang: agent on one H100, customer (FP8) on the other.
+
 ---
 
 ## Repo map
@@ -252,16 +288,17 @@ A GRPO number reported against the base model conflates "RL worked" with
 ```
 pasarbench/
   db.py tools.py policy.md tasks.py verifier.py   the environment
-  generate.py locales.py                          186 tasks, 3 orthogonal axes
+  generate.py locales.py                          199 generated tasks, 3 orthogonal axes
   harness/                                        the runtime
-  rl/                                             reward + trajectory datasets
+  rl/                                             reward, folds, per-turn SFT examples
   judge/                                          rubric, judges, agreement stats
   analyze.py diagnose.py simqa.py                 turning sweeps into findings
   serving/                                        metrics, cost, quality guards
   sweep.py run.py                                 entry points
-scripts/    serve_vllm.sh train_rft.py train_grpo.py modal_vllm.py
-            make_report.py slurm_train.sh slurm_sweep.sh
-tests/      9 suites, ~300 assertions
+scripts/    gpu_pipeline.sh setup_node.sh serve_sglang.sh train_rft.py train_grpo.py
+            make_report.py audit_tool_arms.py inspect_trace.py run_judges.py
+            slurm_train.sh slurm_sweep.sh modal_vllm.py
+tests/      11 suites, 450+ assertions
 docs/       RUNBOOK.md  WHAT_FAILED.md  WRITEUP.md  README_weekly.md
 ```
 
@@ -272,8 +309,14 @@ docs/       RUNBOOK.md  WHAT_FAILED.md  WRITEUP.md  README_weekly.md
 Stated plainly, because a limitations section nobody wrote is the first thing a
 careful reader notices.
 
-- **199 tasks cannot detect a 2-point regression.** ~6,000 per arm would be
-  needed. Several verdicts in this work are honestly INCONCLUSIVE.
+- **215 tasks cannot detect a 2-point regression.** ~6,000 per arm would be
+  needed. The tool arms are 32 tasks each. Several verdicts in this work are
+  honestly INCONCLUSIVE.
+- **One agent model and one judge model.** Every finding above is about
+  `deepseek-v4-pro` judged by `qwen3.8-flash`.
+- **The false-claim check reads English only**, and only the phrasings it was
+  written for — the same kind of instrument as the leak detector, so its counts
+  are a floor.
 - **Thai and Vietnamese translations are drafted, not native-reviewed.** English,
   Singlish, Malay, Indonesian and both Chinese varieties were written directly;
   Singlish deliberately was not machine-translated, because the particles and
@@ -285,10 +328,13 @@ careful reader notices.
   disclose another customer's data) cannot be checked by looking at the
   database; those tasks were left out rather than checked badly.
 - **`scripts/train_grpo.py` collects and scores groups but does not do the
-  policy update.** The three remaining pieces — token alignment between vLLM and
-  HF, turn-level loss masking, per-token advantage normalisation — are named
+  policy update.** The three remaining pieces — token alignment between SGLang
+  and HF, turn-level loss masking, per-token advantage normalisation — are named
   explicitly in that file rather than glossed.
-- **`LLMUser` has not been run against a real model.** Its persona prompt is
-  unvalidated until `simqa` reports a leak rate on real transcripts.
+- **The leak audit is only as good as its ask-patterns.** They cover the
+  phrasings `deepseek-v4-pro` used across four runs, where no reveal outside
+  English was unprompted ([WHAT_FAILED #26](docs/WHAT_FAILED.md)). Another agent
+  can ask in words the list lacks, and the customer's answers will read as
+  leaks: read the line `inspect_trace.py` prints under each one first.
 - **Default cost rates are illustrative placeholders.** GPU hourly rates vary by
   3× across providers.

@@ -1,16 +1,17 @@
 """
-vLLM metrics.
+Serving-engine metrics, from SGLang's or vLLM's Prometheus endpoint.
 
 Three things go wrong when people measure a serving change, and all three
 produce a number that looks fine and is not.
 
 1. READING GAUGES INSTEAD OF DIFFING COUNTERS.
-   `vllm:prefix_cache_queries_total` and `vllm:prefix_cache_hits_total` are
-   cumulative counters over the server's lifetime. Reading them once at the end
-   of a run gives you the hit rate since the process started, which includes
-   every experiment you ran before this one. Snapshot before, snapshot after,
-   subtract. `MetricsSnapshot.diff` exists because this mistake is easy and
-   invisible.
+   SGLang's `sglang:cached_tokens_total` and `sglang:prompt_tokens_total` (vLLM:
+   `vllm:prefix_cache_hits_total` and `vllm:prefix_cache_queries_total`) are
+   cumulative counters over the server's lifetime, and `sglang:cache_hit_rate`
+   is a gauge of recent traffic. Reading any of them once at the end of a run
+   gives you a rate that includes every experiment you ran before this one.
+   Snapshot before, snapshot after, subtract. `MetricsSnapshot.diff` exists
+   because this mistake is easy and invisible.
 
 2. NOT WARMING UP.
    The first request pays model load, CUDA graph capture and an empty cache.
@@ -87,16 +88,29 @@ class MetricsSnapshot:
         return total
 
     def buckets(self, name: str) -> list[tuple[float, float]]:
-        """Cumulative (le, count) pairs for a histogram, sorted by le."""
-        out = []
+        """Cumulative (le, count) pairs for a histogram, sorted by le.
+
+        Series that differ in other labels (SGLang splits TTFT by
+        `is_streaming`) are summed edge by edge: cumulative counts add, and a
+        list with the same edge twice would interpolate nonsense."""
+        out: dict[float, float] = {}
         for s in self.samples:
             if s["name"] != f"{name}_bucket":
                 continue
             le = s["labels"].get("le")
             if le is None:
                 continue
-            out.append((float("inf") if le == "+Inf" else float(le), s["value"]))
-        return sorted(out)
+            edge = float("inf") if le == "+Inf" else float(le)
+            out[edge] = out.get(edge, 0.0) + s["value"]
+        return sorted(out.items())
+
+    def engine(self) -> str:
+        """Which server wrote these metrics, from their prefix."""
+        names = {s["name"] for s in self.samples}
+        for e in ("sglang", "vllm"):
+            if any(n.startswith(e + ":") for n in names):
+                return e
+        return "vllm"
 
     def diff(self, later: "MetricsSnapshot") -> "MetricsDiff":
         return MetricsDiff(before=self, after=later)
@@ -124,14 +138,18 @@ class MetricsDiff:
     # ---- the numbers worth reporting ------------------------------------
 
     def prefix_cache_hit_rate(self) -> dict[str, Any]:
-        """Over THIS run only, from counter deltas.
+        """Over THIS run only, from counter deltas: prompt tokens served from the
+        cache over all prompt tokens.
 
-        vLLM has used more than one metric name across versions; try each and
-        report which one was found so the number is reproducible.
+        vLLM has used more than one metric name across versions, and SGLang
+        counts the same thing as cached tokens against prompt tokens; try each
+        and report which one was found so the number is reproducible.
         """
         for q, h in (("vllm:prefix_cache_queries_total", "vllm:prefix_cache_hits_total"),
                      ("vllm:gpu_prefix_cache_queries_total",
-                      "vllm:gpu_prefix_cache_hits_total")):
+                      "vllm:gpu_prefix_cache_hits_total"),
+                     # summed over cache_source (device / host / storage)
+                     ("sglang:prompt_tokens_total", "sglang:cached_tokens_total")):
             try:
                 queries, hits = self.counter(q), self.counter(h)
             except ValueError:
@@ -140,10 +158,11 @@ class MetricsDiff:
                 return {"hit_rate": round(hits / queries, 4),
                         "queries": int(queries), "hits": int(hits), "metric": q}
         return {"hit_rate": None, "queries": 0, "hits": 0, "metric": None,
-                "note": "no prefix-cache counters found; is --enable-prefix-caching on?"}
+                "note": "no prefix-cache counters found: SGLang needs --enable-metrics, "
+                        "vLLM --enable-prefix-caching"}
 
-    def latency(self, name: str = "vllm:time_to_first_token_seconds"
-                ) -> dict[str, Any]:
+    def latency(self, name: str | None = None) -> dict[str, Any]:
+        name = name or f"{self.after.engine()}:time_to_first_token_seconds"
         b = self.bucket_diff(name)
         total = b[-1][1] if b else 0.0
         if total <= 0:
@@ -158,8 +177,9 @@ class MetricsDiff:
         }
 
     def throughput(self, wall_seconds: float) -> dict[str, Any]:
-        prompt = self.counter("vllm:prompt_tokens_total")
-        gen = self.counter("vllm:generation_tokens_total")
+        e = self.after.engine()
+        prompt = self.counter(f"{e}:prompt_tokens_total")
+        gen = self.counter(f"{e}:generation_tokens_total")
         return {
             "prompt_tokens": int(prompt), "generation_tokens": int(gen),
             "prompt_tok_per_s": round(prompt / wall_seconds, 1) if wall_seconds else 0,

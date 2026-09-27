@@ -27,9 +27,11 @@ round trips to `search_policy`. Preload+caching versus JIT is a genuine
 latency-cost-accuracy trade, it is specific to agent workloads, and almost
 nobody measures it. That is your serving result.
 
-Use this only for burst capacity. With local A100/H100 available, prefer
-scripts/serve_vllm.sh -- Modal is worth it when you want the 70B reference and
-the 32B agent up simultaneously without contending for your own cards.
+Use this only for burst capacity; it is the one place the repo still serves
+with vLLM. On a rented node, use scripts/gpu_pipeline.sh, which serves the
+agent and the simulated customer with SGLang (scripts/serve_sglang.sh) on one
+card each. The customer must not be a Qwen model when the agent is
+(pasarbench.sweep refuses the pair).
 
 Cost note: scale_down_window keeps the container warm between sweep batches.
 A cold start on a 32B is 4-8 minutes; paying it once per batch rather than
@@ -39,7 +41,7 @@ once per task is the difference between a cheap sweep and an expensive one.
 import modal
 
 MODEL = "Qwen/Qwen3-32B"
-GPU = "H100:2"        # "H100:4" for a 70B reference at TP=4
+GPU = "H100:2"
 PORT = 8000
 
 image = (

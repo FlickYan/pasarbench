@@ -185,6 +185,10 @@ class StepRecord:
     budget: dict[str, Any]
     n_tools: int = 0             # schemas injected on THIS call
     schema_tokens: int = 0       # approximate cost of injecting them
+    # The names behind n_tools. A training example has to be rendered with the
+    # same tool list the model was shown, and with progressive disclosure that
+    # list changes from call to call.
+    tool_names: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

@@ -98,7 +98,7 @@ def messages_from_trace(path: str, payloads: list[str | None] | None = None
 
 def judge_vs_verifier(cell: Path, mk, mode: str = "batched", workers: int = 8,
                       limit: int = 0, out_root: Path = Path("data/judge_vs_verifier"),
-                      payloads: bool = False) -> dict:
+                      payloads: bool = False, policy: bool = False) -> dict:
     """Both judges on every episode of one arm, scored against the VERIFIER.
 
     No human labels: the ground truth here is the database. The question is
@@ -110,8 +110,13 @@ def judge_vs_verifier(cell: Path, mk, mode: str = "batched", workers: int = 8,
 
     `mk` builds a judge backend; tests pass a fake one.
     """
+    from pasarbench.harness.prompts import policy_text
     from pasarbench.sweep import ALL_TASKS
     by_id = {t.task_id: t for t in ALL_TASKS}
+    # In preload mode the agent's system prompt held the whole policy. A judge
+    # checking "correct per policy.md" gets the same text, or it is guessing.
+    ctx = ("=== POLICY THE AGENT WAS BOUND BY (its system prompt held all of it) "
+           "===\n" + policy_text()) if policy else ""
     files = sorted(cell.glob("*.jsonl"))
     if not files:
         raise SystemExit(f"no traces in {cell}")
@@ -126,8 +131,8 @@ def judge_vs_verifier(cell: Path, mk, mode: str = "batched", workers: int = 8,
         task = by_id.get(head.get("task_id"))
         rp = replay_payloads(recs, task) if payloads and task else None
         msgs = messages_from_trace(str(f), rp["payloads"] if rp else None)
-        nj = NaiveJudge(mk()).judge(f.stem, msgs)
-        dj = DecomposedJudge(mk(), mode=mode).judge(f.stem, msgs)
+        nj = NaiveJudge(mk(), context=ctx).judge(f.stem, msgs)
+        dj = DecomposedJudge(mk(), mode=mode, context=ctx).judge(f.stem, msgs)
         texts = [st["model_content"] for st in steps
                  if (st.get("model_content") or "").strip()]
         calls = [(tc["name"], bool(tr.get("ok"))) for st in steps
@@ -140,6 +145,7 @@ def judge_vs_verifier(cell: Path, mk, mode: str = "batched", workers: int = 8,
             "trap": head.get("trap"), "language": head.get("language"),
             "verifier_passed": bool(foot.get("passed")),
             "naive_score": s,
+            "naive_reason": nj.get("reason", ""),
             # a naive response with no valid 1-5 score is not a verdict
             "naive_ok": (bool(nj["labels"].get("overall_acceptable"))
                          if isinstance(s, int) and 1 <= s <= 5 else None),
@@ -171,7 +177,8 @@ def judge_vs_verifier(cell: Path, mk, mode: str = "batched", workers: int = 8,
 
     out_root.mkdir(parents=True, exist_ok=True)
     out = out_root / (f"{cell.parent.name}__{cell.name}"
-                      + ("__payloads" if payloads else "") + ".jsonl")
+                      + ("__payloads" if payloads else "")
+                      + ("__policy" if policy else "") + ".jsonl")
     out.write_text("".join(json.dumps(r, ensure_ascii=False) + "\n" for r in rows))
 
     passed = [r for r in rows if r["verifier_passed"]]
@@ -221,6 +228,8 @@ def judge_vs_verifier(cell: Path, mk, mode: str = "batched", workers: int = 8,
         print("\nclaimed, not done -- what each judge said:")
         for r in claimed:
             print(f"  {r['transcript_id']:24s} {', '.join(r['false_claims'])}")
+            if r.get("naive_reason"):
+                print(f"      naive said: \"{r['naive_reason'][:150]}\"")
             print(f"      naive: score {r['naive_score']} -> "
                   f"{'ACCEPTED' if r['naive_ok'] else 'rejected'}   decomposed: "
                   f"{'ACCEPTED' if r['dec_ok'] else 'rejected'}"
@@ -256,6 +265,9 @@ def main() -> None:
                     help="one arm's trace folder, e.g. traces/I-tools2/full+search-300: "
                          "score every episode against the VERIFIER instead of your "
                          "labels (no labels needed; writes data/judge_vs_verifier/)")
+    ap.add_argument("--policy", action="store_true",
+                    help="with --traces: give both judges the policy the agent was "
+                         "bound by (its preload system prompt)")
     ap.add_argument("--payloads", action="store_true",
                     help="with --traces: replay every tool result so the judge sees "
                          "what the agent saw (verified call by call)")
@@ -276,7 +288,7 @@ def main() -> None:
     if args.traces:
         print(f"judging {args.traces} with {args.model} against the verifier")
         judge_vs_verifier(Path(args.traces), mk, args.mode, args.workers, args.limit,
-                          payloads=args.payloads)
+                          payloads=args.payloads, policy=args.policy)
         return
 
     sample = [json.loads(l) for l in

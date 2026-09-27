@@ -300,11 +300,14 @@ PERSONAS: dict[str, str] = {
 }
 
 
-# The single most important simulator rule, restated in the target language.
-# English-only instructions were being followed in en/sg-en/vi and ignored in
-# id/ms/th -- and the split is NOT by script (id and ms are Latin, th is not,
-# vi is Latin-with-diacritics and clean), so it is instruction-following under
-# language shift rather than a tokenisation effect.
+# The simulator's hold-back rule, restated in the target language.
+# Added because English-only instructions seemed to be ignored in id/ms/th. They
+# were not: the leak detector could not read how the agent asks in those
+# languages and scored the customer's answers as volunteered facts (#26).
+# Measured effect of this rule: none. Run F (with it) and run D (without it)
+# both flag 105 of their 930 non-Chinese episodes under the old patterns, and
+# neither flags any outside English under the corrected ones. It stays so the
+# simulator prompt does not change between runs.
 HOLD_BACK_RULE: dict[str, str] = {
     "id": ("PENTING: Jangan sebutkan nomor pesanan atau 4 digit terakhir nomor "
            "telepon Anda kecuali agen menanyakannya secara langsung. Ungkapkan "

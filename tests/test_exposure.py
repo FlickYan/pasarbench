@@ -238,7 +238,11 @@ def test_diagnosis():
 
     md = report(eps, judge)
     check("report renders", "Multilingual diagnosis" in md and "`th`" in md)
-    check("report carries the causal caveat", "CO-MOVEMENTS" in md)
+    # These episodes have no locale twins, so nothing is controlled and nothing
+    # may be attributed; the caveat travels with an attribution when there is
+    # one (tests/test_report.py covers that case).
+    check("without twins the report attributes nothing, and says why",
+          "No locale twins" in md and "co-moving" not in md, md[md.find("### Gap"):][:300])
 
 
 def test_scaling_report():

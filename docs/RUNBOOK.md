@@ -9,8 +9,8 @@ Ordered by what you can do **right now**, not by chapter number.
 | **0. Verify** | laptop | free | no |
 | **1. Context + tool + multilingual sweeps** | an API key | ~$15–40 | **no** |
 | **2. Judge calibration** | your own eyes, ~6 hours | free | **no** |
-| **3. Serving measurements** | 1 GPU | a few hours of node time | yes |
-| **4. Post-training** | 1–4 GPUs | 1–3 days of node time | yes |
+| **3. Serving measurements** | the Phase 4 node | an hour or two, optional | yes |
+| **4. Post-training** | 2× H100, rented | ~8–12 hours of node time | yes |
 
 Phases 1 and 2 produce **three of the five results** in `RESULTS.md`, including
 the multilingual diagnosis — the one to lead the writeup with. Phase 2 needs no
@@ -219,7 +219,11 @@ print(audit(reports)); print(VERDICT)
 ```
 
 `leak_rate > 0.15` means the persona prompt is not holding and your pass rates
-describe an easier benchmark than the one you wrote up. Fix it here, not later.
+describe an easier benchmark than the one you wrote up — **or** that the
+detector cannot read how the agent asks in that language. `python
+scripts/inspect_trace.py <trace_dir>` prints the agent's message before every
+flagged leak; if it asks for the fact, extend `simqa.ASK_PATTERNS`, not the
+persona prompt (WHAT_FAILED #26). Settle which it is here, not later.
 
 ### 1d. Context ablation — subsample first
 
@@ -299,53 +303,128 @@ short-term memory and inflates your ceiling.
 
 ---
 
-# Phase 3 — serving (1 GPU)
+# Phase 3 — serving (optional, same node)
 
-```bash
-./scripts/serve_vllm.sh agent-8b          # or agent-32b on 2 GPUs
-```
+With the agent served for Phase 4 (`./scripts/serve_sglang.sh agent`), three
+bars on the same tasks and harness:
 
-Three bars, same tasks, same harness:
-
-1. `--enable-prefix-caching` + `--policy-mode preload`
-2. `--no-enable-prefix-caching` + `--policy-mode preload`
-3. `--enable-prefix-caching` + `--policy-mode jit`
+1. radix cache on (SGLang's default) + `--policy-mode preload`
+2. `SGLANG_ARGS=--disable-radix-cache` + `--policy-mode preload`
+3. radix cache on + `--policy-mode jit`
 
 Snapshot `/metrics` before and after each, **warm up 3 episodes first**, and
-diff counters rather than reading gauges. Then:
+diff counters rather than reading gauges: `sglang:cache_hit_rate` is a gauge of
+recent traffic, and `MetricsDiff.prefix_cache_hit_rate()` divides the change in
+`sglang:cached_tokens_total` by the change in `sglang:prompt_tokens_total`. Then:
 
 ```python
 from pasarbench.serving import serving_verdict, per_trap_guard, three_bar_report
 ```
 
-No speed claim ships without a `serving_verdict`. At 186 tasks INCONCLUSIVE is
-a frequent and honest answer.
+No speed claim ships without a `serving_verdict`. At this suite size
+INCONCLUSIVE is a frequent and honest answer.
 
 ---
 
-# Phase 4 — post-training (1–4 GPUs)
+# Phase 4 — post-training on two rented H100s
+
+**The question:** does rejection-sampling fine-tuning make Qwen3-8B better on
+tasks it did not train on — measured against itself, with deepseek-v4-pro as
+the reference, and all three against the **same** simulated customer?
+
+**Three things differ from the published runs, on purpose.**
+
+- **The customer is Gemma 4 31B, not Qwen.** A customer from the agent's own
+  family is easier for it to satisfy, and the published customer was Qwen. The
+  sweep refuses a same-family pair. The reference is re-run against the new
+  customer so its row is comparable; the published results are not. It is
+  served in FP8 — RedHat's FP8-Dynamic checkpoint of Google's weights, with
+  Google's tokenizer and chat template — because in bf16 its 62 GB of weights
+  leave an 80 GB card KV cache for only two or three of the 24 concurrent
+  conversations. The traces name the checkpoint. On a bigger card,
+  `SIM_MODEL=google/gemma-4-31B-it bash scripts/gpu_pipeline.sh …` moves the
+  server, the sweeps and the reference row to bf16 together.
+- **The split is by family, in two folds.** Locale twins stay together; every
+  trap is in both folds. The model trained on fold A is scored on fold B and
+  vice versa, so all 215 tasks are held out once — paired by task against the
+  base model. `python -m pasarbench.rl.split` prints the split.
+- **Examples are one agent turn each**, with loss on that turn only. The
+  prompt's token ids come from the serving SGLang's `/tokenize`, because the
+  server renders the tool list from its own dump of it and a local render of
+  the same template differs; the turn is tokenized locally. See
+  `pasarbench/rl/sft.py` for why a whole-conversation render is wrong for Qwen3.
+
+### Before renting
+
+1. Pick a provider with **2× H100 80 GB**, a machine image with **NVIDIA driver
+   580 or newer** (CUDA 13: SGLang 0.5.20 and the torch it pins need it;
+   `setup_node.sh` checks before installing anything), and a **persistent
+   volume**. Put the repo and `HF_HOME` on the volume: every stage resumes from
+   what is on disk, an evicted instance takes its own disk with it, and the
+   weights are ~50 GB.
+2. Optional: `export DEEPSEEK_API_KEY=...` on the node for the reference row
+   (1,075 API episodes, run alongside stage 2's evaluation).
+
+No licence step: Qwen3-8B, Gemma 4 and RedHat's FP8 checkpoint of it are all
+Apache 2.0. `HF_TOKEN` is optional; set it if a download asks for one or is
+rate-limited.
+
+### On the node, in tmux
 
 ```bash
-./scripts/serve_vllm.sh agent-8b                       # terminal 1
-./scripts/serve_vllm.sh sim                            # terminal 2, port 8001
-python scripts/train_rft.py collect --k 8 --temperature 1.0
+bash scripts/setup_node.sh             # once: driver check, venv, SGLang, peft, weights, all tests
+bash scripts/gpu_pipeline.sh smoke     # ~15 min: 16 episodes, projects the rest
+bash scripts/gpu_pipeline.sh stage1    # split, baseline 215x5, collection 215x8, examples, checks
 ```
 
-Read `data/rft/stats.json` **before training anything**. The number that decides
-whether RFT is viable is per-trap pass rate: a trap at 0.0 contributes no
-training data, so fine-tuning cannot teach it and it will still fail afterwards.
-Report those by name.
+**Read three files before stage 2.** If your provider keeps the volume, stop
+the instance while you read.
+
+| file | what to look for |
+|---|---|
+| `logs/sim_audit.txt` | section 0 first: **any** chat-format token (`<\|channel>`, `<turn\|>`, `<tool_call>`…) in either side's text means a server parser is missing or wrong — fix it before reading anything else (the smoke stage prints the same section). Then the leak rate and **unanswered-request rate** by language. A language far above English is the detector or the customer, not the agent: read the flagged lines. If the agent asked in words `simqa.ASK_PATTERNS` lacks, extend the list (#26). Do not train against a customer you have not checked. |
+| `logs/check-A.txt`, `logs/check-B.txt` | the printed example — loss on the agent's turn only — and whether the prompts carry the server's own token ids (`build --server`, the default in the pipeline). Expect a line saying most of them are not what the local template renders: SGLang dumps the tool list its own way (`"strict": false`, its own key order), which is why the build takes prompts from the server. The server check then re-renders a sample: `N of N … token-identical to the ids stored`. If `logs/build.log` says it rendered **locally** instead, **stop**: those prompts are not the ones the model sees. |
+| `data/rft/stats.json` | collection pass rate, and per fold the traps never solved. A trap at zero in a fold gives that fold's model nothing to learn. If the base model already passes ~0.95, there is little headroom — say so rather than training anyway. |
 
 ```bash
-accelerate launch --num_processes 4 --use_deepspeed \
-  scripts/train_rft.py train --data data/rft/sft.jsonl
+bash scripts/gpu_pipeline.sh stage2    # one LoRA per fold on both GPUs, then held-out eval (+ reference)
 ```
 
-Then re-serve the checkpoint and re-run the sweep. **The only number that counts
-is pass^k on held-out tasks through the same harness.** Training loss is not a
-result.
+Any stage can be re-run after a crash: sweeps keep finished episodes, training
+resumes from its last checkpoint, and finished adapters are skipped.
 
-GRPO only after RFT plateaus — RFT is the only meaningful GRPO baseline.
+### Back on your laptop
+
+```bash
+rsync -av node:~/pasarbench/traces/P-base node:~/pasarbench/traces/P-rft \
+          node:~/pasarbench/traces/P-ref node:~/pasarbench/traces/P-collect traces/
+rsync -av node:~/pasarbench/data/splits data/
+rsync -av node:~/pasarbench/data/rft/stats.json data/rft/
+python scripts/make_report.py --out RESULTS.md --tools-run I-tools2 \
+  --multilingual-run C-clean,D-nozh,G-gated --noise-pair H-context/full,I-tools2/full+all-20
+```
+
+Section 6 of the report compares base, RFT and the reference paired by task,
+and checks what the RFT row depends on: one customer in every run, agent
+temperature 0, tasks unchanged since the split, and every held-out episode
+answered by the model that did **not** train on its fold. **The only number
+that counts is held-out pass^k.** Training loss is not a result, and an
+INCONCLUSIVE row is reported as one.
+
+### Budget
+
+The smoke stage prints a projection from your node's actual throughput; trust
+it over this. As an order of magnitude: stage 1 is ~2,800 episodes of sweeps,
+stage 2 is two LoRA runs of a few thousand examples each plus ~1,100 more
+episodes — roughly **8–12 hours of the 2-GPU node end to end**, more if the 31B
+customer is the bottleneck (the smoke projection shows it). Multiply by your
+provider's hourly rate for both cards.
+
+### GRPO
+
+Only after RFT has a held-out result, starting from the RFT adapter, trained
+on one fold and scored on the other. On two cards rollout and update cannot
+overlap; `scripts/train_grpo.py` says what that means and what is not built.
 
 ---
 
@@ -386,8 +465,11 @@ Phase 1  sweeps against an API model                   this week, ~$30
 Phase 2  label 200 transcripts                         next week, 6 hours
          (regenerate RESULTS.md -- 3 of 5 sections now filled)
          (write the blog post from docs/WRITEUP.md)
-Phase 3  serving, when a node frees up                 half a day
-Phase 4  RFT, then GRPO if it plateaus                 2-3 days of node time
+Phase 4  on a rented 2x H100 node:                    ~8-12 hours
+         setup_node.sh, gpu_pipeline.sh smoke / stage1,
+         read the audit and the checks, then stage2
+Phase 3  serving comparison on the same node           optional
+         GRPO only once RFT has a held-out result
 ```
 
 Regenerate after every phase:

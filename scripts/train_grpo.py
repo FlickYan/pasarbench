@@ -19,27 +19,26 @@ not the base model. A GRPO number reported against the base model conflates
 "RL worked" with "training on correct trajectories worked", and that
 conflation is the first thing an interviewer will probe.
 
-TWO VIABLE PATHS ON 4x H100
----------------------------
-  A. verl with a custom agent loop + custom reward.
-     Mature multi-turn tool-calling support, hybrid engine that sleeps vLLM
-     during the training phase so rollout and training share all four cards.
-     Recommended if you want results rather than a systems exercise.
+ON TWO RENTED H100s
+-------------------
+Rollouts need the policy AND the simulated customer served at once -- one card
+each -- so rollout and update cannot overlap. Each iteration alternates: serve,
+roll out one fold's tasks, stop the servers, update the LoRA, reload. That is
+slow in wall-clock and cheap in GPU memory, and it is the honest shape of GRPO
+on this budget. Two ways to run the update:
 
-  B. This file: your own loop, vLLM for rollout, FSDP for the update.
-     More work, more to go wrong, and far more to talk about. The token
-     plumbing below is the part that is genuinely hard.
+  A. verl with a custom agent loop + custom reward, LoRA, kl_coef=0.
+     Mature multi-turn tool-calling support. With the customer moved to an API
+     endpoint instead of GPU 1, verl's colocated engine can use both cards for
+     policy rollout and update. Recommended if you want results rather than a
+     systems exercise.
 
-MEMORY, 8B, 4x H100 80GB
-------------------------
-  colocated (recommended): policy FSDP ~32 GB/GPU, vLLM woken only during
-      rollout with weights reloaded from the sharded policy. Reference model
-      omitted entirely by setting kl_coef=0 -- on a verifiable reward with a
-      strong SFT init, KL to reference buys little and costs 16 GB plus a
-      forward pass per step.
-  split (simpler): GPUs 0-2 train with ZeRO-3, GPU 3 runs vLLM at TP=1.
-      Wastes ~25% of the cluster during the training phase but is far easier
-      to debug. Start here.
+  B. This file: your own loop, SGLang for rollout, a LoRA update between
+     iterations. More work, more to go wrong, and more to talk about.
+
+Only start after RFT has a held-out result (`train_rft.py eval`), and start
+from the RFT adapter. Train on one fold and evaluate on the other, exactly as
+RFT did, or the comparison with RFT is not like for like.
 
 THE THREE THINGS THAT ACTUALLY GO WRONG
 ---------------------------------------
@@ -61,32 +60,47 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 from collections import defaultdict
 from pathlib import Path
+
+import sys
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from pasarbench.harness.backends import OpenAICompatBackend
 from pasarbench.harness.simulator import LLMUser
 from pasarbench.harness.types import Budget
+from pasarbench.models import SIM_DEFAULT, check_agent_simulator
 from pasarbench.rl.collect import grpo_groups, rollout_task
 from pasarbench.rl.reward import RewardConfig, degenerate_group_rate
-from pasarbench.run import SOLUTIONS
-from pasarbench.tasks import TASKS
+from pasarbench.rl.split import load_folds
+from pasarbench.sweep import ALL_SOLUTIONS, ALL_TASKS, _local, check_served
 
 
 def collect_groups(args) -> list[dict]:
     """One GRPO iteration's worth of rollouts. Pure environment interaction --
     no training code touches this, which is exactly why the harness split was
     worth doing."""
+    print(check_agent_simulator(args.model, args.sim_model))
+    if _local(args.base_url):
+        print(check_served(args.base_url, [args.model]))
+    folds = load_folds(args.folds, ALL_TASKS)
+    tasks = [t for t in ALL_TASKS if folds["task_fold"][t.task_id] == args.fold]
+    print(f"fold {args.fold}: {len(tasks)} of {len(ALL_TASKS)} tasks; the other fold "
+          f"is held out for evaluation")
+    extra = json.loads(args.extra_body) if args.extra_body else {}
     agent = lambda t: OpenAICompatBackend(model=args.model, base_url=args.base_url,
-                                          api_key="EMPTY", temperature=args.temperature)
+                                          api_key="EMPTY", temperature=args.temperature,
+                                          extra_body=extra)
     sim = OpenAICompatBackend(model=args.sim_model, base_url=args.sim_url,
                               api_key="EMPTY", temperature=0.8)
 
     all_rollouts = []
-    for task in TASKS:
+    for task in tasks:
         all_rollouts.extend(rollout_task(
             task, agent, k=args.group_size, cfg=RewardConfig(),
-            reference_steps=len(SOLUTIONS.get(task.task_id, [])),
+            reference_steps=len(ALL_SOLUTIONS.get(task.task_id, [])),
             simulator=LLMUser(sim, task.persona, task.hidden_facts, task.language),
             budget=Budget(max_steps=args.max_steps),
             policy_mode=args.policy_mode,
@@ -116,16 +130,24 @@ def collect_groups(args) -> list[dict]:
 
 def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--model", default="checkpoints/rft-8b")   # NOT the base model
+    ap.add_argument("--model", default="",                  # NOT the base model
+                    help="the RFT adapter trained on --fold, as SGLang serves it; "
+                         "default <base-model>:pasar-rft-<fold>")
+    ap.add_argument("--base-model", default="Qwen/Qwen3-8B")
+    ap.add_argument("--fold", default="A", choices=["A", "B"])
+    ap.add_argument("--folds", default="data/splits/folds.json")
     ap.add_argument("--base-url", default="http://localhost:8000/v1")
-    ap.add_argument("--sim-model", default="meta-llama/Llama-3.1-8B-Instruct")
+    ap.add_argument("--sim-model", default=os.environ.get("SIM_MODEL") or SIM_DEFAULT)
     ap.add_argument("--sim-url", default="http://localhost:8001/v1")
+    ap.add_argument("--extra-body",
+                    default=json.dumps({"chat_template_kwargs": {"enable_thinking": False}}))
     ap.add_argument("--group-size", type=int, default=8)
     ap.add_argument("--temperature", type=float, default=1.0)
     ap.add_argument("--max-steps", type=int, default=30)
     ap.add_argument("--policy-mode", default="preload")
     ap.add_argument("--out", default="data/grpo/iter0.json")
     args = ap.parse_args()
+    args.model = args.model or f"{args.base_model}:pasar-rft-{args.fold}"
 
     groups = collect_groups(args)
     Path(args.out).parent.mkdir(parents=True, exist_ok=True)
@@ -137,12 +159,13 @@ NEXT: the policy update. What this scaffold does NOT do yet, in order of
 difficulty, so you know exactly what you are signing up for.
 
   1. Token alignment. You need per-token logprobs for the assistant spans of
-     each trajectory under BOTH the sampling policy (vLLM, `logprobs=0` at
-     generation) and the current policy (a forward pass under FSDP). vLLM and
-     HF must tokenise identically -- verify this explicitly on a few
-     trajectories before trusting a single gradient. Chat-template drift
-     between the two is the classic silent killer here and it produces a
-     ratio that looks plausible and is wrong.
+     each trajectory under BOTH the sampling policy (SGLang, `logprobs: true`
+     at generation) and the current policy (a forward pass). The two must see
+     the same tokens: take the prompt's ids from the server's /tokenize, as
+     `train_rft.py build --server` does -- SGLang renders the tool list from
+     its own dump of it, so a local render of the same template differs (#27).
+     Chat-template drift between the two is the classic silent killer here,
+     and it produces a ratio that looks plausible and is wrong.
 
   2. Turn-level masking. Build a boolean mask over the full episode token
      sequence that is True only on assistant-generated tokens. Tool results
@@ -153,9 +176,10 @@ difficulty, so you know exactly what you are signing up for.
      assistant tokens, clip the ratio, normalise PER TOKEN within a trajectory
      (see length bias, above), and set kl_coef=0 to start.
 
-  4. Weight sync. After the update, push weights back into vLLM before the
-     next rollout iteration. With the split layout this is a checkpoint save
-     plus a server restart -- slow but obviously correct. Colocate later.
+  4. Weight sync. After the update, load the new adapter into the running
+     server before the next rollout iteration: SGLang's /load_lora_adapter
+     takes it under a new name without a restart, and /unload_lora_adapter
+     drops the old one. No merge, no restart. Colocate later.
 
 If step 1 looks like more systems work than you want, use verl and keep this
 file as your reward and rollout definition. That is not a retreat: the
@@ -164,8 +188,8 @@ they are yours either way.
 
 WHAT TO REPORT
   base -> RFT -> GRPO, on held-out tasks, as pass^1 AND pass^4, with the
-  per-trap breakdown. Then the gap-closing line against the 70B reference:
-  cost per resolved conversation for each. Three models, one table. If GRPO
+  per-trap breakdown, next to deepseek-v4-pro run against the SAME customer:
+  tokens per resolved conversation for each. One table. If GRPO
   does not beat RFT, say so -- that is a finding, and pretending otherwise is
   the one thing that will actually cost you the interview.
 """)

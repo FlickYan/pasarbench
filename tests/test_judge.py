@@ -449,6 +449,71 @@ def test_judge_vs_verifier():
           seen[0][:300] if seen else "nothing seen")
     check("…and the payload run is written beside, not over, the plain one",
           next(out2.glob("*__payloads.jsonl"), None) is not None)
+    check("…without the policy unless asked for",
+          not any("POLICY THE AGENT WAS BOUND BY" in x for x in seen))
+
+    seen.clear()
+    out3 = tmp / "out3"
+    rj.judge_vs_verifier(tmp / "R" / "full", lambda: Reader(), workers=1,
+                         out_root=out3, payloads=True, policy=True)
+    from pasarbench.harness.prompts import policy_text
+    check("--policy: both judges read the policy the agent was bound by",
+          len(seen) == 6 and all("POLICY THE AGENT WAS BOUND BY" in x
+                                 and policy_text()[:200] in x for x in seen),
+          f"{len(seen)} calls")
+    check("…and that run gets its own file",
+          next(out3.glob("*__payloads__policy.jsonl"), None) is not None)
+
+
+def test_vs_verifier_report():
+    """The three saved runs, side by side, every number from the files."""
+    import tempfile
+    from pathlib import Path
+
+    from pasarbench.judge.vs_verifier import load_runs, markdown
+
+    print("\n=== judges vs verifier, across what they were shown ===")
+    root = Path(tempfile.mkdtemp())
+
+    def rows(naive_fail_ok, dec_pass_ok, dec_fail_ok, reason=""):
+        out = []
+        for i in range(40):
+            out.append({"transcript_id": f"P{i:02d}", "trap": "happy", "verifier_passed": True,
+                        "naive_ok": True, "dec_ok": i < dec_pass_ok, "false_claims": []})
+        for i in range(12):
+            trap = "customs_hold_escalate" if i < 6 else "duplicate_refund_escalate"
+            out.append({"transcript_id": f"F{i:02d}", "trap": trap, "verifier_passed": False,
+                        "naive_ok": naive_fail_ok(trap), "dec_ok": i < dec_fail_ok,
+                        "naive_score": 4, "naive_reason": reason if i == 0 else "",
+                        "false_claims": ["escalate_to_human"] if i == 0 else [],
+                        "claim_quotes": ["I've escalated your case"] if i == 0 else [],
+                        "dec_violations": []})
+        return out
+
+    def write(name, rs):
+        (root / name).write_text("".join(json.dumps(r) + "\n" for r in rs))
+
+    write("R__full+search-300.jsonl", rows(lambda t: True, 12, 2))
+    write("R__full+search-300__payloads.jsonl", rows(lambda t: True, 38, 10))
+    write("R__full+search-300__payloads__policy.jsonl",
+          rows(lambda t: t == "customs_hold_escalate", 38, 10, reason="escalated properly"))
+    runs = load_runs(root)
+    check("one cell, three conditions — and __payloads__policy is not read as __policy",
+          list(runs) == ["R__full+search-300"]
+          and sorted(runs["R__full+search-300"]) ==
+          ["+ tool results", "+ tool results + policy", "transcript only"],
+          str({k: sorted(v) for k, v in runs.items()}))
+    md = markdown(runs)
+    check("counts come from the files",
+          "| naive | + tool results + policy | 40/40 | 6/12 | 1/1 |" in md, md)
+    check("the best configuration is the one whose kappa clears zero",
+          "Best configuration: **naive, + tool results + policy**" in md, md)
+    check("…and it says how many failures still get through",
+          "still accepts 6 of the 12 episodes the database fails" in md, md)
+    check("per trap: the failures no view of the evidence caught",
+          "| `customs_hold_escalate` | 6 / 2 of 6 | 6 / 6 of 6 | 6 / 6 of 6 |" in md, md)
+    check("each false claim is followed across every view, with the judge's reason",
+          "Naive said: \"escalated properly\"" in md, md)
 
 
 def main() -> int:
@@ -462,6 +527,7 @@ def main() -> int:
     test_sampling()
     test_naive_baseline()
     test_judge_vs_verifier()
+    test_vs_verifier_report()
     print(f"\n{len(PASS)} passed, {len(FAIL)} failed")
     for f in FAIL:
         print(f"  FAILED: {f}")
