@@ -21,6 +21,13 @@ Inputs, all optional:
     traces/<run>/summary.json     from pasarbench.sweep
     data/labels/human_round*.jsonl + data/labels/judge_*.jsonl
     data/serving/configs.json     list of ServingConfig kwargs
+
+ONE CHECKER FOR EVERY NUMBER. Traces record the verdict the checker of the day
+gave each episode. When a check is corrected, those verdicts no longer mean the
+same thing (WHAT_FAILED #30), so by default every table here is built on
+today's checks, re-scored from each episode's recorded tool calls
+(pasarbench/rescore.py), and section 7 shows what moved against the recorded
+verdicts. `--checker recorded` builds the whole report on the recorded ones.
 """
 
 from __future__ import annotations
@@ -146,6 +153,89 @@ def section_noise(traces: Path, pair: str) -> str:
             f"not a finding until it clears its own paired test.\n")
 
 
+def _rows_now(rows: list[dict], run: Path) -> list[dict]:
+    """summary.json holds each arm's pass rates as the sweep scored them. Under
+    today's checker they are recomputed from the arm's episodes, so a table's
+    rates and the paired tests beside it come from the same verdicts."""
+    from collections import defaultdict
+
+    from pasarbench.diagnose import CHECKER, _arm_episodes
+    if CHECKER == "recorded":
+        return rows
+    out = []
+    for r in rows:
+        eps = _arm_episodes(r, run)
+        if not eps:
+            # Nothing to re-score: the row keeps the sweep's rates, and says so
+            # (_kept_note) instead of passing them off as today's.
+            out.append({**r, "scored": "recorded"})
+            continue
+        by_task, groups = defaultdict(list), {k: defaultdict(list) for k in
+                                             ("trap", "language", "market")}
+        for e in eps:
+            by_task[e["task_id"]].append(e["passed"])
+            for k, g in groups.items():
+                g[e[k]].append(e["passed"])
+        rate = {k: {x: round(sum(v) / len(v), 3) for x, v in sorted(g.items())}
+                for k, g in groups.items()}
+        out.append({**r, "pass^1": round(sum(e["passed"] for e in eps) / len(eps), 4),
+                    "pass^k": round(sum(all(v) for v in by_task.values()) / len(by_task), 4),
+                    "per_trap": rate["trap"], "per_language": rate["language"],
+                    "per_market": rate["market"], "pass^1_recorded": r.get("pass^1")})
+    return out
+
+
+def _kept_note(rows: list[dict]) -> str:
+    """Arms whose rates could not be re-scored, named under the table."""
+    kept = [r.get("strategy") if r.get("exposure", "default") == "default"
+            else r.get("exposure") for r in rows if r.get("scored") == "recorded"]
+    if not kept:
+        return ""
+    return (f"\n\n*Not re-scored: {', '.join(f'`{k}`' for k in kept)} — no episodes on "
+            f"disk, so {'its' if len(kept) == 1 else 'their'} rates are the ones the "
+            f"sweep recorded, under the checker of the day.*\n")
+
+
+def _conclusion(g: dict) -> str:
+    return (("better" if g["diff"] > 0 else "worse") if g["resolved"]
+            else "inconclusive")
+
+
+def _checker_contrast(contrasts: list[tuple[str, dict, dict]], run: Path) -> str:
+    """The section's paired tests on the verdicts the run recorded as well,
+    and every conclusion the checker change moves (WHAT_FAILED #30). Nothing
+    under --checker recorded."""
+    from pasarbench.diagnose import CHECKER, paired_arm_gap
+    if CHECKER != "current":
+        return ""
+    moved = []
+    for label, a, b in contrasts:
+        now = paired_arm_gap(a, b, run)
+        was = paired_arm_gap(a, b, run, metric="passed_recorded")
+        if not now or not was or now.get("unit") != "task":
+            continue
+        if (was["worse"], was["better"], round(was["diff"], 9)) != \
+                (now["worse"], now["better"], round(now["diff"], 9)):
+            moved.append((label, was, now))
+    if not moved:
+        return ("\n\n*On the verdicts the run recorded, every paired test above comes "
+                "out the same.*\n" if contrasts else "")
+    out = ["\n\n**The paired tests that differ on the verdicts the run recorded** "
+           "(the checker of the day; section 7 says what moved):\n",
+           "| contrast | recorded | today's checks |", "|---|---|---|"]
+    for label, was, now in moved:
+        out.append(f"| {label} | " + " | ".join(
+            f"{g['diff']:+.3f}; {g['worse']} worse, {g['better']} better, p={g['p']:.3f}"
+            for g in (was, now)) + " |")
+    flips = [f"{label}: {_conclusion(was)} (p={was['p']:.3f}) recorded, "
+             f"{_conclusion(now)} (p={now['p']:.3f}) now"
+             for label, was, now in moved if _conclusion(was) != _conclusion(now)]
+    if flips:
+        out.append("\n**The checker change moves a conclusion here:** "
+                   + "; ".join(flips) + ".")
+    return "\n".join(out) + "\n"
+
+
 def section_context(runs: list[Path], pinned: str = "") -> str:
     from pasarbench.analyze import markdown_report
     cands = []
@@ -158,11 +248,15 @@ def section_context(runs: list[Path], pinned: str = "") -> str:
     if picked is not None:
         from pasarbench.diagnose import paired_arm_gap
         rows, run = picked
+        rows = _rows_now(rows, run)
         base = rows[0]
         paired = {r["strategy"]: {"pass": paired_arm_gap(base, r, run),
                                   "tokens": paired_arm_gap(base, r, run, metric="tokens")}
                   for r in rows[1:]}
-        return note + markdown_report(rows, baseline=base["strategy"], paired=paired)
+        return (note + markdown_report(rows, baseline=base["strategy"], paired=paired)
+                + _kept_note(rows)
+                + _checker_contrast([(f"`{r['strategy']}` vs `{base['strategy']}`",
+                                      base, r) for r in rows[1:]], run))
     return _missing(
         "context ablation not run against a real model",
         "python -m pasarbench.sweep --backend openai --model <m> --suite all \\\n"
@@ -179,9 +273,19 @@ def section_tools(runs: list[Path], pinned: str = "") -> str:
     picked, note = _choose(cands, pinned, "--tools-run")
     if picked is not None:
         rows, run = picked
+        rows = _rows_now(rows, run)
+        # The contrasts the reading draws, in its order.
+        idx = {r.get("exposure"): r for r in rows}
+        pairs = [(a, b) for n in (20, 50, 100, 300)
+                 for a, b in (("oracle", f"all-{n}"), ("oracle", f"random-{n}"),
+                              (f"random-{n}", f"all-{n}"))]
+        pairs += [("all-20", x) for x in idx if str(x).startswith("search-")]
+        contrasts = [(f"`{b}` vs `{a}`", idx[a], idx[b]) for a, b in pairs
+                     if a in idx and b in idx]
         # The template already heads this section; drop the report's own.
-        return note + tool_scaling_report(rows, run_dir=run).replace(
-            "## Tool scaling\n", "", 1)
+        return (note + tool_scaling_report(rows, run_dir=run).replace(
+            "## Tool scaling\n", "", 1) + _kept_note(rows)
+            + _checker_contrast(contrasts, run))
     return _missing(
         "tool-scaling arms not run",
         "python -m pasarbench.sweep --backend openai --model <m> --suite all \\\n"
@@ -249,6 +353,41 @@ def _replication(chosen: list[tuple[str, list[dict], str]]) -> str:
     return "\n".join(out)
 
 
+def _language_flips(chosen: list[tuple[str, list[dict], str]]) -> str:
+    """The paired language gaps on the verdicts each run recorded, where they
+    differ from today's (WHAT_FAILED #30)."""
+    from pasarbench.diagnose import CHECKER, _sign_p, paired_language_gap
+    if CHECKER != "current":
+        return ""
+    rows, flips = [], []
+    for name, eps, _ in chosen:
+        now = paired_language_gap(eps)["languages"]
+        was = paired_language_gap([{**e, "passed": e["passed_recorded"]} for e in eps]
+                                  )["languages"]
+        for lang in sorted(set(now) & set(was)):
+            n, w = now[lang], was[lang]
+            if not n.get("pairs") or not w.get("pairs"):
+                continue
+            key = lambda r: (r["paired_gap"], r["pairs_where_worse"], r["pairs_where_better"])
+            if key(n) == key(w):
+                continue
+            pn = _sign_p(n["pairs_where_worse"], n["pairs_where_better"])
+            pw = _sign_p(w["pairs_where_worse"], w["pairs_where_better"])
+            rows.append(f"| `{name}` | `{lang}` | {w['paired_gap']:+.3f} (p={pw:.2f}) | "
+                        f"{n['paired_gap']:+.3f} (p={pn:.2f}) |")
+            if (pw < 0.05) != (pn < 0.05):
+                flips.append(f"`{name}` `{lang}`: p={pw:.2f} recorded, p={pn:.2f} now")
+    if not rows:
+        return "\n\n*On the verdicts the runs recorded, every paired gap comes out the same.*"
+    out = ["\n\n**Paired gaps that differ on the verdicts the runs recorded** "
+           "(English minus the language; section 7 says what moved):\n",
+           "| run | lang | recorded | today's checks |", "|---|---|---|---|"] + rows
+    if flips:
+        out.append("\n**The checker change moves a conclusion here:** "
+                   + "; ".join(flips) + ".")
+    return "\n".join(out)
+
+
 def section_multilingual(runs: list[Path], judge: list[dict],
                          pinned: str = "") -> str:
     from pasarbench.diagnose import load_episodes, report
@@ -276,7 +415,7 @@ def section_multilingual(runs: list[Path], judge: list[dict],
         text = note + report(eps, judge or None)
         if len(chosen) > 1:
             text += "\n\n" + _replication(chosen)
-        return text
+        return text + _language_flips(chosen)
     return _missing(
         "no multi-language run found in traces/",
         "python -m pasarbench.sweep --backend openai --model <m> --suite all -k 3")
@@ -468,6 +607,24 @@ def _naive_vs_decomposed(r1: list[dict], naive: list[dict],
     return out
 
 
+_KEPT_SAMPLES: set[str] = set()
+
+
+def _sample_verdict(rec: dict) -> bool | None:
+    """A labelled transcript's verdict, under the report's checker: re-scored
+    from its trace when that is today's checks and the trace is at hand. One
+    that is not keeps its recorded verdict, and is counted (_KEPT_SAMPLES)."""
+    from pasarbench.diagnose import CHECKER
+    if not rec:
+        return None
+    if CHECKER == "current":
+        if rec.get("path") and Path(rec["path"]).is_file():
+            from pasarbench.rescore import rescore_file
+            return rescore_file(rec["path"]).verdict
+        _KEPT_SAMPLES.add(rec.get("transcript_id") or rec.get("path") or "?")
+    return rec.get("passed")
+
+
 def section_judge() -> str:
     from pasarbench.judge.agreement import ceiling_report, per_criterion
     from pasarbench.judge.rubric import CRITERIA
@@ -499,7 +656,8 @@ def section_judge() -> str:
     no_variance = bool(n_j) and n_v / n_j < 0.01
     if no_variance:
         sample = {x["transcript_id"]: x for x in _load_jsonl(root / "sample.jsonl")}
-        failed = [r for r in r1 if sample.get(r["transcript_id"], {}).get("passed") is False]
+        _KEPT_SAMPLES.clear()
+        failed = [r for r in r1 if _sample_verdict(sample.get(r["transcript_id"], {})) is False]
         ok_failed = sum(1 for r in failed if not any(
             r["labels"].get(k) is False for k in keys))
         out.append(
@@ -512,7 +670,10 @@ def section_judge() -> str:
                f"scores what the agent said, and these agents fail in what they "
                f"do." if failed else "")
             + " See WHAT_FAILED #24; the judges are evaluated against the "
-              "database under *Judges against the verifier*.\n")
+              "database under *Judges against the verifier*."
+            + (f" ({len(_KEPT_SAMPLES)} sampled transcript(s) have no trace on disk "
+               f"and keep the verdict recorded at sampling.)" if _KEPT_SAMPLES else "")
+            + "\n")
 
     if dec:
         from pasarbench.judge.agreement import confusion
@@ -703,18 +864,109 @@ def section_judge() -> str:
     return "\n".join(out)
 
 
-def section_judge_vs_verifier() -> str:
+def _salted_payloads(runs: dict, traces: Path) -> str:
+    """#33: v18's generated tracking numbers came from Python's salted hash, so
+    no replay can rebuild a shipment lookup from a run before v19. A judge file
+    built by the length-checking replay showed the judge a number the agent
+    never saw; one built since withholds that result and shows the call's
+    arguments. Its rows say which: a withheld result is not among the
+    verified ones in `payload_calls`. Counted from the traces, not left to
+    prose."""
+    import json
+
+    from pasarbench.harness.replay import replay
+    from pasarbench.rescore import all_tasks
+    tasks, out = all_tasks(), []
+    for cell, conds in sorted(runs.items()):
+        views = {c: rows for c, rows in conds.items() if "tool results" in c}
+        if not views:
+            continue
+        run, _, arm = cell.partition("__")
+        hit, n = set(), 0
+        for f in sorted((traces / run / arm).glob("*.jsonl")):
+            recs = [json.loads(l) for l in f.read_text().splitlines() if l.strip()]
+            task = tasks.get(next((r for r in recs if r.get("type") == "header"),
+                                  {}).get("task_id"))
+            if task is None:
+                continue
+            n += 1
+            if replay(recs, task).unrecoverable:
+                hit.add(f.stem)
+        if not hit:
+            continue
+
+        def shown(r: dict) -> bool:
+            v, t = r.get("payload_calls") or (0, 0)
+            return not r.get("payload_calls") or v >= t
+        wrong = sorted(c for c, rows in views.items()
+                       if any(r["transcript_id"] in hit and shown(r) for r in rows))
+        if wrong:
+            out.append(f"> **`{cell}`, {', '.join(f'*{c}*' for c in wrong)}:** "
+                       f"{len(hit)} of {n} episodes looked up a generated shipment, "
+                       f"and the replay that built these views showed the judge a "
+                       f"tracking number the agent never saw -- v18 drew them from "
+                       f"Python's salted hash, and the replay checked only lengths "
+                       f"(WHAT_FAILED #33). A judge that compared the numbers compared "
+                       f"them against the wrong one. Re-running `scripts/run_judges.py "
+                       f"--payloads` withholds those payloads instead.\n")
+        else:
+            out.append(f"> **`{cell}`, views with tool results:** {len(hit)} of {n} "
+                       f"episodes looked up a generated shipment, whose result no replay "
+                       f"can rebuild for a run before v19 (WHAT_FAILED #33). These views "
+                       f"withhold it -- the judges saw that call's arguments only -- so "
+                       f"what the agent said about the shipment has no tool result "
+                       f"behind it, and a strict judge may take it for invention.\n")
+    return "\n".join(out) + ("\n" if out else "")
+
+
+def section_judge_vs_verifier(traces: Path = Path("traces")) -> str:
     """The same judges scored against the database instead of human labels,
-    under each view of the evidence they were given (run_judges.py --traces)."""
+    under each view of the evidence they were given (run_judges.py --traces).
+
+    The judge files carry the verifier's verdict as recorded when the judges
+    ran. Under today's checker the ground truth is re-scored like every other
+    number, and the section says how many verdicts that moved."""
+    from pasarbench.diagnose import CHECKER
     from pasarbench.judge.vs_verifier import load_runs, markdown
     runs = load_runs(Path("data/judge_vs_verifier"))
     if not runs:
         return ""                     # optional experiment; absence is not a gap
+    note = ""
+    if CHECKER == "current":
+        from pasarbench.rescore import rescore_dir
+        moved, total, kept = 0, 0, 0
+        for cell, conds in runs.items():
+            run, _, arm = cell.partition("__")
+            d = traces / run / arm
+            now = {r.transcript_id: r.verdict for r in rescore_dir(d)} if d.is_dir() else {}
+            for rows in conds.values():
+                for r in rows:
+                    # Files from before v19 hold only the recorded verdict;
+                    # later ones hold both (scripts/run_judges.py).
+                    r.setdefault("verifier_passed_recorded", r["verifier_passed"])
+                    r["verifier_passed"] = now.get(r["transcript_id"], r["verifier_passed"])
+            rows = next(iter(conds.values()))
+            total += len(rows)
+            moved += sum(r["verifier_passed"] != r["verifier_passed_recorded"] for r in rows)
+            kept += sum(r["transcript_id"] not in now for r in rows)
+        note = (f"*Ground truth is today's checks: {moved} of the {total} episodes' "
+                f"verdicts differ from the ones the runs recorded (section 7). The "
+                f"judges' answers are the same either way; only what they are scored "
+                f"against changes."
+                + (f" {kept} episode(s) have no trace on disk and keep the recorded "
+                   f"verdict." if kept else "") + "*\n\n")
+    else:
+        for conds in runs.values():
+            for rows in conds.values():
+                for r in rows:
+                    if "verifier_passed_recorded" in r:
+                        r["verifier_passed"] = r["verifier_passed_recorded"]
+    note += _salted_payloads(runs, traces)
     return ("\n\n### Judges against the verifier\n\n"
             "Human labels measure whether a judge reads a transcript the way a "
             "person does. This measures whether it can tell a solved case from "
             "an unsolved one, with the database as ground truth, and how that "
-            "depends on what it is shown.\n\n" + markdown(runs))
+            "depends on what it is shown.\n\n" + note + markdown(runs))
 
 
 def section_serving() -> str:
@@ -747,12 +999,12 @@ def _headers(cell: Path) -> dict[str, dict]:
     return out
 
 
-def _passk(eps: list[dict]) -> tuple[float, float, int]:
+def _passk(eps: list[dict], key: str = "passed") -> tuple[float, float, int]:
     by: dict[str, list[bool]] = {}
     for e in eps:
-        by.setdefault(e["task_id"], []).append(e["passed"])
+        by.setdefault(e["task_id"], []).append(e[key])
     k = max(len(v) for v in by.values())
-    return (sum(e["passed"] for e in eps) / len(eps),
+    return (sum(e[key] for e in eps) / len(eps),
             sum(all(v) for v in by.values()) / len(by), k)
 
 
@@ -825,6 +1077,43 @@ def section_training(traces: Path = Path("traces"),
         else:
             out.append(f"- {what} vs base: **INCONCLUSIVE** — {g['better']} tasks "
                        f"better and {g['worse']} worse is within noise (p={g['p']:.3f}).")
+
+    # The same table on the verdicts the runs recorded, when they differ: a
+    # conclusion that flips between the two is a finding about the checker,
+    # not the model (WHAT_FAILED #30).
+    from pasarbench.diagnose import CHECKER
+    moved = {role: sum(x["passed"] != x["passed_recorded"] for x in e)
+             for role, e in eps.items()}
+    if CHECKER == "current" and any(moved.values()):
+        out.append("\n**The same runs, as recorded at run time** — the checker of the "
+                   "day, before v19 corrected two of its checks (WHAT_FAILED #30):\n")
+        out.append("| model | pass^1 | pass^k | vs base, paired by task | "
+                   "episodes re-scored differently |")
+        out.append("|---|---|---|---|---|")
+        for role in ("base", "rft", "reference"):
+            if role not in eps:
+                continue
+            e = eps[role]
+            p1, pk, k = _passk(e, "passed_recorded")
+            g = (paired_episodes(eps["base"], e, metric="passed_recorded")
+                 if role != "base" else None)
+            vs = ("—" if g is None else
+                  f"{g['diff']:+.3f}; {g['better']} better, {g['worse']} worse, "
+                  f"p={g['p']:.3f}")
+            out.append(f"| {labels[role].split(',')[0]} | {p1:.3f} | {pk:.3f} (k={k}) | "
+                       f"{vs} | {moved[role]} of {len(e)} |")
+        flips = []
+        for role, g in verdicts:
+            was = paired_episodes(eps["base"], eps[role], metric="passed_recorded")
+            if was and (was["resolved"], was["diff"] > 0) != (g["resolved"], g["diff"] > 0):
+                flips.append(f"{labels[role].split(',')[0]} vs base: "
+                             f"{'resolved' if was['resolved'] else 'inconclusive'} "
+                             f"{was['diff']:+.3f} (p={was['p']:.3f}) recorded, "
+                             f"{'resolved' if g['resolved'] else 'inconclusive'} "
+                             f"{g['diff']:+.3f} (p={g['p']:.3f}) now")
+        if flips:
+            out.append("\n**The checker change moves a conclusion here:** "
+                       + "; ".join(flips) + ". Section 7 lists the traps that moved.")
     if "rft" not in eps:
         out.append(f"\nRFT: {MISSING}\n\n```bash\n"
                    "bash scripts/gpu_pipeline.sh stage1   # if not yet run\n"
@@ -892,14 +1181,88 @@ def section_training(traces: Path = Path("traces"),
     stats = _load_json(Path("data/rft/stats.json"))
     if stats and "per_trap_pass_rate" in stats:
         dead = stats.get("traps_with_zero_signal") or {}
+        # Which checker picked the training episodes. Before v19 it was the
+        # verdict each episode recorded, and v18's checks demanded one lookup
+        # tool on two traps -- which the fine-tune then learned (#30).
+        how = {"current": "today's checks at build time",
+               "recorded": "the verdicts the episodes recorded"}.get(
+            stats.get("checker"), "the verdicts the episodes recorded, under the "
+            "checker of the day (this stats.json predates `--checker`: before v19, "
+            "WHAT_FAILED #30)")
         out.append(f"\nCollection (`{stats.get('source')}`): {stats['episodes']} "
                    f"episodes at temperature 1.0, pass rate {stats['pass_rate']:.3f}; "
-                   f"examples per fold {stats['examples']}.")
+                   f"examples per fold {stats['examples']}. Passing episodes were "
+                   f"picked by {how}.")
         for fold, traps in dead.items():
             if traps:
                 out.append(f"- fold {fold} never solved {len(traps)} trap(s), so "
                            f"rft-{fold} had nothing to learn for: "
                            f"{', '.join('`' + t + '`' for t in traps)}")
+    return "\n".join(out)
+
+
+def section_rescoring(traces: Path = Path("traces")) -> str:
+    """Every run, under the verdicts it recorded and under today's checks.
+
+    A checker change is a change to what every number means. This is where it
+    is accounted for: per cell, what moved and which way, and per trap, where.
+    A correction that relaxes a check can only move failures to passes, so a
+    move the other way is flagged: unless a check got stricter, the replay
+    rebuilt a different state than the episode ended in. A move in a trap
+    whose checks did not change means the same; the per-trap table is there to
+    be read against what changed -- the report cannot know that."""
+    from collections import Counter, defaultdict
+
+    from pasarbench.rescore import cells, rescore_dir, summary
+    if not traces.is_dir():
+        return _missing("no traces/ to re-score", "python scripts/rescore.py")
+    rows, traps, kept = [], defaultdict(Counter), Counter()
+    for cell in cells(traces):
+        rs = rescore_dir(cell)
+        sm = summary(rs)
+        if not sm["episodes"]:
+            continue
+        rows.append((str(cell.relative_to(traces)), sm))
+        for r in rs:
+            if r.moved:
+                traps[r.trap][r.moved] += 1
+            if r.recorded is not None and r.current is None:
+                kept[r.status] += 1
+    if not rows:
+        return _missing("no episodes under traces/", "python scripts/rescore.py")
+    out = ["Each episode's recorded tool calls are replayed against the world it ran "
+           "in, and today's checks score the rebuilt state (`python scripts/rescore.py`; "
+           "no model is called). An episode whose replay does not reproduce its "
+           "recording keeps its recorded verdict.\n",
+           "| run | episodes | pass^1 recorded → now | pass^k recorded → now | "
+           "fail → pass | pass → fail | kept as recorded |",
+           "|---|---|---|---|---|---|---|"]
+    for name, sm in rows:
+        out.append(f"| `{name}` | {sm['episodes']} | {sm['recorded']:.3f} → "
+                   f"{sm['current']:.3f} | {sm['recorded_k']:.3f} → {sm['current_k']:.3f} | "
+                   f"{sm['fail_to_pass']} | {sm['pass_to_fail']} | {sm['not_rescorable']} |")
+    if traps:
+        out.append("\n| trap | fail → pass | pass → fail |")
+        out.append("|---|---|---|")
+        for trap, c in sorted(traps.items(), key=lambda kv: -sum(kv[1].values())):
+            out.append(f"| `{trap}` | {c['fail→pass']} | {c['pass→fail']} |")
+    else:
+        out.append("\nNothing moved: today's checks give every episode the verdict it "
+                   "recorded.")
+    worse = sum(c["pass→fail"] for c in traps.values())
+    if worse:
+        out.append(f"\n> **{worse} episode(s) moved from pass to fail.** If no check "
+                   f"got stricter, the replay rebuilt a different state than the run "
+                   f"ended in: read them with `python scripts/rescore.py --changed`.")
+    if kept:
+        why = {"world_changed": "a payload differs from the recording (a world older "
+                                "than the replay can rebuild)",
+               "diverged": "a call succeeds on replay where it failed in the run, or "
+                           "the reverse",
+               "task_changed": "the task's opening or facts changed since the run",
+               "unknown_task": "the task is no longer in the suite"}
+        out.append("\nKept as recorded: " + "; ".join(
+            f"{n} because {why.get(k, k)}" for k, n in kept.most_common()) + ".")
     return "\n".join(out)
 
 
@@ -910,6 +1273,8 @@ TEMPLATE = """# PasarBench — results
 Generated by `scripts/make_report.py`. Every number below comes from a file on
 disk. Anything marked {missing} has not been run, and the command to produce it
 is shown inline. **Do not fill these in by hand** — re-run and regenerate.
+
+{scoring}
 
 ## The suite
 
@@ -938,6 +1303,10 @@ is shown inline. **Do not fill these in by hand** — re-run and regenerate.
 ## 6. Post-training
 
 {training}
+
+## 7. Re-scoring: recorded verdicts and today's checks
+
+{rescoring}
 
 ---
 
@@ -973,7 +1342,23 @@ def main() -> None:
                          "Several, comma-separated, adds a replication table")
     ap.add_argument("--post-training", default="base=P-base,rft=P-rft,reference=P-ref",
                     help="runs for section 6: base, fold-swapped RFT, API reference")
+    ap.add_argument("--checker", choices=["current", "recorded"], default="current",
+                    help="current: every verdict re-scored by today's checks from the "
+                         "recorded tool calls (default); recorded: as each run scored "
+                         "it. Section 7 compares the two either way")
     args = ap.parse_args()
+
+    from pasarbench.diagnose import use_checker
+    use_checker(args.checker)
+    scoring = ("**Scoring:** today's checks, re-scored from each episode's recorded "
+               "tool calls — the runs were scored by the checker of their day, and "
+               "v19 corrected two of its checks (WHAT_FAILED #30). Section 7 shows "
+               "what that moved; `--checker recorded` rebuilds this report on the "
+               "verdicts as recorded."
+               if args.checker == "current" else
+               "**Scoring:** the verdicts each run recorded, by the checker of its "
+               "day. Section 7 shows what today's checks would change; the default "
+               "`--checker current` uses them throughout.")
 
     runs = sorted(p for p in Path(args.traces).glob("*") if p.is_dir()) \
         if Path(args.traces).exists() else []
@@ -986,12 +1371,13 @@ def main() -> None:
         "multilingual": ("3. Multilingual diagnosis",
                          section_multilingual(runs, judge, args.multilingual_run)),
         "judge": ("4. Judge calibration",
-                  section_judge() + section_judge_vs_verifier()),
+                  section_judge() + section_judge_vs_verifier(Path(args.traces))),
         "serving": ("5. Serving and cost", section_serving()),
         "training": ("6. Post-training",
                      section_training(Path(args.traces), args.post_training)),
+        "rescoring": ("7. Re-scoring", section_rescoring(Path(args.traces))),
     }
-    body = TEMPLATE.format(missing=MISSING, suite=section_suite(),
+    body = TEMPLATE.format(missing=MISSING, suite=section_suite(), scoring=scoring,
                            noise=section_noise(Path(args.traces), args.noise_pair),
                            **{k: text for k, (_, text) in sections.items()})
     Path(args.out).write_text(body)

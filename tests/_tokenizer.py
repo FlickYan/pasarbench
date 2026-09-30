@@ -23,7 +23,12 @@ def available() -> bool:
     return True
 
 
-def local_tokenizer(corpus: list[str] | None = None):
+def local_tokenizer(corpus: list[str] | None = None,
+                    template: str = "qwen3_style_chat_template.jinja"):
+    """A trained toy BPE with a chat template from tests/fixtures:
+    `qwen3_style_chat_template.jinja` (JSON tool calls, the think block on the
+    last turn only) or `qwen3_8_style_chat_template.jinja` (XML tool calls, the
+    think block on every turn)."""
     from tokenizers import Tokenizer, decoders, models, pre_tokenizers, trainers
     from transformers import PreTrainedTokenizerFast
 
@@ -40,6 +45,5 @@ def local_tokenizer(corpus: list[str] | None = None):
     fast = PreTrainedTokenizerFast(tokenizer_object=tok, eos_token="<|im_end|>",
                                    pad_token="<|endoftext|>",
                                    additional_special_tokens=SPECIAL[1:])
-    fast.chat_template = (Path(__file__).parent / "fixtures" /
-                          "qwen3_style_chat_template.jinja").read_text()
+    fast.chat_template = (Path(__file__).parent / "fixtures" / template).read_text()
     return fast

@@ -1,6 +1,6 @@
 # What failed
 
-Twenty-seven real defects found while building this. The first fifteen are in
+Thirty-three real defects found while building this. The first fifteen are in
 the order of how much damage they would have done; the rest are in the order
 they were found. Every one is reproducible from the git history.
 
@@ -11,8 +11,9 @@ scale-up that exercises a code path differently, a real model run. That is the
 argument for spending the first two weeks on guarantees rather than features.
 
 The exceptions are #9, which no mechanism here could have caught and a human
-reading transcripts did, and #26, a measured "finding" that one printed line
-per case undid. Automation catches the classes you thought of.
+reading transcripts did, #26, a measured "finding" that one printed line per
+case undid, and #30, where the checker's own quirk became the thing a
+fine-tune learned. Automation catches the classes you thought of.
 
 ---
 
@@ -110,7 +111,8 @@ a customer the address is locked without checking the order status.
 
 **The honest residue.** "Do no harm" traps are structurally weak under
 state-only verification — passing means nothing bad happened, which a cautious
-lookup-only agent achieves for free. 36 of 199 tasks are in this category and
+lookup-only agent achieves for free. 52 of the 199 generated tasks are in this
+category since v19 (the photo trap joined them, #30), and
 `tests/test_generated.py` **exempts them explicitly** rather than pretending
 otherwise. They are the argument for the judge.
 
@@ -651,8 +653,10 @@ failing two thirds of work the database called correct.
 randomness — so `harness/replay.py` regenerates every result by replaying the
 recorded calls against the task's fresh database, and accepts a result only if
 it matches the recorded payload length. Byte-identical on all 640 calls of the
-215 reference solutions; 629 of 629 verified on the real run. `--payloads`
-gives the judge those results. Found alongside it: neither judge saw the
+215 reference solutions; 629 of 629 verified on the real run. (Both claims
+held inside one process only: a tracking number drawn from Python's salted
+hash differed between processes at the same length, and the length check
+passed it — #33.) `--payloads` gives the judge those results. Found alongside it: neither judge saw the
 policy either — the trace keeps a placeholder system message, and the renderer
 drops system messages — so `policy_accurate`, "correct per policy.md", was
 judged without policy.md. `--policy` closes that. The calibration run against
@@ -661,6 +665,11 @@ human labels keeps the old view on purpose: the humans labelled from it too.
 **Lesson.** A documented limitation is not a measured one. This caveat was the
 difference between a judge that rejects two thirds of correct work and one
 that rejects a tenth.
+
+*The numbers above are as the runs recorded them. On the v19 checks (#30) two
+search-arm episodes move to pass: the judge rejects 54 of 81 correct episodes
+without the tool results and 9 of 81 — a ninth — with them; 12 of 81 in the
+judges' re-run after #33.*
 
 ---
 
@@ -684,8 +693,10 @@ explain the result.
 
 **What it cost, and what replaced it.** The human-agreement numbers measure
 nothing and are reported as such. The judges were instead scored against the
-verifier on the search arm, where 17 of 96 episodes fail — a ground truth with
-variance, and the experiment that produced the project's clearest judge result.
+verifier on the search arm, where 17 of 96 episodes fail (15 on the v19
+checks, #30) — a ground truth with variance, and the experiment that produced
+the project's clearest judge result. The 41 of 43 is the same on either
+checker.
 
 **Lesson.** Look at label variance after the first twenty labels, not after two
 hundred. And sample for the property the rubric measures: a set stratified on
@@ -701,7 +712,8 @@ alphabetically in reverse, which chose `G-gated` — the run whose fact-gating
 had no Chinese ask-patterns and stonewalled (#11, #26). That run holds the only
 significant language gaps in the project: zh-MY +26 points (p < 0.01) and
 zh-SG +29 points (p = 0.02). In `C-clean`, the same tasks without gating, both
-are within nine points of English with p ≥ 0.62. The report attributed the
+are within nine points of English with p ≥ 0.62. (Under the v19 checks, #30:
++23 and +28 points in G, and within three points in C.) The report attributed the
 fake gap to tokenisation.
 
 **Why it matters.** Nothing flagged it. The section named its source run in
@@ -791,6 +803,20 @@ order id.
 what it flagged. Here the deciding evidence was one line per case, in traces I
 had for three runs.
 
+**It happened again, and was caught.** The first post-training run changed the
+agent to Qwen3.8-27B. Its audit flagged 20 leaks, all in Indonesian and Thai,
+and printed the warning this entry added: check the detector before the
+simulator. Every one followed a request in words the list lacked: "ID order",
+a misspelt "nomor pesannya", and Thai with its tone marks and vowels dropped or
+misplaced ("หมายเลขโทรศัพท" for "หมายเลขโทรศัพท์"); the fine-tune later asked
+"哪个订单" in Chinese. The patterns now include them, and Thai is matched with
+its combining marks folded out on both sides. The three post-training runs
+flag 0 of 3,225 episodes; the four earlier runs are unchanged at 3 of 4,155.
+Folding has a cost of its own: with the marks gone, หลัก (digit) reads like
+หลักฐาน (evidence) and หลีกเลี่ยง (avoid), and ท้าย (last) like ทายาท (heir), so
+"4 หลักฐาน" read as a request for the phone digits. The patterns now exclude
+those words and a test holds the negatives; no audit count moved.
+
 ---
 
 ## 27. The training pipeline was built for the week-1 suite
@@ -838,9 +864,10 @@ needed three more of these, all found by reading its source:
 
 - It answers a request naming a bare LoRA adapter with the **base model**,
   without an error, although `/v1/models` lists the adapter under that very
-  name. The evaluation would have scored Qwen3-8B as its own fine-tune.
-  Adapters are now requested as `Qwen/Qwen3-8B:pasar-rft-A`, and the sweep
-  checks every fold model against the server before the first episode.
+  name. The evaluation would have scored the base model as its own
+  fine-tune. Adapters are now requested as `Qwen/Qwen3.8-27B:pasar-rft-A`,
+  and the sweep checks every fold model against the server before the first
+  episode.
 - It hands the chat template each tool as its own pydantic dump —
   `"strict": false`, `"defer_loading": null`, description before name — so
   every training prompt rendered locally would have differed from the one the
@@ -851,10 +878,343 @@ needed three more of these, all found by reading its source:
   read them. The customer is served with `--reasoning-parser gemma4`, and the
   audit counts chat-format tokens on both sides of every conversation.
 
+**A last read before the first GPU hour**, by a reviewer who had not written
+the code, found four ways the pipeline would have spent money on nothing:
+resume kept episodes a dead API key or a crashed server had ended, so "run it
+again" re-ran none of them; a new terminal silently reset the repetitions
+between the baseline and the evaluation it is compared with; a LoRA probe with
+zero weights would have passed whether or not the server applied the adapter;
+and on a GPU machine the setup's own tests failed, because transformers routes
+Qwen3.8's linear attention to GPU kernels even for the CPU toy model. All four
+are fixed, and the first three have tests.
+
 **Lesson.** Unlike most of this list, this was found by reading, and it was
 found because GPU time costs money and API time had not. Code written against
 an early version of the data encodes assumptions that were true when written;
 the suite grew by thirteen times and the training scripts did not notice.
+
+---
+
+## 28. Two servers on one GPU: the second one's fraction is of what is left
+
+**Symptom (caught before any GPU hour).** The only cards on offer were single
+ones: one H100, H200, B200 or B300. Everything was sized for two H100s, one
+server per card. One H100 cannot hold the agent's 52 GiB and the customer's
+31 GiB of weights; one B200 can, with ~80 GiB left for both KV caches. The
+obvious move — the same `--mem-fraction-static` split in half for each server
+— does not work.
+
+**Cause.** SGLang sizes its cache as `pool = free_before_load * f - weights`,
+where `free_before_load` is the memory free *when that server starts*, not the
+card's size, and keeps `free_before_load * (1 - f)` for CUDA graphs and
+activations. Start both at once and each measures the other's half-loaded
+weights as used, or not, depending on timing; start them in order and the same
+`f` means something different for the second. And SGLang's defaults on a
+180 GB card (16k prefill chunks, decode graphs up to batch 512) reserve working
+memory sized for one server alone.
+
+**Fix.** On one card the agent starts first, with `f` chosen to give it a
+planned pool; the customer starts once the agent answers, with `f` worked out
+from `nvidia-smi` at that moment so that a reserve stays free for both
+servers' runtime (`scripts/gpu_plan.py`, tested by simulating the agent's use;
+`PASAR_RESERVE_GB` raises it, and is the one knob that helps after an
+out-of-memory at run time — a smaller agent cache would only have grown the
+customer's).
+Batch size and prefill chunks are capped at what 24 conversations need. The
+customer's sliding-window pool, by default 0.8x the tokens of its full-attention
+pool at ~768 KiB a token, is cut to 0.3x: a conversation needs one 1024-token
+window there but its whole length in the full-attention layers. Training runs
+in one process with 32 gradient-accumulation steps, the 32 turns per step two
+cards gave, so the recipe does not depend on the hardware; the smoke stage now
+trains a few steps on one maximum-length turn, so an OOM or a kernel that
+does not run on Blackwell turns up in minutes. B300 was ruled out on paper:
+Modal requires CUDA 13.1 for it, and SGLang 0.5.20's torch is built on 13.0.
+
+A reviewer reading SGLang's pool code found a limit the two-card layout had
+all along: the agent keeps a ~150 MiB linear-attention state per running
+conversation, five per request with the radix cache's copies, and SGLang's
+default gives those states under half the pool. That capped the agent near a
+dozen conversations on an H100 or an H200 while the sweeps send 24 — nothing
+wrong, only slow. The agent now gives them 70% of its pool
+(`--mamba-full-memory-ratio 2.5`), and every stage logs what each server can
+hold (`logs/gpu.txt`) with a note when the agent's limit is under 24.
+
+**Lesson.** A memory knob is only portable if you know what it is a fraction
+*of*. Read the formula before splitting a card — and read what else draws on
+the same pool.
+
+---
+
+## 29. The first GPU minute: SGLang compiles, and nothing had a compiler
+
+**Symptom.** The first smoke test on a B200 in a Modal Notebook stopped before
+the agent loaded a single weight: `RuntimeError: … NVCC version must be at
+least 12.9`, from DeepGEMM, called by SGLang's model runner at start-up.
+
+**Cause.** `pip install sglang` is not the whole runtime. SGLang 0.5.20 compiles
+kernels when a server starts — its own JIT kernels, FlashInfer's, DeepGEMM's —
+with the nvcc it finds through `CUDA_HOME`, then `PATH`, then `/usr/local/cuda`.
+torch 2.13 brings the CUDA 13 *runtime* through pip but no compiler. The
+notebook image had a CUDA toolkit older than 12.9 on its PATH, so that is the
+one DeepGEMM found; the Modal job image had none at all, and no C++ compiler
+for nvcc's host code either. Every test in this repo runs without a GPU and
+without nvcc, so none of them could see it.
+
+**Fix.** Every install path (the notebook helper, the Modal image, the Lambda
+setup) now adds pip's `cuda-toolkit[nvcc,cccl]` at the version torch pins, and
+`scripts/cuda_home.py` points `CUDA_HOME` at it — preferring it over whatever
+the machine has — after two symlinks that make its layout what nvcc's own
+profile and the JIT link lines expect (`lib64`, `libcudart.so`; without them
+the link fails, which was checked by building a kernel with it). Every GPU
+stage now builds a test kernel for the card before any model loads, and so do
+`pn.setup()` and the Modal `test` stage, where no GPU is billed yet. DeepGEMM,
+which serves block-FP8 and MoE GEMMs that neither model has, is off unless
+asked for.
+
+**Lesson.** The dependency list of an inference engine includes the compiler
+it runs at start-up. Pin it like torch, and check it on the target before the
+expensive part.
+
+---
+
+## 30. The checker preferred a tool, and the fine-tune learned the preference
+
+**Symptom.** The first post-training result. Qwen3.8-27B fine-tuned on its own
+passing episodes (RFT) scored 0.882 against the base model's 0.859 — 22 tasks
+better, 13 worse, p = 0.18: a gain, not a significant one. deepseek-v4-pro, the
+reference, scored 0.899. Per trap, most of the movement sat in two places: the
+peak-period delay (7 of 70 base episodes passed, 26 of 70 after RFT) and the
+high-value photo rule (3 → 7 of 70).
+
+**Cause.** Reading the failures, not the rates. All 63 of the base model's
+peak-period failures failed on one line — `missing required action: get_order`
+— and so did all 44 of the fine-tune's. 59 of the base model's 67 photo
+failures failed only on a missing `check_return_eligibility`. In every one the
+outcome was right: no voucher for a delay inside the extended sale SLA, no
+return opened before photos, nothing forbidden. And the agent had established
+the fact the rule turns on another way: `list_user_orders` shows when an order
+was placed, `get_order` what an item is worth. The two checks named one tool
+where the policy needs only the fact. The check for a shipped order that cannot
+be cancelled already said why that is wrong — "requiring one specific call
+tests tool preference, not policy compliance" — and accepted any order lookup;
+these two had never been read against it.
+
+RFT trains on the episodes the checker passes, so on these traps it was
+trained on the preference — and learned it there: on the peak trap the
+fine-tune called `get_order` in 26 of 70 held-out conversations, the base
+model in 7. Not as a general habit: across the suite it called `get_order`
+slightly less than the base model did (672 of 1,075 conversations against
+717). deepseek-v4-pro calls it in 95% of its conversations (the base model in
+67%), so the same checks favoured it.
+
+**What it moved.** Nothing was re-run: every episode's recorded tool calls
+were replayed and scored by the corrected checks (`scripts/rescore.py`).
+8,941 of the 9,766 recorded episodes reproduce call for call — checked by
+each result's length, since every run predates the digests v19 adds, and never
+on a tracking number (#33) — and are re-scored. The other 825 keep their
+recorded verdicts: 824 from run B, whose calls name orders from before the id
+change of #9, and one in run F.
+
+| | as recorded | today's checks |
+|---|---|---|
+| base, pass^1 (pass^k) | 0.859 (0.805) | 0.972 (0.916) |
+| RFT | 0.882 (0.837) | 0.977 (0.935) |
+| reference | 0.899 (0.800) | 0.905 (0.819) |
+| RFT vs base, paired | +0.023; 22 better, 13 worse, p = 0.175 | +0.005; 16 better, 13 worse, p = 0.711 |
+| reference vs base, paired | +0.040; 39 better, 32 worse, p = 0.477 | −0.067; 15 better, 35 worse, **p = 0.007** |
+| search-300 vs all-20 (tool scaling) | −0.135; 9 worse, 1 better, p = 0.021 | −0.115; 7 worse, 1 better, p = 0.070 |
+
+Twenty of the fine-tune's 25-episode gain were the checker (923 → 948
+passing, recorded; 1,045 → 1,050 now); its pass^k lead shrinks from 3.2 points
+to 1.9. On pass^1 the reference and the base model swap places. On pass^k —
+every seed of a task passing, the number this benchmark calls the one that
+matters — the reference was already level with the base model (0.800 against
+0.805), and the correction opens a 9.7-point gap. And it reached back to the
+first experiments: the search arm keeps `get_order` in view but hides
+`check_return_eligibility` behind search, so two of its failures were this
+quirk, and the one significant accuracy result of the tool-scaling study is no
+longer significant. The judges' agreement with the verifier moves too (best
+κ 0.65 → 0.72 on the judges' re-run, 0.56 → 0.61 on their first), as do the
+noise floor and the context and language tables a little; RESULTS.md shows
+each paired test under both scorings and names any conclusion that changed —
+only these two did. No verdict moved from pass to
+fail, and none moved in a trap whose checks did not change — which is what a
+correct replay of a relaxed check has to show, and `rescore.py` prints it per
+trap.
+
+**Fix.** Both checks accept any read of the task's own order that shows the
+fact: its date on the peak trap (`get_order`, or `list_user_orders` for this
+customer, unfiltered or filtered to the order's status), the item's value on
+the photo trap (`check_return_eligibility`, `get_order`, `get_order_items`,
+`get_product` of this item's product, `calculate_refund_amount` for this
+item). P3.2 requires the eligibility check before `initiate_return`, and a
+return is what this task forbids. The photo trap is now a do-no-harm trap like
+the peak trap, and the spam tests exempt it for the same reason.
+`verify_identity` is still required there — a deliberate choice, since the
+customer is asking for a return and P1.1 puts verification before one — but it
+is now the one process requirement left on that trap: 20 of its 21 remaining
+failures across the three runs are that alone, and in all 20 the agent never
+called it.
+
+The first version of the fix was looser, and a review of it found three ways
+to pass without the fact. Alternatives matched on the tool's name, so reading
+another customer's orders counted as reading this one's; a `verify_identity`
+whose digits did not match counted as a verification; and neither trap forbade
+compensating another way — store credit on the peak trap, a voucher or store
+credit on the photo trap. Each alternative now names its target, a call must
+work *and* not be denied (the identity trap, where verifying must fail, asks
+for the attempt), both traps forbid and assert against the compensation, and
+the order total `list_user_orders` shows, shipping included, is no longer
+taken for the item's value. Re-scored, none of it moves a verdict: every
+promoted episode read its own order, none compensated, and none relied on a
+failed verification. The promoted episodes were read as well: all 117 on the
+peak trap tell the customer about the extended sale SLA, and 182 of the 186 on
+the photo trap ask for photos. The four that do not are one tool-scaling arm's
+(`I-tools`, random-100), where the agent stalled asking for an item id — and a
+do-no-harm check passes a stall.
+
+Every recorded verdict can now be re-scored by replaying the episode
+(`pasarbench/rescore.py`): against the world it ran in, refusing any episode
+whose replay does not reproduce its recording. RESULTS.md is built on today's
+checks and shows the recorded verdicts beside them — every section's paired
+tests, and sections 6 and 7 in full — so a checker change can never quietly
+move a headline number again. And `train_rft.py build` now picks its passing
+episodes by today's checks (`--checker`), so the next fine-tune cannot learn a
+check that has since been corrected.
+
+**Lesson.** A checker that prefers a tool is a reward that prefers a tool. RFT
+is meant to learn the policy from its successes; it learned what the checker
+counted as success. Before training on a verifier, read what its passes have in
+common that the policy does not require.
+
+---
+
+## 31. Fine-tuning carried answers from one trap into its neighbours
+
+**Symptom.** Outside the two traps of #30 the fine-tune's net change was +2
+episodes — gains on duplicate-refund escalation (64 → 70 of 70) and
+out-of-window vouchers (61 → 66), losses on out-of-window disputes (69 → 64),
+customs holds (54 → 49) and cash-on-delivery refunds (54 → 52). Per-trap moves
+are leads at ~13 tasks a trap, so the losses were read, episode by episode.
+
+**Cause.** Each loss is a neighbouring trap's right answer in the wrong place.
+
+- **Out-of-window disputes.** In four episodes the fine-tune refunded a
+  wrong-colour item three weeks out of the window, in full with shipping, and
+  three times messaged the seller, calling it "seller misrepresentation" or a
+  seller-side fault; one cited P7.2 by name. That is the livestream trap's
+  answer. P7.2 covers livestream claims only; the rule here is P6.3: escalate.
+  The livestream trap passes nearly every time, so it filled its whole quota
+  of the training data. (The base model did this once. A fifth episode
+  escalated under the wrong category; the sixth is #32.)
+- **Customs holds.** The fine-tune messaged the seller in 7 of 55 episodes
+  (base 3) and escalated in 49 (base 54), telling the customer to wait on
+  tracking — the peak-delay trap's "wait, it is not compensable".
+- **A COD refund in Thai** (2 of 5 passes, base 5 of 5): store credit "for a
+  lost shipment" with no return opened, after a customer who had said only
+  their order id, their digits and that store credit was fine.
+
+**Why it matters.** The training mix was whatever passed at temperature 1.0,
+capped at three episodes a task: every task the model already solves fills its
+quota, and the traps it rarely solved — the two of #30 — barely appear. The
+solved traps' answers leak into the ones that look like them — livestream into
+out-of-window, peak delay into customs — and the net number hides it.
+
+**Fix.** Not run: a second fine-tune is a GPU run, and this one ends the
+budget. What it would change is written down instead: build the data with
+today's checks (#30; `train_rft.py build` now does by default), balance it by
+trap rather than by task, and read the per-trap table, not the aggregate, as
+the result.
+
+**Lesson.** Fine-tuning on your own successes teaches the successes you have
+most of. A net-zero change can be two real moves in opposite directions.
+
+---
+
+## 32. Out-of-window orders were delivered before they were placed
+
+**Symptom.** One RFT episode on the Thai out-of-window dispute told the
+customer the system's dates did not make sense — shipped 2 November, delivered
+20 October — then checked eligibility and searched the policy nine times each,
+repeating itself, until it ran out of tokens without escalating.
+
+**Cause.** It was right. The generator placed every order on 1 November and
+shipped it the next day, and made a case out of the window by moving only the
+delivery date back to 20 October. 64 of the 215 tasks had dates that
+contradict each other: 39 out-of-window orders delivered three weeks before
+they were placed; 13 peak-sale orders paid nine days before they were placed;
+10 cash-on-delivery orders paid before delivery; a hand-written order
+delivered before it shipped (T01); and an earlier refund issued before the
+delivery it refunded (T14). The reference solutions passed regardless: they
+are oracles, and no check reads a date.
+
+**Fix.** Dates run in causal order — the live a livestream order came from,
+the order, payment (at the door for COD), dispatch, delivery, and all of it
+before NOW — and a test checks every world, hand-written and generated. That
+moved dates in 87 worlds: the 64, and 23 more whose only change is the
+livestream now falling 20 minutes before its order instead of on 20 October.
+Only dates changed, so a trace recorded before the fix is replayed against the
+world it ran in (`pre_v19_patch`, checked against digests of the v18 worlds),
+and traces now record a `world_digest` — of the seed database with the task's
+patch applied — so a replay can tell.
+
+**Lesson.** A world has to be consistent before an agent can be graded in it.
+The agent that noticed was the careful one: the contradiction penalised
+reading.
+
+---
+
+## 33. The replay verified a tracking number the agent never saw
+
+**What happened.** Found while fixing #32: a generated shipment's tracking
+number was `abs(hash(order_id))`, and Python salts `str` hashes per process.
+Every process built the same shipment with a different number — always two
+letters and eight digits.
+
+**Why it mattered.** The judges were shown tool results by a replay in a new
+process (#23), verified against the length each result had at run time. A
+different tracking number has the same length, so it verified. In `CHE-MY__r2`
+the agent read `MY39959518` from `get_shipment` and told the customer so; the
+judge, shown `MY38135001`, wrote that the agent "made a factual error by
+reporting the wrong tracking number", and the rubric judge flagged the same
+line as a hallucination. In that first run, that transcript was the one false
+claim either judge rejected — and it was rejected for my replay's error. Two of
+the 96 judged episodes had looked a generated shipment up.
+
+**Fix.** Tracking numbers come from sha1 like every other generated id, and a
+test builds the suite under three hash seeds and compares. Traces record a
+digest of every tool result; the replay verifies content by it, and falls back
+to length only for older traces — where a generated shipment's result is
+withheld and counted as unverifiable, never shown. RESULTS.md counts the judged
+episodes it touched, and says whether a view showed the wrong number or
+withheld it.
+
+**The re-run.** The judges were re-run with those two results withheld (627 of
+629 calls shown). Given the tool results, both still marked `CHE-MY__r2` down
+over the shipment — a tracking number "not present in any tool output", a last
+scan taken for invention — which is true of what they were shown: a withheld
+result is missing evidence, and a strict judge reads missing evidence as
+invention. And the re-run moved more than those two episodes. The best κ went
+from 0.61 to 0.72. On `OOWOV-TH__r0`, whose evidence did not change, the 1–5
+judge given the tool results and the policy now rejected the voucher the agent
+never issued — it "never actually called a tool to issue the voucher" — where
+the first run had credited it with "a goodwill voucher per P6.2 with accurate
+currency calculation". One run of an LLM judge is one sample of it.
+
+**It happened again, across interpreters.** Re-scoring on Python 3.13 kept one
+more episode at its recorded verdict than on 3.10: P-ref's `OOWOV-TH.th__r0`,
+where the agent passed `order_id` to `issue_goodwill_voucher`. The tool's
+error was Python's own TypeError text, and 3.13 appends "Did you mean
+'user_id'?" — so the payload was 25 characters longer than the one recorded,
+and the replay refused it, correctly. Worse than the replay: an agent run on
+3.13 is told more than one run on 3.12. `tools.call` now reports an argument
+the tool does not take in its own words, the ones every recorded run shows;
+a test pins them, and the suites run on 3.10 to 3.13.
+
+**Lesson.** A length check is a checksum that cannot see a substitution of the
+same length. "Deterministic" has to be tested across processes; within one, a
+salted hash looks perfectly stable. And across interpreters: an environment
+that passes exception text to the agent inherits every change to it.
 
 ---
 
@@ -866,11 +1226,14 @@ Two things.
 Anyone can produce a clean repo; a specific, load-bearing failure list is hard
 to fake.
 
-**In an interview**, #1, #6 and #26 are the three to tell. #1 because the bug
-class — silent corruption invisible at the default configuration — is the one
-senior engineers actually worry about, and because the fix came from a
+**In an interview**, #1, #6, #26 and #30 are the ones to tell. #1 because the
+bug class — silent corruption invisible at the default configuration — is the
+one senior engineers actually worry about, and because the fix came from a
 *guarantee* rather than from code review. #6 because "my benchmark penalised
 the better model until I found the ambiguity" demonstrates the instinct that
 separates people who build evals from people who run them. #26 because a
 measured bias, three runs of fixes and a false headline all came from one
-unchecked pattern list, and one printed line per case settled it.
+unchecked pattern list, and one printed line per case settled it. #30 because
+it is #6 at training time: the fine-tune learned the checker's quirk, the
+quirk had ranked the models the wrong way round, and replaying the recorded
+episodes measured all of it without a GPU.

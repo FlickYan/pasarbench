@@ -23,6 +23,15 @@ replay rebuilds the set under the current definition and the pre-fix one and
 keeps whichever reproduces the recorded cost EXACTLY. An episode neither
 reproduces is reported as unreconstructable and left out -- never guessed.
 
+VERDICTS. Which episodes failed is today's checks on each replayed episode
+(pasarbench/rescore.py), as in RESULTS.md; `--checker recorded` uses the
+verdicts the run recorded. A requirement that a visible tool can satisfy -- a
+check that accepts several lookups (WHAT_FAILED #30) -- is not a tool the arm
+hid. What each episode needed is always today's requirements: under
+`--checker recorded`, a failure the old checks gave only for a lookup they
+alone demanded shows as "used an equivalent read, failed elsewhere", and the
+output says so.
+
 This classifies. It does not establish the mechanism: rule 2 of the report
 still applies, and the per-episode lines at the bottom are the traces to read.
 """
@@ -134,7 +143,7 @@ class Arm:
 
 def _walk(steps: list[dict], base: list[str], universe, search: bool) -> dict:
     visible = list(base)
-    verified, hidden_calls, queries, calls = 0, [], [], []
+    verified, hidden_calls, queries, calls, call_args = 0, [], [], [], []
     through, rejected = [], []          # hidden calls that ran / were refused
     shown: dict[str, int] = {}          # tool -> best rank it was ever shown at
     for st in steps:
@@ -144,6 +153,7 @@ def _walk(steps: list[dict], base: list[str], universe, search: bool) -> dict:
         pre = set(visible)
         for tc, tr in zip(st.get("tool_calls", []), st.get("tool_results", [])):
             calls.append((tc["name"], bool(tr.get("ok"))))
+            call_args.append((tc["name"], bool(tr.get("ok")), tc.get("arguments") or {}))
             if tc["name"] not in pre:
                 hidden_calls.append(tc["name"])
                 # Before the loop enforced visibility a guessed call RAN; after,
@@ -168,7 +178,7 @@ def _walk(steps: list[dict], base: list[str], universe, search: bool) -> dict:
     recovered = [n for n, i in rejected
                  if any(c == n and ok for c, ok in calls[i:])]
     return {"verified": verified, "hidden_calls": hidden_calls, "queries": queries,
-            "shown": shown, "calls": calls, "core": set(base),
+            "shown": shown, "calls": calls, "call_args": call_args, "core": set(base),
             "through": through, "rejected": [n for n, _ in rejected],
             "recovered": recovered}
 
@@ -215,11 +225,15 @@ def classify(ep: dict, tool: str) -> str:
     return "never searched for it"
 
 
-def main() -> None:
+def main(argv: list[str] | None = None) -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("run", help="e.g. traces/I-tools")
     ap.add_argument("--show", type=int, default=40, help="per-episode lines to print")
-    args = ap.parse_args()
+    ap.add_argument("--checker", choices=["current", "recorded"], default="current",
+                    help="which verdicts decide what failed: today's checks on the "
+                         "replayed episode (default, as RESULTS.md) or the recorded ones")
+    args = ap.parse_args(argv)
+    from pasarbench.rescore import rescore_records
 
     run = Path(args.run)
     if not run.is_dir():
@@ -249,13 +263,19 @@ def main() -> None:
             ep = replay(arm, recs)
             if ep:
                 ep["id"] = f.stem
+                if args.checker == "current":
+                    rs = rescore_records(recs, f.stem)
+                    ep["passed"], ep["failures"] = rs.verdict, rs.failures
+                else:
+                    ep["passed"] = bool(ep["foot"].get("passed"))
+                    ep["failures"] = ep["foot"].get("failures") or []
                 eps.append(ep)
         ok = [e for e in eps if not e.get("unreconstructable")]
         bad = len(eps) - len(ok)
         hc = Counter(n for e in ok for n in e["hidden_calls"])
         affected = sum(1 for e in ok if e["hidden_calls"])
         # Only a guess that RAN can have bought a pass. A refused one cannot.
-        passed = sum(1 for e in ok if e["through"] and e["foot"].get("passed"))
+        passed = sum(1 for e in ok if e["through"] and e["passed"])
         ran = sum(len(e["through"]) for e in ok)
         refused = sum(len(e["rejected"]) for e in ok)
         rec = sum(len(e["recovered"]) for e in ok)
@@ -289,16 +309,30 @@ def main() -> None:
           "See WHAT_FAILED #18.")
 
     for cell, eps in search_eps.items():
-        failed = [e for e in eps if not e["foot"].get("passed")]
+        failed = [e for e in eps if not e["passed"]]
         print(f"\n== 2. {cell}: {len(failed)} failed of {len(eps)} ==\n")
+        if args.checker == "recorded":
+            print("  (recorded verdicts, today's requirements: a failure the old checks "
+                  "gave only for a\n   lookup they alone demanded shows as 'used an "
+                  "equivalent read, failed elsewhere')\n")
         rows, per_lang, lines = defaultdict(Counter), defaultdict(Counter), []
         for e in failed:
-            req = {a.tool for a in e["task"].checks.required_actions}
-            for tool in sorted(req - e["core"]):
+            # A requirement a visible tool can meet was never hidden; one an
+            # equivalent read met was used, whichever tool did it.
+            req = set()
+            for a in e["task"].checks.required_actions:
+                if (a.tools & e["core"]) or a.tool in req:
+                    continue
+                if any(ok and a.via(n, args, alternatives_only=True)
+                       for n, ok, args in e["call_args"]):
+                    rows[a.tool]["used an equivalent read, failed elsewhere"] += 1
+                    continue
+                req.add(a.tool)
+            for tool in sorted(req):
                 why = classify(e, tool)
                 rows[tool][why] += 1
                 per_lang[e["head"].get("language", "?")][why] += 1
-                ff = (e["foot"].get("failures") or [""])[0]
+                ff = (e["failures"] or [""])[0]
                 rank = (f" (best rank {e['shown'][tool]})"
                         if why.startswith("was shown") else "")
                 said = " ".join((e.get("said") or "").split())[:170]
@@ -329,7 +363,7 @@ def main() -> None:
           "required action\n   the database never saw (English phrasings; other "
           "languages counted, not read) ==\n")
     for cell, eps in all_eps.items():
-        failed = [e for e in eps if not e["foot"].get("passed")]
+        failed = [e for e in eps if not e["passed"]]
         eng = [e for e in failed if e["head"].get("language") in ENGLISH]
         hits = [(e, c) for e in eng for c in false_claims(e)]
         print(f"  {cell:18s} failed {len(failed):3d}  read {len(eng):3d}  "

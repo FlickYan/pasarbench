@@ -1,0 +1,31 @@
+example: OOWDE-MY.ms turn 3 (5659 tokens)
+
+… PROMPT, last 600 chars (no loss) ……………………………………………………
+"2026-11-01 09:00", "source": "shop_page", "livestream_id": null, "shipping_address": "8 Jalan Bukit Bintang, Kuala Lumpur 55100, MY", "total_display": "MYR 200.00", "existing_refunds": [], "existing_returns": []}}
+</tool_response>
+<tool_response>
+{"ok": true, "shipment": {"shipment_id": "GH-F98EA1", "order_id": "GO-F98EA1", "courier": "J&T Express", "tracking_no": "MY59019997", "status": "delivered", "shipped": "2026-11-02 08:00", "delivered": "2026-10-20 12:00", "customs_status": "cleared", "last_scan": "2026-10-20 12:00"}}
+</tool_response><|im_end|>
+<|im_start|>assistant
+<think>
+
+</think>
+
+
+=== COMPLETION (loss) ==================================================
+Saya lihat pesanan anda **GO-F98EA1** (RM200, dibayar dengan kad) telah sampai. Tapi saya perlu sedikit butiran lebih lanjut untuk uruskan refund, dan juga perlu sahkan identiti anda (seperti syarat keselamatan kami).
+
+Boleh beritahu:
+1. **Apa masalahnya** dengan barang ini — rosak, tak sama seperti yang diiklankan, atau sebab apa anda mahu memulangkan?
+2. **4 digit akhir nombor telefon** pada akaun anda untuk sahkan identiti.
+
+Saya akan semak kelayakan refund anda ikut sebab tersebut, kemudian uruskan refund penuh ke kad asal anda (bukan baucar) setanding dengan polisi kami.<|im_end|>
+========================================================================
+2322 examples; tokens median 5,495, max 8,738, total 13,085,948
+
+all 2322 examples train on the server's own prompt token ids (built with --server); each turn is tokenized locally.
+  2322 of 2322 of those prompts are not what the local template renders, so a build without the server would have trained on prompts the model never saw. ACAD-ID turn 0, server vs local, first difference at token 29 of 4773/4553: '{"type": "function", "function": {"description": "Look up a customer\'s account profile' vs '{"type": "function", "function": {"name": "get_user_profile", "description":'
+
+server check: 5 of 5 prompts the server renders are token-identical to the ids stored in this file
+
+no problems found

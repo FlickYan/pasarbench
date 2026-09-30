@@ -1,0 +1,5 @@
+the server answers every fold model with its own weights: Qwen/Qwen3.8-27B:pasar-probe
+Qwen/Qwen3.8-27B: first token '<tool_call>' (logprob -0.100545); content '', 1 tool call(s)
+Qwen/Qwen3.8-27B:pasar-probe: first token 'I' (logprob -0.697096); content "I'd be happy to help you check the status of your order. Let me look that up for", 1 tool call(s)
+
+LoRA serving works: the adapter loads, is routed to by name, and changes the model's output.

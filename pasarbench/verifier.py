@@ -61,31 +61,50 @@ class DBAssert:
 class ActionSpec:
     """Match an action in the log. args is a SUBSET match.
 
-    `alt` lists other tools that establish the same fact. Requiring one
+    `alt` lists other reads that establish the same fact. Requiring one
     SPECIFIC read tool when several would do tests the model's tool
     preference, not its policy compliance -- an agent that calls
     get_shipment instead of get_order has not broken any rule.
+
+    Each alternative is (tool, args) and carries ITS OWN arguments, because
+    the tools take different ones: list_user_orders takes user_id, not
+    order_id. Until v19 alternatives matched on the tool's name alone, so a
+    read of some other customer's orders counted as reading this one's
+    (WHAT_FAILED #30). A bare name is still accepted, and matches any call of
+    that tool: use it only for a tool with no target.
+
+    must_succeed means the call did what it was for: it ran (ok) and was not
+    denied. verify_identity with the wrong digits runs fine and answers
+    verified=False; that is an attempt, not a verification. A check that wants
+    the attempt -- the identity trap, where verifying must fail -- says
+    must_succeed=False.
     """
     tool: str
     args: dict[str, Any] = field(default_factory=dict)
     must_succeed: bool = True
-    alt: tuple[str, ...] = ()
+    alt: tuple[tuple[str, dict[str, Any]] | str, ...] = ()
+
+    @property
+    def routes(self) -> list[tuple[str, dict[str, Any]]]:
+        """The primary call and every alternative, as (tool, args)."""
+        return [(self.tool, self.args)] + [(a, {}) if isinstance(a, str) else (a[0], a[1])
+                                           for a in self.alt]
+
+    @property
+    def tools(self) -> set[str]:
+        """Every tool name that can satisfy this spec."""
+        return {t for t, _ in self.routes}
+
+    def via(self, tool: str, args: dict[str, Any], alternatives_only: bool = False) -> bool:
+        """Whether a call of `tool` with `args` is one of the spec's routes."""
+        routes = self.routes[1:] if alternatives_only else self.routes
+        return any(tool == t and all(args.get(k) == v for k, v in want.items())
+                   for t, want in routes)
 
     def matches(self, action) -> bool:
-        is_alt = action.tool != self.tool and action.tool in self.alt
-        if action.tool != self.tool and not is_alt:
+        if self.must_succeed and (not action.ok or getattr(action, "denied", False)):
             return False
-        if self.must_succeed and not action.ok:
-            return False
-        # Alternatives match on NAME ONLY. They were listed precisely because
-        # they establish the same fact by a different route, so they do not
-        # carry the primary tool's arguments: list_user_orders takes user_id,
-        # not order_id. Holding them to the primary's args made the alternative
-        # unreachable and reintroduced exactly the tool-preference test the
-        # `alt` mechanism exists to remove.
-        if is_alt:
-            return True
-        return all(action.args.get(k) == v for k, v in self.args.items())
+        return self.via(action.tool, action.args)
 
 
 @dataclass
@@ -124,7 +143,11 @@ def verify(task, db: Database, n_turns: int = 0, tokens: int = 0) -> Result:
 
     for spec in task.checks.required_actions:
         if not any(spec.matches(x) for x in log):
-            failures.append(f"missing required action: {spec.tool} {spec.args or ''}".strip())
+            tried = [x for x in log if spec.via(x.tool, x.args)]
+            why = ("" if not tried else " (called, but denied)"
+                   if any(getattr(x, "denied", False) for x in tried) else " (called, but it failed)")
+            failures.append(f"missing required action: {spec.tool} {spec.args or ''}".strip()
+                            + why)
 
     for spec in task.checks.forbidden_actions:
         hits = [x for x in log if spec.matches(x)]

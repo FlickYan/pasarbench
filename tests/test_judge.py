@@ -428,6 +428,27 @@ def test_judge_vs_verifier():
     rows = [json.loads(l) for l in next(out.glob("*.jsonl")).read_text().splitlines()]
     check("per-episode rows are written, separate from calibration files",
           len(rows) == 3 and not (out / "judge_naive.jsonl").exists())
+    check("…each with today's verdict and the one the run recorded",
+          all(r["verifier_passed"] == r["verifier_passed_recorded"] for r in rows)
+          and sum(r["verifier_passed"] for r in rows) == 1, str(rows[:1]))
+
+    # The ground truth is today's checks, not the footer: a pass recorded as a
+    # fail by a stale checker is scored as the pass it is (WHAT_FAILED #30).
+    solved = next(f for f in sorted((tmp / "R" / "full").glob("*.jsonl"))
+                  if json.loads(f.read_text().splitlines()[-1]).get("passed"))
+    lines = solved.read_text().splitlines()
+    foot = json.loads(lines[-1])
+    foot["passed"], foot["failures"] = False, ["a check since corrected"]
+    solved.write_text("\n".join(lines[:-1] + [json.dumps(foot)]) + "\n")
+    out_s = tmp / "out_stale"
+    sm_s = rj.judge_vs_verifier(tmp / "R" / "full", lambda: Pushover(), workers=1,
+                                out_root=out_s)
+    rows_s = {json.loads(l)["transcript_id"]: json.loads(l)
+              for l in next(out_s.glob("*.jsonl")).read_text().splitlines()}
+    check("…today's checks decide, whatever the footer says",
+          sm_s["passed"] == 1 and rows_s[solved.stem]["verifier_passed"]
+          and not rows_s[solved.stem]["verifier_passed_recorded"], str(sm_s))
+    solved.write_text("\n".join(lines) + "\n")
     check("agreement with the verifier is reported as kappa",
           "naive_ok_kappa" in sm and "dec_ok_kappa" in sm, str(sorted(sm)))
 

@@ -19,17 +19,17 @@ not the base model. A GRPO number reported against the base model conflates
 "RL worked" with "training on correct trajectories worked", and that
 conflation is the first thing an interviewer will probe.
 
-ON TWO RENTED H100s
--------------------
-Rollouts need the policy AND the simulated customer served at once -- one card
-each -- so rollout and update cannot overlap. Each iteration alternates: serve,
-roll out one fold's tasks, stop the servers, update the LoRA, reload. That is
-slow in wall-clock and cheap in GPU memory, and it is the honest shape of GRPO
-on this budget. Two ways to run the update:
+ON ONE RENTED B200 (OR TWO H100s)
+---------------------------------
+Rollouts need the policy AND the simulated customer served at once -- sharing
+one B200, or one H100 each -- so rollout and update cannot overlap. Each
+iteration alternates: serve, roll out one fold's tasks, stop the servers,
+update the LoRA, reload. That is slow in wall-clock and cheap in GPU memory,
+and it is the honest shape of GRPO on this budget. Two ways to run the update:
 
   A. verl with a custom agent loop + custom reward, LoRA, kl_coef=0.
      Mature multi-turn tool-calling support. With the customer moved to an API
-     endpoint instead of GPU 1, verl's colocated engine can use both cards for
+     endpoint, verl's colocated engine can use the whole GPU memory for
      policy rollout and update. Recommended if you want results rather than a
      systems exercise.
 
@@ -71,7 +71,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from pasarbench.harness.backends import OpenAICompatBackend
 from pasarbench.harness.simulator import LLMUser
 from pasarbench.harness.types import Budget
-from pasarbench.models import SIM_DEFAULT, check_agent_simulator
+from pasarbench.models import AGENT_DEFAULT, SIM_DEFAULT, check_agent_simulator
 from pasarbench.rl.collect import grpo_groups, rollout_task
 from pasarbench.rl.reward import RewardConfig, degenerate_group_rate
 from pasarbench.rl.split import load_folds
@@ -133,7 +133,7 @@ def main() -> None:
     ap.add_argument("--model", default="",                  # NOT the base model
                     help="the RFT adapter trained on --fold, as SGLang serves it; "
                          "default <base-model>:pasar-rft-<fold>")
-    ap.add_argument("--base-model", default="Qwen/Qwen3-8B")
+    ap.add_argument("--base-model", default=os.environ.get("AGENT_MODEL") or AGENT_DEFAULT)
     ap.add_argument("--fold", default="A", choices=["A", "B"])
     ap.add_argument("--folds", default="data/splits/folds.json")
     ap.add_argument("--base-url", default="http://localhost:8000/v1")

@@ -1,0 +1,44 @@
+== 2026-09-28T22:00:47Z smoke
+GPUs: NVIDIA B200 (179 GiB, 178 free)
+agent Qwen/Qwen3.8-27B (51.7 GiB) | customer RedHatAI/gemma-4-31B-it-FP8-Dynamic (31.0 GiB)
+layout: shared -- one NVIDIA B200 (179 GiB): both servers on it
+  agent KV+state pool ~38 GiB, customer KV pool up to ~38 GiB, 10 GiB kept free for runtime; training in one process, same effective batch
+  ~$6.88/h as a Modal job (a notebook adds ~$1-2/h for its CPU and memory)
+== 2026-09-29T00:20:05Z smoke
+GPUs: NVIDIA B200 (179 GiB, 178 free)
+agent Qwen/Qwen3.8-27B (51.7 GiB) | customer RedHatAI/gemma-4-31B-it-FP8-Dynamic (31.0 GiB)
+layout: shared -- one NVIDIA B200 (179 GiB): both servers on it
+  agent KV+state pool ~38 GiB, customer KV pool up to ~38 GiB, 10 GiB kept free for runtime; training in one process, same effective batch
+  ~$6.88/h as a Modal job (a notebook adds ~$1-2/h for its CPU and memory)
+CUDA compiler 13.0 (pip) at /opt/pasar/lib/python3.12/site-packages/nvidia/cu13; a test kernel builds for sm_100a
+  memory in use (agent + customer): 0, 174698 MiB, 183359 MiB;
+  agent: max_total_num_tokens=188550, chunked_prefill_size=8192, max_prefill_tokens=16384, max_running_requests=32
+  sim: max_total_num_tokens=130240, chunked_prefill_size=8192, max_prefill_tokens=16384, max_running_requests=32
+  memory in use (after the smoke sweep): 0, 178540 MiB, 183359 MiB;
+== 2026-09-29T00:33:53Z stage1
+GPUs: NVIDIA B200 (179 GiB, 178 free)
+agent Qwen/Qwen3.8-27B (51.7 GiB) | customer RedHatAI/gemma-4-31B-it-FP8-Dynamic (31.0 GiB)
+layout: shared -- one NVIDIA B200 (179 GiB): both servers on it
+  agent KV+state pool ~38 GiB, customer KV pool up to ~38 GiB, 10 GiB kept free for runtime; training in one process, same effective batch
+  ~$6.88/h as a Modal job (a notebook adds ~$1-2/h for its CPU and memory)
+CUDA compiler 13.0 (pip) at /opt/pasar/lib/python3.12/site-packages/nvidia/cu13; a test kernel builds for sm_100a
+  memory in use (agent + customer): 0, 174810 MiB, 183359 MiB;
+  agent: max_total_num_tokens=188550, chunked_prefill_size=8192, max_prefill_tokens=16384, max_running_requests=32
+  sim: max_total_num_tokens=130624, chunked_prefill_size=8192, max_prefill_tokens=16384, max_running_requests=32
+== 2026-09-29T01:54:25Z stage2
+GPUs: NVIDIA B200 (179 GiB, 178 free)
+agent Qwen/Qwen3.8-27B (51.7 GiB) | customer RedHatAI/gemma-4-31B-it-FP8-Dynamic (31.0 GiB)
+layout: shared -- one NVIDIA B200 (179 GiB): both servers on it
+  agent KV+state pool ~38 GiB, customer KV pool up to ~38 GiB, 10 GiB kept free for runtime; training in one process, same effective batch
+  ~$6.88/h as a Modal job (a notebook adds ~$1-2/h for its CPU and memory)
+CUDA compiler 13.0 (pip) at /opt/pasar/lib/python3.12/site-packages/nvidia/cu13; a test kernel builds for sm_100a
+== 2026-09-29T08:53:10Z stage2
+GPUs: NVIDIA B200 (179 GiB, 178 free)
+agent Qwen/Qwen3.8-27B (51.7 GiB) | customer RedHatAI/gemma-4-31B-it-FP8-Dynamic (31.0 GiB)
+layout: shared -- one NVIDIA B200 (179 GiB): both servers on it
+  agent KV+state pool ~38 GiB, customer KV pool up to ~38 GiB, 10 GiB kept free for runtime; training in one process, same effective batch
+  ~$6.88/h as a Modal job (a notebook adds ~$1-2/h for its CPU and memory)
+CUDA compiler 13.0 (pip) at /opt/pasar/lib/python3.12/site-packages/nvidia/cu13; a test kernel builds for sm_100a
+  memory in use (rft + customer): 0, 174706 MiB, 183359 MiB;
+  rft: max_total_num_tokens=183098, chunked_prefill_size=8192, max_prefill_tokens=16384, max_running_requests=32
+  sim: max_total_num_tokens=130240, chunked_prefill_size=8192, max_prefill_tokens=16384, max_running_requests=32

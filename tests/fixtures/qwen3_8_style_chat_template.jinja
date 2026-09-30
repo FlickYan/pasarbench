@@ -1,0 +1,79 @@
+{#- A stand-in for Qwen3.8's template with the properties the training code
+    depends on: tools listed as JSON, tool calls written as XML
+    (<function=...><parameter=...>), every assistant turn rendered with its
+    think block (preserve_thinking defaults to on), the empty think block in
+    the generation prompt when thinking is off, and a refusal without a user
+    query. Not Qwen's exact text: `train_rft.py check --server` compares the
+    real template with the server. -#}
+{%- set ns = namespace(last_query_index=-1) %}
+{%- for message in messages %}
+    {%- if message.role == "user" and message.content is string and not(message.content.startswith('<tool_response>') and message.content.endswith('</tool_response>')) %}
+        {%- set ns.last_query_index = loop.index0 %}
+    {%- endif %}
+{%- endfor %}
+{%- if ns.last_query_index < 0 %}
+    {{- raise_exception('No user query found in messages.') }}
+{%- endif %}
+{%- if tools %}
+    {{- '<|im_start|>system\n# Tools\n\nYou have access to the following functions:\n\n<tools>' }}
+    {%- for tool in tools %}
+        {{- '\n' + (tool | tojson) }}
+    {%- endfor %}
+    {{- '\n</tools>\n\nIf you choose to call a function ONLY reply in the following format with NO suffix:\n\n<tool_call>\n<function=example_function_name>\n<parameter=example_parameter_1>\nvalue_1\n</parameter>\n</function>\n</tool_call>' }}
+    {%- if messages[0].role == 'system' %}
+        {{- '\n\n' + messages[0].content }}
+    {%- endif %}
+    {{- '<|im_end|>\n' }}
+{%- elif messages[0].role == 'system' %}
+    {{- '<|im_start|>system\n' + messages[0].content + '<|im_end|>\n' }}
+{%- endif %}
+{%- for message in messages %}
+    {%- set content = message.content if message.content is string else '' %}
+    {%- if message.role == "system" %}
+        {%- if not loop.first %}
+            {{- raise_exception('System message must be at the beginning.') }}
+        {%- endif %}
+    {%- elif message.role == "user" %}
+        {{- '<|im_start|>user\n' + content + '<|im_end|>\n' }}
+    {%- elif message.role == "assistant" %}
+        {%- set reasoning_content = message.reasoning_content if message.reasoning_content is string else '' %}
+        {%- if preserve_thinking is not defined or preserve_thinking or loop.index0 > ns.last_query_index %}
+            {{- '<|im_start|>assistant\n<think>\n' + reasoning_content.strip('\n') + '\n</think>\n\n' + content.lstrip('\n') }}
+        {%- else %}
+            {{- '<|im_start|>assistant\n' + content }}
+        {%- endif %}
+        {%- for tool_call in message.tool_calls or [] %}
+            {%- set tc = tool_call.function if tool_call.function is defined else tool_call %}
+            {%- if not loop.first %}
+                {{- '\n' }}
+            {%- elif content | trim %}
+                {{- '\n\n' }}
+            {%- endif %}
+            {{- '<tool_call>\n<function=' + tc.name + '>\n' }}
+            {%- for args_name, args_value in tc.arguments | items %}
+                {%- if args_value is mapping or (args_value is sequence and args_value is not string) %}
+                    {%- set args_value = args_value | tojson %}
+                {%- endif %}
+                {{- '<parameter=' + args_name + '>\n' + (args_value | string) + '\n</parameter>\n' }}
+            {%- endfor %}
+            {{- '</function>\n</tool_call>' }}
+        {%- endfor %}
+        {{- '<|im_end|>\n' }}
+    {%- elif message.role == "tool" %}
+        {%- if loop.first or messages[loop.index0 - 1].role != "tool" %}
+            {{- '<|im_start|>user' }}
+        {%- endif %}
+        {{- '\n<tool_response>\n' + content + '\n</tool_response>' }}
+        {%- if loop.last or messages[loop.index0 + 1].role != "tool" %}
+            {{- '<|im_end|>\n' }}
+        {%- endif %}
+    {%- endif %}
+{%- endfor %}
+{%- if add_generation_prompt %}
+    {{- '<|im_start|>assistant\n' }}
+    {%- if enable_thinking is defined and enable_thinking is false %}
+        {{- '<think>\n\n</think>\n\n' }}
+    {%- else %}
+        {{- '<think>\n' }}
+    {%- endif %}
+{%- endif %}

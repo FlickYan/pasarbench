@@ -22,6 +22,7 @@ because something breaks without it:
 
 from __future__ import annotations
 
+import hashlib
 import json
 import time
 from typing import Any
@@ -34,7 +35,7 @@ from ..tools import call as tool_call
 from ..tools import schemas
 from .exposure import schema_tokens
 from .context import ContextStrategy, FullContext
-from ..tasks import task_digest
+from ..tasks import task_digest, world_digest
 from .prompts import system_prompt
 from .simulator import SilentUser, UserSimulator
 from .trace import NullTrace
@@ -104,6 +105,8 @@ def run_episode(
         "language": task.language,
         # lets an audit that regenerates tasks check it is reading the same one
         "task_digest": task_digest(task),
+        # ...and a replay check that the tools would read the same world
+        "world_digest": world_digest(task),
         # Request flags that change what the model sees, e.g. Qwen's
         # chat_template_kwargs {"enable_thinking": false}. Training data has to
         # be rendered with the same ones or it teaches a different prompt.
@@ -190,9 +193,14 @@ def run_episode(
             payload = json.dumps(out, ensure_ascii=False, default=str)
             state.messages.append(Message(role="tool", name=tc.name,
                                           tool_call_id=tc.id, content=payload))
+            # The length alone cannot tell two payloads of the same size apart:
+            # a salted hash once changed a tracking number between processes
+            # and every replay still verified (WHAT_FAILED #33). The digest can.
             results.append({"name": tc.name, "args": tc.arguments,
                             "ok": out.get("ok"), "error": out.get("error"),
-                            "result_chars": len(payload)})
+                            "result_chars": len(payload),
+                            "result_sha1": hashlib.sha1(
+                                payload.encode("utf-8")).hexdigest()[:12]})
 
         steps.append(StepRecord(
             step=tracker.steps, turn=state.turn, context_messages=len(ctx),

@@ -2,7 +2,7 @@
 Sweep runner.
 
     python -m pasarbench.sweep --backend scripted
-    python -m pasarbench.sweep --backend openai --model Qwen/Qwen3-8B \
+    python -m pasarbench.sweep --backend openai --model Qwen/Qwen3.8-27B \
         --base-url https://<app>.modal.run/v1 --strategies full,window8,trim3 -k 3
 
 Emits a markdown table straight into your README and writes traces to
@@ -145,7 +145,7 @@ def fold_router(args):
     """Which model answers a task. Without --fold-models, always --model.
 
     With it, every task goes to the model that was NOT trained on its fold --
-    `--fold-models A=Qwen/Qwen3-8B:pasar-rft-A,B=Qwen/Qwen3-8B:pasar-rft-B`
+    `--fold-models A=Qwen/Qwen3.8-27B:pasar-rft-A,B=Qwen/Qwen3.8-27B:pasar-rft-B`
     sends fold-A tasks to the model trained on B and vice versa -- so one sweep
     evaluates both fine-tunes on held-out tasks only, and the trace header
     records which model answered."""
@@ -212,7 +212,7 @@ def check_served(base_url: str, names: list[str]) -> str:
         raise SystemExit(
             f"the server at {base_url} would not answer {missing} with that model"
             + (f": SGLang answers a bare adapter name with the BASE model. Ask for "
-               f"<base>:<adapter>, e.g. {sorted(bases)[0] if bases else 'Qwen/Qwen3-8B'}"
+               f"<base>:<adapter>, e.g. {sorted(bases)[0] if bases else 'Qwen/Qwen3.8-27B'}"
                f":{bare[0]}." if bare else
                f". It serves {sorted(bases)} with adapters {sorted(adapters)}"
                + (" (name one as <base>:<adapter>)." if sglang else ".")))
@@ -335,10 +335,19 @@ def run_cell(strategy_name: str, backend_factory, simulator_factory, tasks: list
         # average two different experiments.
         cell_dir = Path(trace_root) / run_id / cell
         todo = []
+        retry = 0
         for task, seed in jobs:
             done = _finished(cell_dir / f"{task.task_id}__r{seed}.jsonl")
             if done is None:
                 todo.append((task, seed))
+                continue
+            if done["footer"].get("stop_reason") == "backend_error":
+                # Ended by the server or the API, not by the agent: a dead
+                # key, a crashed server, a timeout. Kept, it would count as a
+                # failure the model never made; re-running it is the point
+                # of running the stage again.
+                todo.append((task, seed))
+                retry += 1
                 continue
             head = done["header"]
             want = backend_factory(task)
@@ -354,8 +363,10 @@ def run_cell(strategy_name: str, backend_factory, simulator_factory, tasks: list
                 todo.append((task, seed))
                 continue
             results.append(_resumed(task, done))
-        if results:
-            print(f"    resuming: {len(results)} finished, {len(todo)} to run", flush=True)
+        if results or retry:
+            print(f"    resuming: {len(results)} finished, {len(todo)} to run"
+                  + (f" ({retry} of them ended by a server or API error)" if retry else ""),
+                  flush=True)
         jobs = todo
     if workers > 1:
         with ThreadPoolExecutor(max_workers=workers) as pool:
@@ -651,6 +662,18 @@ def main() -> None:
     print(f"\ntraces + summary + report: {run_path}")
     print("\nNext: pasarbench.analyze.what_compaction_lost(<full trace_dir>, "
           "<strategy trace_dir>)\n  -- that is the finding, not the table above.")
+
+    # A run whose episodes were ended by the server or the API measured the
+    # infrastructure, not the agent. Say so with the exit code, so a pipeline
+    # stops here; running the same command again re-runs just those episodes.
+    errors = sum(r["stop_reasons"].get("backend_error", 0) for r in rows)
+    total = sum(sum(r["stop_reasons"].values()) for r in rows)
+    if errors > 0.01 * total:
+        print(f"\n!! {errors} of {total} episodes ended with a server or API error "
+              f"(backend_error): a dead key, no balance, a crashed or overloaded "
+              f"server. The first trace with one says which. Fix it and run the "
+              f"same command with --resume: only those episodes run again.")
+        raise SystemExit(3)
 
 
 if __name__ == "__main__":

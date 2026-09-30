@@ -1,0 +1,40 @@
+$ /opt/pasar/bin/python -m pasarbench.sweep --backend openai --model Qwen/Qwen3.8-27B --base-url http://localhost:8000/v1 --simulator openai --sim-model RedHatAI/gemma-4-31B-it-FP8-Dynamic --sim-url http://localhost:8001/v1 --suite all -k 1 --temperature 0.0 --strategies full --workers 16 --run-id P-smoke --resume --max-tokens 2048 --extra-body '{"chat_template_kwargs": {"enable_thinking": false}}' --sim-extra-body '{}' --sample 1
+model families: agent qwen, simulator gemma
+16 tasks | 16 traps | 6 languages | 16 episodes
+running full over 16 tasks x k=1 ...
+    16/16 episodes
+
+| cell | pass^1 | pass^k | mean tokens | mean steps | stops |
+|---|---|---|---|---|---|
+| `full` | 0.812 | 0.812 | 43,439.8 | 7.81 | done:16 |
+
+pass rate by language -- UNPAIRED, so NOT yet a controlled
+comparison. With --sample these rates cover different traps per
+language. Run the full suite and use diagnose.paired_language_gap
+for the comparison the twin design actually licenses:
+  full             en=0.750  ms=1.000 (+0.250)  sg-en=1.000 (+0.250)  vi=0.500 (-0.250)  zh-MY=1.000 (+0.250)  zh-SG=1.000 (+0.250)
+
+per-trap pass rate (read this before the aggregate):
+
+  full:
+    1.00  address_change_after_dispatch
+    1.00  cancel_while_processing
+    1.00  cannot_cancel_shipped_order
+    1.00  cod_cancel_no_refund_due
+    1.00  cod_cannot_refund_to_original_method
+    1.00  customs_hold_escalate
+    1.00  duplicate_refund_escalate
+    1.00  happy_path_return_refund
+    1.00  hazmat_refund_without_return
+    0.00  high_value_photo_required_first  <-- weak
+    1.00  identity_verification_failure
+    1.00  livestream_claim_overrides_window
+    1.00  out_of_window_dispute_escalate
+    0.00  out_of_window_offer_voucher  <-- weak
+    0.00  peak_period_delay_not_compensable  <-- weak
+    1.00  perishable_refund_without_return
+
+traces + summary + report: traces/P-smoke
+
+Next: pasarbench.analyze.what_compaction_lost(<full trace_dir>, <strategy trace_dir>)
+  -- that is the finding, not the table above.

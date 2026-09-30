@@ -51,13 +51,43 @@ NON_LATIN_LANGS = {"th", "vi"}     # vi is Latin-script but heavily diacritic;
                                    # tokenisers treat it much like non-Latin
 
 
-def load_episodes(run_dir: str | Path) -> list[dict[str, Any]]:
-    """Flatten trace files into per-episode records with the signals we need."""
+CHECKER = "recorded"
+
+
+def use_checker(name: str) -> None:
+    """Which verdict every loader here reports: "recorded", the one in each
+    trace's footer as the run scored it, or "current", today's checks on the
+    episode's replayed state (pasarbench/rescore.py). A checker change moves
+    recorded verdicts (WHAT_FAILED #30); make_report reads today's, and shows
+    what moved."""
+    global CHECKER
+    if name not in ("recorded", "current"):
+        raise ValueError(f"checker is 'recorded' or 'current', not {name!r}")
+    CHECKER = name
+
+
+def load_episodes(run_dir: str | Path, checker: str | None = None
+                  ) -> list[dict[str, Any]]:
+    """Flatten trace files into per-episode records with the signals we need.
+    `passed` is the verdict under `checker` (default: use_checker's), and
+    `passed_recorded` the one the run recorded."""
+    checker = checker or CHECKER
     out = []
     for f in sorted(Path(run_dir).glob("*.jsonl")):
         recs = [json.loads(l) for l in f.read_text().splitlines() if l.strip()]
         head = next((r for r in recs if r.get("type") == "header"), {})
         foot = next((r for r in reversed(recs) if r.get("type") == "footer"), {})
+        if not foot:
+            # Never finished (an interrupted run): not a result. Left out, as
+            # the sweep's summary and rescore.py leave it out, rather than
+            # counted as a failure here and nowhere else.
+            continue
+        passed, failures, status = (bool(foot.get("passed")),
+                                    foot.get("failures") or [], "recorded")
+        if checker == "current":
+            from .rescore import rescore_file
+            rs = rescore_file(f)
+            passed, failures, status = rs.verdict, rs.failures, rs.status
         steps = [r for r in recs if r.get("type") == "step"]
         events = [r for r in recs if r.get("type") == "event"]
 
@@ -82,7 +112,9 @@ def load_episodes(run_dir: str | Path) -> list[dict[str, Any]]:
             "language": head.get("language", "?"),
             "market": head.get("market", "?"),
             "trap": head.get("trap", "?"),
-            "passed": bool(foot.get("passed")),
+            "passed": passed,
+            "passed_recorded": bool(foot.get("passed")),
+            "scored": status,
             "stop_reason": foot.get("stop_reason", "?"),
             "tokens": (foot.get("budget") or {}).get("tokens", 0),
             "steps": (foot.get("budget") or {}).get("steps", 0),
@@ -91,7 +123,7 @@ def load_episodes(run_dir: str | Path) -> list[dict[str, Any]]:
             "search_misses": search_misses,
             "prose_chars": prose_chars,
             "user_chars": user_chars,
-            "first_failure": (foot.get("failures") or [None])[0],
+            "first_failure": (failures or [None])[0],
             "simulator": head.get("simulator", "?"),
         })
     return out

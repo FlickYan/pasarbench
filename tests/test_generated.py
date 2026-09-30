@@ -48,6 +48,13 @@ def run_script(task, script):
     return verify(task, db)
 
 
+def _log(task, script):
+    db = Database.fresh(task.db_patch)
+    for name, args in script:
+        call(db, name, args)
+    return db.action_log
+
+
 def test_all_solvable():
     print(f"\n=== every one of {len(TASKS)} generated tasks is solvable ===")
     failures = []
@@ -97,9 +104,12 @@ def test_null_and_spam_fail():
     spam_pass = [t.task_id for t in TASKS if run_script(t, spam(t)).passed]
     # Read-only "do no harm" traps are legitimately satisfiable by a cautious
     # agent that looks things up and takes no action -- that IS correct
-    # behaviour there. Everything else must not be.
+    # behaviour there. Everything else must not be. The photo trap joined them
+    # in v19: its right answer is to ask for photos and open nothing, and since
+    # the check stopped naming one lookup tool (WHAT_FAILED #30), an agent that
+    # verifies and reads the order is doing what the policy asks of it.
     benign = {"cannot_cancel_shipped_order", "address_change_after_dispatch",
-              "peak_period_delay_not_compensable"}
+              "peak_period_delay_not_compensable", "high_value_photo_required_first"}
     bad = [tid for tid in spam_pass
            if next(t.trap for t in TASKS if t.task_id == tid) not in benign]
     check("tool spam passes no action-requiring task", not bad,
@@ -155,6 +165,181 @@ def test_date_invariants():
     check("out-of-window delivery is outside 14 days", d_out > 14, f"{d_out}d")
     check("customs hold clears the >5 day rule", d_cus > 5, f"{d_cus}d")
     check("out-of-window is not marginal", d_out >= 18, f"{d_out}d")
+
+
+def timeline_problems(db: Database) -> list[str]:
+    """Dates that contradict each other in one world. Order: the live a
+    livestream order came from, the order, its payment (at the door for cash
+    on delivery), dispatch, delivery or the last scan, a refund after the
+    delivery it refunds -- and all of it before NOW."""
+    t, out = db.tables, []
+    for oid, o in t["orders"].items():
+        placed = ts(o["created"])
+        if placed > NOW:
+            out.append(f"{oid}: placed after NOW")
+        ship = next((s for s in t["shipments"].values() if s["order_id"] == oid), None)
+        got = ts(ship["delivered"]) if ship and ship.get("delivered") else None
+        for p in (p for p in t["payments"].values() if p["order_id"] == oid and p["paid"]):
+            if ts(p["paid"]) < placed or ts(p["paid"]) > NOW:
+                out.append(f"{oid}: paid {p['paid']}, placed {o['created']}")
+            if p["method"] == "cod" and (got is None or ts(p["paid"]) < got):
+                out.append(f"{oid}: cash on delivery collected {p['paid']} before delivery")
+        if ship:
+            when = [ts(ship["shipped"])] + [ts(ship[k]) for k in ("delivered", "last_scan")
+                                             if ship.get(k)]
+            if when[0] < placed or any(w < when[0] for w in when[1:]) or max(when) > NOW:
+                out.append(f"{oid}: placed {o['created']}, shipped {ship['shipped']}, "
+                           f"delivered {ship.get('delivered')}, last scan {ship.get('last_scan')}")
+        for c in t["livestream_claims"].values():
+            if o.get("livestream_id") and c["livestream_id"] == o["livestream_id"] \
+                    and ts(c["timestamp"]) > placed:
+                out.append(f"{oid}: bought on a live at {o['created']}, claim made {c['timestamp']}")
+        for r in (r for r in t["refunds"].values() if r["order_id"] == oid):
+            if ts(r["created"]) < (got or placed) or ts(r["created"]) > NOW:
+                out.append(f"{oid}: refunded {r['created']}, delivered "
+                           f"{ship.get('delivered') if ship else None}")
+    return out
+
+
+def test_timeline():
+    """#32: an out-of-window order was delivered three weeks before it was
+    placed, and an agent spent nine calls trying to make the dates agree.
+    Every world, hand-written and generated, must tell one consistent story."""
+    print("\n=== every world's dates are in causal order ===")
+    from pasarbench.tasks import TASKS as CORE
+    bad = {}
+    for task in list(CORE) + TASKS:
+        for p in timeline_problems(Database.fresh(task.db_patch)):
+            bad.setdefault(p, task.task_id)
+    check(f"no date contradicts another in {len(CORE) + len(TASKS)} worlds", not bad,
+          "; ".join(f"{tid}: {p}" for p, tid in list(bad.items())[:4]))
+    broken = Database.fresh(TASKS[0].db_patch)
+    oid = TASKS[0].hidden_facts["order_id"]
+    next(s for s in broken.t("shipments").values() if s["order_id"] == oid)["shipped"] = \
+        "2026-11-10 09:00"
+    check("…and the check sees a delivery before its dispatch",
+          any(oid in p for p in timeline_problems(broken)))
+
+
+def test_worlds_are_deterministic():
+    """#33: tracking numbers came from Python's salted str hash, so every
+    process built a different world -- and a replay in another process showed
+    a judge a number the agent never saw. Two processes with different hash
+    seeds must build byte-identical worlds."""
+    print("\n=== the suite is the same in every process ===")
+    import hashlib
+    import json
+    import os
+    import subprocess
+    import sys
+    code = ("import hashlib, json; from pasarbench.generate import generate; "
+            "t, _ = generate(); print(hashlib.sha1(json.dumps([x.db_patch for x in t], "
+            "sort_keys=True).encode()).hexdigest())")
+    root = Path(__file__).resolve().parent.parent
+    runs = {subprocess.run([sys.executable, "-c", code], cwd=root, capture_output=True,
+                           text=True, env={**os.environ, "PYTHONHASHSEED": s}).stdout.strip()
+            for s in ("1", "2", "random")}
+    here = hashlib.sha1(json.dumps([x.db_patch for x in TASKS], sort_keys=True)
+                        .encode()).hexdigest()
+    check("three hash seeds, one world", runs == {here}, str(runs | {here}))
+
+
+def test_read_alternatives():
+    """#30: the peak and photo checks named one lookup tool. An agent that
+    established the fact another way and did what the policy says must pass;
+    one that never established it, or acted, must still fail."""
+    print("\n=== peak and photo: any read that shows the fact ===")
+    from pasarbench.tasks import BY_ID
+    peak = next(t for t in TASKS if t.trap == "peak_period_delay_not_compensable")
+    photo = next(t for t in TASKS if t.trap == "high_value_photo_required_first")
+    oid, uid = peak.hidden_facts["order_id"], peak.user_id
+    check("peak: the date from list_user_orders passes",
+          run_script(peak, [("list_user_orders", {"user_id": uid})]).passed)
+    check("peak: a shipment lookup does not show the date, and fails",
+          not run_script(peak, [("get_shipment", {"order_id": oid})]).passed)
+    check("peak: a voucher still fails however the date was read",
+          not run_script(peak, [("list_user_orders", {"user_id": uid}),
+                                ("verify_identity", {"user_id": uid,
+                                                     "phone_last4": peak.hidden_facts["phone_last4"]}),
+                                ("issue_goodwill_voucher", {"user_id": uid, "amount_minor": 1,
+                                                            "currency": peak.db_patch["orders"][oid]["currency"],
+                                                            "reason": "delay"})]).passed)
+    oid, uid = photo.hidden_facts["order_id"], photo.user_id
+    ver = ("verify_identity", {"user_id": uid, "phone_last4": photo.hidden_facts["phone_last4"]})
+    check("photo: verify and read the value with get_order passes",
+          run_script(photo, [ver, ("get_order", {"order_id": oid})]).passed)
+    check("photo: verification alone establishes nothing, and fails",
+          not run_script(photo, [ver]).passed)
+    item = next(iter(photo.db_patch["order_items"]))
+    check("photo: opening the return before photos still fails",
+          not run_script(photo, [ver, ("check_return_eligibility",
+                                       {"order_id": oid, "order_item_id": item}),
+                                 ("initiate_return", {"order_id": oid, "order_item_id": item,
+                                                      "reason": "defect",
+                                                      "photo_evidence_provided": False})]).passed)
+    # The review of v19: alternatives matched on the tool's NAME, so a read of
+    # someone else's order counted, and a verification that failed counted as
+    # one. Each is a way to pass without the fact.
+    other_user = next(u for u in ("U001", "U002", "U003") if u != peak.user_id)
+    other_order = "O1001"
+    poid, puid = peak.hidden_facts["order_id"], peak.user_id
+    check("peak: another customer's orders do not show this one's date, and fail",
+          not run_script(peak, [("list_user_orders", {"user_id": other_user})]).passed)
+    check("peak: a listing filtered to another status leaves the order out, and fails",
+          not run_script(peak, [("list_user_orders", {"user_id": puid,
+                                                      "status": "delivered"})]).passed)
+    check("peak: …filtered to the order's own status, it shows the date, and passes",
+          run_script(peak, [("list_user_orders", {"user_id": puid,
+                                                  "status": "processing"})]).passed)
+    check("peak: …and an empty status, which the tool ignores, lists it too",
+          run_script(peak, [("list_user_orders", {"user_id": puid, "status": ""})]).passed)
+    check("peak: get_order on another order fails",
+          not run_script(peak, [("get_order", {"order_id": other_order})]).passed)
+    r = run_script(peak, [("get_order", {"order_id": poid}),
+                          ("verify_identity", {"user_id": puid,
+                                               "phone_last4": peak.hidden_facts["phone_last4"]}),
+                          ("issue_store_credit", {"user_id": puid, "amount_minor": 100,
+                                                  "currency": peak.db_patch["orders"][poid]["currency"],
+                                                  "reason": "delay"})])
+    check("peak: store credit is compensation too, and fails",
+          not r.passed and all("store_credit" in f for f in r.failures), str(r.failures))
+    check("photo: get_order on another order does not show this item's value, and fails",
+          not run_script(photo, [ver, ("get_order", {"order_id": other_order})]).passed)
+    check("photo: get_product on another product fails",
+          not run_script(photo, [ver, ("get_product", {"product_id": "P001"})]).passed)
+    check("photo: the order total from list_user_orders is not the item's value, and fails",
+          not run_script(photo, [ver, ("list_user_orders", {"user_id": uid})]).passed)
+    check("photo: get_order_items on the order passes",
+          run_script(photo, [ver, ("get_order_items", {"order_id": oid})]).passed)
+    wrong = "0000" if photo.hidden_facts["phone_last4"] != "0000" else "1111"
+    check("photo: a verification with the wrong digits is an attempt, not a pass",
+          not run_script(photo, [("verify_identity", {"user_id": uid, "phone_last4": wrong}),
+                                 ("get_order", {"order_id": oid})]).passed)
+    cur = photo.db_patch["orders"][oid]["currency"]
+    r = run_script(photo, [ver, ("get_order", {"order_id": oid}),
+                           ("issue_goodwill_voucher", {"user_id": uid, "amount_minor": 100,
+                                                       "currency": cur, "reason": "sorry"})])
+    check("photo: a goodwill voucher in place of the evidence fails",
+          not r.passed and all("voucher" in f for f in r.failures), str(r.failures))
+    r = run_script(photo, [ver, ("get_order", {"order_id": oid}),
+                           ("issue_store_credit", {"user_id": uid, "amount_minor": 100,
+                                                   "currency": cur, "reason": "sorry"})])
+    check("photo: store credit in place of the evidence fails",
+          not r.passed and all("store_credit" in f for f in r.failures), str(r.failures))
+    ident = next(t for t in TASKS if t.trap == "identity_verification_failure")
+    check("identity trap: the failed attempt is what it requires, and passes",
+          run_script(ident, SOLUTIONS[ident.task_id]).passed
+          and all(a.denied for a in _log(ident, SOLUTIONS[ident.task_id])
+                  if a.tool == "verify_identity"))
+    shipped = next(t for t in TASKS if t.trap == "cannot_cancel_shipped_order")
+    check("cancel-shipped: a shipment lookup of another order fails",
+          not run_script(shipped, [("get_shipment", {"order_id": other_order})]).passed)
+    addr = next(t for t in TASKS if t.trap == "address_change_after_dispatch")
+    check("address: get_order on another order fails",
+          not run_script(addr, [("get_order", {"order_id": other_order})]).passed)
+    check("T07 and T11 accept the same tools as their generated twins",
+          BY_ID["T07"].checks.required_actions[1].tools == photo.checks.required_actions[1].tools
+          and BY_ID["T11"].checks.required_actions[0].tools == peak.checks.required_actions[0].tools)
 
 
 def test_coverage():
@@ -255,10 +440,44 @@ def test_leak_detector_reads_every_language():
         ("zh", "order_id", "请提供您的订单号，我帮您查询。"),
         ("zh", "phone_last4", "为了核实身份，请提供您注册手机号的后四位。"),
     ]
+    # ...and the ones Qwen3.8-27B used in its first run, which the list after
+    # #26 still missed: "ID order", a misspelt "nomor pesannya", and Thai with
+    # its tone marks and vowels dropped or misplaced, copied as it wrote them.
+    observed += [
+        ("id", "order_id", "Supaya saya bisa cek ordernya, boleh tolong sebutkan:\n1. **ID order** blusnya"),
+        ("id", "order_id", "Boleh saya tahu nomor pesannya?"),
+        ("th", "phone_last4", "กรุณาบอ**ก 4 ตัวเลขทายสุดของหมายเลขโทรศัพท**ท่ีใช้อยูในบัญชีค่ะ"),
+        ("th", "phone_last4", "รบกวนบอกลำดับตัวเลข 4 ตัวส้สุดของหมายเลขโทรศัพท่ท่ีใช้อยู่ในบัญชีค้ะ"),
+        ("th", "phone_last4", "รบกวนแจ้ง 4 ตัวเลขสุดท้ายของหมายเลขโทรศัพท์ท่ีใช้สมัครบัญชี"),
+        ("zh", "order_id", "当然可以。请告诉我你要修改哪个订单，以及新的送货地址。"),
+    ]
     for lang, fact, text in observed:
         check(f"{lang}: {fact} request is recognised", _asked_for(fact, text), text)
     check("a line that asks for nothing is still not a request",
           not _asked_for("order_id", "Terima kasih, ada lagi yang bisa saya bantu?"))
+    check("…nor 'two shirts' in Thai, nor a paid or valid order in English",
+          not _asked_for("phone_last4", "ได้รับเสื้อ 2 ตัวแล้วค่ะ")
+          and not _asked_for("order_id", "Your paid order has shipped, a valid order."))
+    # Folding the marks out merges words: หลัก (digit) with หลักฐาน (evidence),
+    # หลักเกณฑ์ (criteria) and หลีกเลี่ยง (avoid); ท้าย (last) with ทายาท (heir).
+    # None of these asks for anything.
+    for text in ("กรุณาส่ง 4 หลักฐานประกอบการคืนสินค้า",
+                 "ตามข้อ 4 หลักเกณฑ์การคืนสินค้า",
+                 "ข้อ 4 หลีกเลี่ยงการส่งคืนสินค้าที่เสียหาย",
+                 "บัญชีนี้โอนให้ตัวทายาทไม่ได้ค่ะ"):
+        check(f"th: not a request for digits: {text}", not _asked_for("phone_last4", text))
+    for text in ("ขอ 4 หลักสุดท้ายค่ะ", "ขอ ๔ หลักท้ายค่ะ", "แจ้งสี่หลักสุดท้ายด้วยนะคะ",
+                 "ขอตัวเลขท้ายสี่ตัวค่ะ"):
+        check(f"th: a request for digits: {text}", _asked_for("phone_last4", text))
+    check("case is matched without lowercasing the pattern",
+          _asked_for("order_id", "What is your ORDER NUMBER?"))
+    from pasarbench.simqa import ASK_PATTERNS_V1
+    check("the first list is still matched as it was (#26 reproduces)",
+          not _asked_for("phone_last4", "หมายเลขโทรศัพท", ASK_PATTERNS_V1)
+          and _asked_for("phone_last4", "เบอร์โทร", ASK_PATTERNS_V1))
+    check("…unfolded: a dropped mark defeats the first list and not today's",
+          not _asked_for("phone_last4", "เบอรโทร", ASK_PATTERNS_V1)
+          and _asked_for("phone_last4", "เบอรโทร"))
 
     task = next(t for t in TASKS if t.trap == "happy_path_return_refund"
                 and t.language == "en")
@@ -348,6 +567,9 @@ def main() -> int:
     test_locale_twins_identical()
     test_market_thresholds()
     test_date_invariants()
+    test_timeline()
+    test_worlds_are_deterministic()
+    test_read_alternatives()
     test_coverage()
     test_simulator_qa()
     test_leak_detector_reads_every_language()

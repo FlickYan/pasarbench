@@ -1,0 +1,29 @@
+
+========================================================================
+0. CHAT-FORMAT TOKENS IN THE TEXT  (a server parser missing or wrong)
+========================================================================
+  customer: none in 41 turns
+  agent: none in 125 turns
+
+========================================================================
+3. DID THE SIMULATOR LEAK FACTS BEFORE BEING ASKED?
+========================================================================
+  leak rate BY LANGUAGE (this is the number that matters):
+    en        0.0%  (0/8 episodes)  <- clean
+    vi        0.0%  (0/2 episodes)  <- clean
+    zh-MY     0.0%  (0/2 episodes)  <- clean
+    zh-SG     0.0%  (0/1 episodes)  <- clean
+    sg-en     0.0%  (0/2 episodes)  <- clean
+    ms        0.0%  (0/1 episodes)  <- clean
+
+  requests for a fact the customer did NOT answer in the next turn:
+    en       45.5%  (5/11 requests)
+    ms        0.0%  (0/1 requests)
+    sg-en    20.0%  (1/5 requests)
+    vi       50.0%  (2/4 requests)
+    zh-MY     0.0%  (0/1 requests)
+    zh-SG   100.0%  (3/3 requests)
+
+  episodes 16   leak rate 0.0%   clean 100.0%
+  facts revealed ON REQUEST (correct behaviour): 16
+  no leaks -- the customer made the agent ask for everything

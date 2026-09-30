@@ -385,9 +385,14 @@ class Action:
     args: dict[str, Any]
     ok: bool
     error: str | None = None
+    # The call ran and the answer was no: verify_identity with the wrong
+    # digits returns ok with verified=False. A check that needs the call to
+    # have WORKED reads this (verifier.ActionSpec.must_succeed).
+    denied: bool = False
 
     def to_dict(self) -> dict[str, Any]:
-        return {"tool": self.tool, "args": self.args, "ok": self.ok, "error": self.error}
+        return {"tool": self.tool, "args": self.args, "ok": self.ok, "error": self.error,
+                "denied": self.denied}
 
 
 @dataclass
@@ -420,8 +425,10 @@ class Database:
         self._counter += 1
         return f"{prefix}{self._counter:04d}"
 
-    def log(self, tool: str, args: dict[str, Any], ok: bool, error: str | None = None) -> None:
-        self.action_log.append(Action(tool=tool, args=args, ok=ok, error=error))
+    def log(self, tool: str, args: dict[str, Any], ok: bool, error: str | None = None,
+            denied: bool = False) -> None:
+        self.action_log.append(Action(tool=tool, args=args, ok=ok, error=error,
+                                      denied=denied))
 
     # convenience accessors ------------------------------------------------
     def t(self, name: str) -> dict[str, dict[str, Any]]:

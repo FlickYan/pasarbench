@@ -460,6 +460,54 @@ def test_scaling_report_refuses_a_broken_ceiling():
           "`out_of_window_offer_voucher`" in md.split("Loses")[-1], md)
 
 
+def test_audit_uses_todays_verdicts():
+    """#30: the audit's "failed" is RESULTS.md's -- today's checks on the
+    replayed episode -- and a requirement a visible tool can meet is not a tool
+    the arm hid. The photo check now accepts get_order, which search-N shows."""
+    import contextlib
+    import importlib.util
+    import io
+    import json
+    import tempfile
+    from pathlib import Path
+
+    from pasarbench.harness.replay import pre_v19_patch
+    from pasarbench.harness.trace import TraceWriter
+    from pasarbench.sweep import ALL_SOLUTIONS, ALL_TASKS
+
+    print("\n=== the audit reads today's verdicts ===")
+    spec = importlib.util.spec_from_file_location(
+        "audit", Path(__file__).resolve().parent.parent / "scripts" / "audit_tool_arms.py")
+    au = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(au)
+    task = next(t for t in ALL_TASKS if t.task_id == "HVPRF-SG")
+    tmp = tempfile.mkdtemp()
+    w = TraceWriter(root=tmp, run_id="I-x/full+search-300")
+    run_episode(task, Database.fresh(pre_v19_patch(task)), ScriptedBackend([
+        ("verify_identity", {"user_id": task.user_id,
+                             "phone_last4": task.hidden_facts["phone_last4"]}),
+        ("get_order", {"order_id": task.hidden_facts["order_id"]})]),
+        exposure=build_exposure("search-300", ALL_SOLUTIONS), trace=w)
+    # ...recorded as the old check scored it
+    w.close_episode("done", False, ["missing required action: check_return_eligibility"], {})
+    w.close()
+
+    def audit(*flags):
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            au.main([str(Path(tmp, "I-x")), *flags])
+        return buf.getvalue()
+
+    now, then = audit(), audit("--checker", "recorded")
+    check("today's checks: the episode passes, nothing to explain",
+          "full+search-300: 0 failed of 1" in now, now[-900:])
+    check("the recorded verdict still fails it...",
+          "full+search-300: 1 failed of 1" in then, then[-900:])
+    check("...but a requirement get_order meets is not a tool the arm hid",
+          "check_return_eligibility" not in then.split("== 2.")[1].split("== 3.")[0],
+          then.split("== 2.")[1][:600])
+
+
 def test_audit_classifies_search_failures():
     """scripts/audit_tool_arms.py: one synthetic failed episode per category.
 
@@ -602,6 +650,7 @@ def main() -> int:
     test_reduced_arms_are_discoverable()
     test_scaling_report_refuses_a_broken_ceiling()
     test_audit_classifies_search_failures()
+    test_audit_uses_todays_verdicts()
     test_lookups_are_read_only()
     test_search_is_confined_to_its_arm()
     print(f"\n{len(PASS)} passed, {len(FAIL)} failed")

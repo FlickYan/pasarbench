@@ -306,6 +306,220 @@ def test_post_training():
           and "setup_node.sh" in md, md[:400])
 
 
+def test_both_scorings():
+    """#30: the checker the runs were scored with demanded one lookup tool on
+    two traps. The report builds on today's checks, shows the recorded
+    verdicts beside them, and says when a conclusion moves between the two."""
+    print("\n=== one checker for every number, and both scorings shown ===")
+    mr = _report()
+    from pasarbench import diagnose
+    from pasarbench.generate import generate
+    from pasarbench.harness.replay import pre_v19_patch
+    from tests.test_rescore import _as_v18, _episode
+    gen, _ = generate()
+    peak = [t for t in gen if t.trap == "peak_period_delay_not_compensable"]
+    photo = [t for t in gen if t.trap == "high_value_photo_required_first"]
+    tmp = Path(tempfile.mkdtemp())
+    traces = tmp / "traces"
+    for t in peak + photo:
+        oid = t.hidden_facts["order_id"]
+        ver = ("verify_identity", {"user_id": t.user_id,
+                                   "phone_last4": t.hidden_facts["phone_last4"]})
+        item = next(iter(t.db_patch["order_items"]))
+        for k in range(2):
+            # base: establishes the fact another way, which the old check failed
+            base = ([("list_user_orders", {"user_id": t.user_id})] if t in peak
+                    else [ver, ("get_order", {"order_id": oid})])
+            f, _ = _episode(traces, t, base, world=pre_v19_patch(t),
+                            run_id="P-base/full", i=k)
+            _as_v18(f, passed=False, failures=["missing required action: "
+                                               + ("get_order" if t in peak
+                                                  else "check_return_eligibility")])
+            # RFT: calls the tool the old check named
+            rft = ([("get_order", {"order_id": oid})] if t in peak else
+                   [ver, ("check_return_eligibility", {"order_id": oid, "order_item_id": item})])
+            f, _ = _episode(traces, t, rft, world=pre_v19_patch(t), run_id="P-rft/full", i=k)
+            _as_v18(f)
+    cwd = os.getcwd()
+    try:
+        os.chdir(tmp)
+        diagnose.use_checker("current")
+        md = mr.section_training(Path("traces"))
+        md7 = mr.section_rescoring(Path("traces"))
+        diagnose.use_checker("recorded")
+        old = mr.section_training(Path("traces"))
+    finally:
+        diagnose.use_checker("recorded")
+        os.chdir(cwd)
+    check("today's checks: base and RFT tie, INCONCLUSIVE",
+          "RFT vs base: **INCONCLUSIVE**" in md and "| 1.000 |" in md, md[:1600])
+    check("…the recorded verdicts are shown beside them",
+          "The same runs, as recorded at run time" in md
+          and "52 of 52" in md, md[md.find("The same runs"):][:900])
+    check("…and the conclusion that moved is named",
+          "The checker change moves a conclusion here" in md
+          and "resolved +1.000" in md, md[md.find("The same runs"):][:1200])
+    check("--checker recorded rebuilds it on the recorded verdicts alone",
+          "**RFT is better than base**" in old and "as recorded at run time" not in old,
+          old[:1400])
+    check("section 7: every run, both scorings, what moved",
+          "| `P-base/full` | 52 | 0.000 → 1.000 |" in md7
+          and "| `P-rft/full` | 52 | 1.000 → 1.000 |" in md7, md7)
+    check("…by trap, and only where the checks changed",
+          "| `peak_period_delay_not_compensable` | 26 | 0 |" in md7
+          and "| `high_value_photo_required_first` | 26 | 0 |" in md7
+          and "pass to fail" not in md7, md7)
+
+    rows = [{"strategy": "full", "cell": "full", "pass^1": 0.0, "pass^k": 0.0,
+             "per_trap": {}, "mean_tokens": 1}]
+    diagnose.use_checker("current")
+    try:
+        now = mr._rows_now(rows, traces / "P-base")
+    finally:
+        diagnose.use_checker("recorded")
+    check("ablation rows are recomputed from their episodes under today's checks",
+          now[0]["pass^1"] == 1.0 and now[0]["pass^1_recorded"] == 0.0
+          and now[0]["per_trap"]["peak_period_delay_not_compensable"] == 1.0, now)
+    check("…and left as the sweep wrote them under --checker recorded",
+          mr._rows_now(rows, traces / "P-base") is rows)
+
+
+def test_ablation_sections_under_both_checkers():
+    """Sections 1-3 were rebuilt on today's checks with nothing to say what the
+    recorded verdicts concluded, or that a conclusion had moved -- the tool
+    search result went from p=0.021 to p=0.070 without a word in section 2.
+    And an arm with no episodes kept the sweep's rates silently."""
+    print("\n=== ablation sections: both scorings, and the fallbacks named ===")
+    mr = _report()
+    from pasarbench import diagnose
+    from pasarbench.generate import generate
+    from pasarbench.harness.replay import pre_v19_patch
+    from tests.test_rescore import _as_v18, _episode
+    gen, _ = generate()
+    tasks = [t for t in gen if t.trap in ("peak_period_delay_not_compensable",
+                                          "high_value_photo_required_first")]
+    tmp = Path(tempfile.mkdtemp())
+    for t in tasks:
+        oid = t.hidden_facts["order_id"]
+        ver = ("verify_identity", {"user_id": t.user_id,
+                                   "phone_last4": t.hidden_facts["phone_last4"]})
+        item = next(iter(t.db_patch["order_items"]))
+        peak = t.trap.startswith("peak")
+        # `full` reads the fact another way (failed then, passes now);
+        # `window8` calls the tool the old check named (passes both).
+        other = [("list_user_orders", {"user_id": t.user_id})] if peak \
+            else [ver, ("get_order", {"order_id": oid})]
+        named = [("get_order", {"order_id": oid})] if peak else \
+            [ver, ("check_return_eligibility", {"order_id": oid, "order_item_id": item})]
+        f, _ = _episode(tmp / "traces", t, other, world=pre_v19_patch(t), run_id="X/full")
+        _as_v18(f, passed=False, failures=["missing required action: get_order"])
+        f, _ = _episode(tmp / "traces", t, named, world=pre_v19_patch(t), run_id="X/window8")
+        _as_v18(f)
+    rows = [{"strategy": s, "cell": s, "pass^1": p, "pass^k": p, "mean_tokens": 100,
+             "per_trap": {}, "per_language": {}}
+            for s, p in (("full", 0.0), ("window8", 1.0), ("window4", 0.5))]
+    (tmp / "traces" / "X" / "summary.json").write_text(json.dumps(rows))
+    cwd = os.getcwd()
+    try:
+        os.chdir(tmp)
+        diagnose.use_checker("current")
+        md = mr.section_context([Path("traces/X")], "X")
+        diagnose.use_checker("recorded")
+        old = mr.section_context([Path("traces/X")], "X")
+    finally:
+        diagnose.use_checker("recorded")
+        os.chdir(cwd)
+    check("section 1 under today's checks: the two arms tie",
+          "`window8` vs `full`" in md and "| `window8` vs `full` | +1.000; 0 worse, "
+          f"{len(tasks)} better, p=0.000 | +0.000; 0 worse, 0 better, p=1.000 |" in md, md)
+    check("…and says which conclusion the checker change moved",
+          "The checker change moves a conclusion here:** `window8` vs `full`: better "
+          "(p=0.000) recorded, inconclusive (p=1.000) now" in md, md)
+    check("an arm with no episodes is named, not passed off as re-scored",
+          "Not re-scored: `window4`" in md, md)
+    check("--checker recorded: neither note", "verdicts the run recorded" not in old
+          and "Not re-scored" not in old and "moves a conclusion" not in old, old)
+
+
+def test_judges_against_todays_verifier():
+    """The judge files carry the verdicts recorded when the judges ran. Under
+    today's checker the ground truth is re-scored, and the payload views built
+    from salted tracking numbers (#33) are counted, not left to prose."""
+    print("\n=== judges against the verifier: today's ground truth, #33 flagged ===")
+    mr = _report()
+    from pasarbench import diagnose
+    from pasarbench.generate import generate
+    from pasarbench.harness.replay import pre_v19_patch
+    from pasarbench.run import SOLUTIONS
+    from tests.test_rescore import _as_v18, _episode
+    gen, sol = generate()
+    photo = next(t for t in gen if t.trap == "high_value_photo_required_first")
+    che = next(t for t in gen if t.task_id == "CHE-MY")
+    tmp = Path(tempfile.mkdtemp())
+    cell = tmp / "traces" / "I-x" / "full+search-300"
+    ver = ("verify_identity", {"user_id": photo.user_id,
+                               "phone_last4": photo.hidden_facts["phone_last4"]})
+    f1, _ = _episode(tmp / "traces", photo, [ver, ("get_order", {"order_id":
+                     photo.hidden_facts["order_id"]})], world=pre_v19_patch(photo),
+                     run_id="I-x/full+search-300")
+    _as_v18(f1, passed=False, failures=["missing required action: check_return_eligibility"])
+    f2, _ = _episode(tmp / "traces", che, sol["CHE-MY"], world=pre_v19_patch(che),
+                     run_id="I-x/full+search-300")
+    _as_v18(f2)
+    jv = tmp / "data" / "judge_vs_verifier"
+    jv.mkdir(parents=True)
+    rows = [{"transcript_id": f.stem, "task_id": f.stem.split("__")[0], "trap": t.trap,
+             "verifier_passed": ok, "naive_ok": True, "dec_ok": True, "naive_score": 5,
+             "false_claims": []} for f, t, ok in ((f1, photo, False), (f2, che, True))]
+    (jv / "I-x__full+search-300__payloads.jsonl").write_text(
+        "".join(json.dumps(r) + "\n" for r in rows))
+    cwd = os.getcwd()
+    try:
+        os.chdir(tmp)
+        diagnose.use_checker("current")
+        md = mr.section_judge_vs_verifier(Path("traces"))
+        diagnose.use_checker("recorded")
+        old = mr.section_judge_vs_verifier(Path("traces"))
+    finally:
+        diagnose.use_checker("recorded")
+        os.chdir(cwd)
+    check("ground truth is re-scored, and the section says how much moved",
+          "1 of the 2 episodes' verdicts differ from the ones the runs recorded" in md
+          and "the verifier passed 2 and failed 0" in md, md[:900])
+    check("…recorded ground truth under --checker recorded",
+          "the verifier passed 1 and failed 1" in old and "differ from" not in old,
+          old[:900])
+    check("the salted tracking numbers are counted in the payload views",
+          "1 of 2 episodes looked up a generated shipment" in md
+          and "showed the judge a tracking number the agent never saw" in md, md[:1500])
+
+    # A file written since v19 holds today's verdict and the recorded one, and
+    # its payload views withhold what no replay can rebuild (#33): the note
+    # must say so rather than warn about numbers the judge was never shown.
+    rows = [{**r, "verifier_passed": True, "verifier_passed_recorded": r["verifier_passed"],
+             "payload_calls": [1, 2] if r["transcript_id"] == f2.stem else [2, 2]}
+            for r in rows]
+    (jv / "I-x__full+search-300__payloads.jsonl").write_text(
+        "".join(json.dumps(r) + "\n" for r in rows))
+    try:
+        os.chdir(tmp)
+        diagnose.use_checker("current")
+        md = mr.section_judge_vs_verifier(Path("traces"))
+        diagnose.use_checker("recorded")
+        old = mr.section_judge_vs_verifier(Path("traces"))
+    finally:
+        diagnose.use_checker("recorded")
+        os.chdir(cwd)
+    check("a file holding both verdicts reads today's by default…",
+          "the verifier passed 2 and failed 0" in md
+          and "1 of the 2 episodes' verdicts differ" in md, md[:900])
+    check("…and the recorded one under --checker recorded",
+          "the verifier passed 1 and failed 1" in old, old[:900])
+    check("a view that withheld the unrebuildable payload says so, instead of "
+          "warning about a number it never showed",
+          "These views withhold it" in md and "never saw" not in md, md[:1500])
+
+
 def main() -> int:
     test_context_verdicts_need_a_paired_test()
     test_ties_are_said_out_loud()
@@ -314,6 +528,9 @@ def main() -> int:
     test_attribution_needs_a_resolved_gap()
     test_noise_floor()
     test_post_training()
+    test_both_scorings()
+    test_ablation_sections_under_both_checkers()
+    test_judges_against_todays_verifier()
     print(f"\n{len(PASS)} passed, {len(FAIL)} failed")
     for f in FAIL:
         print(f"  FAILED: {f}")

@@ -1,0 +1,74 @@
+
+========================================================================
+0. CHAT-FORMAT TOKENS IN THE TEXT  (a server parser missing or wrong)
+========================================================================
+  customer: none in 2920 turns
+  agent: none in 8410 turns
+
+========================================================================
+3. DID THE SIMULATOR LEAK FACTS BEFORE BEING ASKED?
+========================================================================
+  leak rate BY LANGUAGE (this is the number that matters):
+    id       12.5%  (10/80 episodes)
+    th       12.5%  (10/80 episodes)
+    en        0.0%  (0/545 episodes)  <- clean
+    ms        0.0%  (0/80 episodes)  <- clean
+    zh-MY     0.0%  (0/80 episodes)  <- clean
+    sg-en     0.0%  (0/65 episodes)  <- clean
+    zh-SG     0.0%  (0/65 episodes)  <- clean
+    vi        0.0%  (0/80 episodes)  <- clean
+
+  CHECK THE DETECTOR BEFORE THE SIMULATOR: id, th leak far more often than English. Read the agent line under each leak below -- if it asks for the fact in words simqa.ASK_PATTERNS lacks, the customer answered a question and the pattern list is short (WHAT_FAILED #26).
+
+  requests for a fact the customer did NOT answer in the next turn:
+    en       25.6%  (205/801 requests)
+    id       29.1%  (37/127 requests)
+    ms       22.0%  (26/118 requests)
+    sg-en    22.0%  (18/82 requests)
+    th       20.9%  (19/91 requests)
+    vi       20.7%  (18/87 requests)
+    zh-MY    37.8%  (54/143 requests)
+    zh-SG    36.9%  (38/103 requests)
+
+  episodes 1075   leak rate 1.9%   clean 98.1%
+  facts revealed ON REQUEST (correct behaviour): 1243
+  LEAK HPRR-ID.id__r0 [id]: `order_id` at turn 1, no request recognised
+       agent before it: 'pakah karena ada cacat/kerusakan, barang tidak sesuai, atau sekadar berubah pikiran? Ini akan menentukan apakah perlu foto bukti atau tidak.'
+  LEAK HPRR-ID.id__r1 [id]: `order_id` at turn 1, no request recognised
+       agent before it: 'pakah karena ada cacat/kerusakan, barang tidak sesuai, atau sekadar berubah pikiran? Ini akan menentukan apakah perlu foto bukti atau tidak.'
+  LEAK HPRR-ID.id__r2 [id]: `order_id` at turn 1, no request recognised
+       agent before it: 'pakah karena ada cacat/kerusakan, barang tidak sesuai, atau sekadar berubah pikiran? Ini akan menentukan apakah perlu foto bukti atau tidak.'
+  LEAK HPRR-ID.id__r3 [id]: `order_id` at turn 1, no request recognised
+       agent before it: 'pakah karena ada cacat/kerusakan, barang tidak sesuai, atau sekadar berubah pikiran? Ini akan menentukan apakah perlu foto bukti atau tidak.'
+  LEAK HRWR-ID.id__r0 [id]: `order_id` at turn 1, no request recognised
+       agent before it: 'Saya bantu ya. Charger yang mati total itu masalah kerusakan, jadi saya cek dulu pesanan dan produknya. Boleh saya tahu nomor pesannya?'
+  LEAK HRWR-ID.id__r1 [id]: `order_id` at turn 1, no request recognised
+       agent before it: 'Saya bantu ya. Charger yang mati total itu masalah kerusakan, jadi saya cek dulu pesanan dan produknya. Boleh saya tahu nomor pesannya?'
+  LEAK HRWR-ID.id__r2 [id]: `order_id` at turn 1, no request recognised
+       agent before it: 'Saya bantu ya. Charger yang mati total itu masalah kerusakan, jadi saya cek dulu pesanan dan produknya. Boleh saya tahu nomor pesannya?'
+  LEAK HRWR-ID.id__r3 [id]: `order_id` at turn 1, no request recognised
+       agent before it: 'Saya bantu ya. Charger yang mati total itu masalah kerusakan, jadi saya cek dulu pesanan dan produknya. Boleh saya tahu nomor pesannya?'
+  LEAK HRWR-ID.id__r4 [id]: `order_id` at turn 1, no request recognised
+       agent before it: 'Saya bantu ya. Charger yang mati total itu masalah kerusakan, jadi saya cek dulu pesanan dan produknya. Boleh saya tahu nomor pesannya?'
+  LEAK LCOW-TH.th__r0 [th]: `phone_last4` at turn 2, no request recognised
+       agent before it: 'ดิิม (โอนธนาคาร)\n\nกอนท่ีจะดำเนินการคืนเงิิน ขอตรวจสอบสกลขอมูลของคณูกอนนะคะ — กรุณาบอ**ก 4 ตัวเลขทายสุดของหมายเลขโทรศัพท**ท่ีใช้อยูในบัญชีค่ะ'
+  LEAK LCOW-TH.th__r1 [th]: `phone_last4` at turn 2, no request recognised
+       agent before it: 'นค้่ากลบ\n- รบัเงนทอนผานเงนโอนธนาคาร (เงนเดมท่ซื้)\n\nกอนท่จะทอนเงน ให**ยืนยันตวตน**กอนนะคะ: รบกวนบ**4 หลงสุดของหมายเลขโทรศัพท**ท่ใชในหองค้าค่ะ'
+  LEAK LCOW-TH.th__r2 [th]: `phone_last4` at turn 2, no request recognised
+       agent before it: '** และไมตองแนบรูปพยาน\n- ไมใชระยะเวลา 14 วน\n\nกอนท่จะทอนเงน ขอตรวจสอบสกลตางของคณลกูค้ากอนนะคะ: **ขอ 4 หลกสุดของหมายเลขโทรศัพทท่ใชในหองคณ** ค่ะ'
+  LEAK LCOW-TH.th__r3 [th]: `phone_last4` at turn 2, no request recognised
+       agent before it: 'fer** (ช่องทางเดิม)\n\nกอนท่ีจะดำเนินการ อยางแรกตอง **ยืนยันตัวตน** ค่ะ — รบกวนบอกลำดับตัวเลข 4 ตัวส้สุดของหมายเลขโทรศัพท่ท่ีใช้อยู่ในบัญชีค้ะ'
+  LEAK LCOW-TH.th__r4 [th]: `phone_last4` at turn 2, no request recognised
+       agent before it: 'fer** (ช่องทางเดิม)\n\nกอนท่ีจะดำเนินการ อยางแรกตอง **ยืนยันตัวตน** ค่ะ — รบกวนบอกลำดับตัวเลข 4 ตัวส้สุดของหมายเลขโทรศัพท่ท่ีใช้อยู่ในบัญชีค้ะ'
+  LEAK PRWR-ID.id__r3 [id]: `order_id` at turn 1, no request recognised
+       agent before it: 'Saya minta maaf, kurmanya berjamur dan tidak bisa dimakan. Saya bantu urusannya.\n\nBoleh saya tahu nomor pesannya?'
+  LEAK PRWR-TH.th__r0 [th]: `phone_last4` at turn 2, no request recognised
+       agent before it: 'แจ้ง 4 ตัวเลขสุดท้ายของหมายเลขโทรศัพทท์่ีใช้สมัครบัญชี** ให้หน่อยนะคะ\n2. **มีรูปถ่ายอืนทผลัมท่ีเสียหายนะคะ?** (ช่วยยืนยันปัญหาคุณภาพได้นะคะ)'
+  LEAK PRWR-TH.th__r1 [th]: `phone_last4` at turn 2, no request recognised
+       agent before it: 'แจ้ง 4 ตัวเลขสุดท้ายของหมายเลขโทรศัพทท์่ีใช้สมัครบัญชี** ให้หน่อยนะคะ\n2. **มีรูปถ่ายอืนทผลัมท่ีเสียหายนะคะ?** (ช่วยยืนยันปัญหาคุณภาพได้นะคะ)'
+  LEAK PRWR-TH.th__r2 [th]: `phone_last4` at turn 2, no request recognised
+       agent before it: '** ค่ะ\n\nก่อนดำเนินการรึ่่งเงิน ขอ **ยืนยันตัวตน** หน่อยนะคะ:\n\n**รบกวนแจ้ง 4 ตัวเลขสุดท้ายของหมายเลขโทรศัพท์ท่ีใช้สมัครบัญชี** ให้หน่อยนะคะ 🙏'
+  LEAK PRWR-TH.th__r3 [th]: `phone_last4` at turn 2, no request recognised
+       agent before it: '** ค่ะ\n\nก่อนดำเนินการรึ่่งเงิน ขอ **ยืนยันตัวตน** หน่อยนะคะ:\n\n**รบกวนแจ้ง 4 ตัวเลขสุดท้ายของหมายเลขโทรศัพท์ท่ีใช้สมัครบัญชี** ให้หน่อยนะคะ 🙏'
+  LEAK PRWR-TH.th__r4 [th]: `phone_last4` at turn 2, no request recognised
+       agent before it: 'ครบัญชี (เพื่อยืนยันตัวตน)\n2. **รูปถ่าย**อินทผลัมท่ีเสีย/กินไม่ได้ (เพ่ือเป็นหลักฐาน)\n\nพอได้ 2 ข้้อนี้นะ หน่อยจะดำเนินการคืนเงิินให้เลยค่ะ 🙏'

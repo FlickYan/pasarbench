@@ -1,0 +1,23 @@
+
+=== 2026-09-28 21:56:30 $ bash run_tests.sh
+repo root : /__modal/volumes/vo-Bm4nInk6DvJNPRhNAgEg9x/pasarbench
+python    : /opt/pasar/bin/python (3.12)
+importable: yes
+
+=== suites ===
+  pasarbench.run             --- pass^1=1.0  pass^1=1.0  (16 tasks)
+  tests.test_traps           ALL GOOD
+  tests.test_harness         28 passed, 0 failed
+  tests.test_reward          30 passed, 0 failed
+  tests.test_generated       63 passed, 0 failed
+  tests.test_context         39 passed, 0 failed
+  tests.test_judge           81 passed, 0 failed
+  tests.test_exposure        105 passed, 0 failed
+  tests.test_serving         54 passed, 0 failed
+  tests.test_report          30 passed, 0 failed
+  tests.test_training        137 passed, 0 failed, 1 skipped
+
+=== end-to-end sweep (scripted backend, no API calls, no GPU) ===
+  ok
+
+ALL GREEN. Phase 0 complete -- see docs/RUNBOOK.md for Phase 1.

@@ -1,0 +1,7 @@
+wrote data/rft/train-A.jsonl: 2322 turns, 13,085,948 tokens
+wrote data/rft/train-B.jsonl: 2215 turns, 12,433,965 tokens
+
+collection pass rate 0.863 over 1720 episodes; skipped {'duplicate episode': 91, 'over max_per_task': 770}
+prompt token ids: the server's, for all 4537 examples; 4537 of them are not what the local template renders (SGLang dumps the tool list its own way)
+
+Next: python scripts/train_rft.py check --data data/rft/train-A.jsonl --server http://localhost:8000

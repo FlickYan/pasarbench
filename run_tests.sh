@@ -58,7 +58,7 @@ run() {
 
 echo "=== suites ==="
 run pasarbench.run
-for t in traps harness reward generated context judge exposure serving report training; do
+for t in traps harness reward generated rescore context judge exposure serving report training; do
   run "tests.test_$t"
 done
 

@@ -40,6 +40,46 @@ class Task:
     max_turns: int = 20
 
 
+# Reads that show when an order was placed, and reads that show what an item
+# is worth. The peak-period rule (P8.2) turns on the first and the photo rule
+# (P3.3) on the second, and any read that shows the fact establishes it. Both
+# checks used to name ONE tool, get_order and check_return_eligibility: an
+# agent that read the date from list_user_orders, or the value from get_order,
+# and then did exactly what the policy says still failed. Nearly every failure
+# of the base model on those two traps was that and nothing else, and
+# fine-tuning on the episodes that checker passed taught the model the
+# preference -- most of what it gained (WHAT_FAILED #30).
+#
+# Each alternative names its target. Until the v19 review they matched on the
+# tool's name alone, so a read of some other order counted; tightening them
+# moved no recorded episode (#30). list_user_orders is not a value read: it
+# shows the order's total with shipping, not what the item is worth.
+
+
+def listing(user_id: str, status: str) -> tuple[tuple[str, dict[str, Any]], ...]:
+    """list_user_orders calls whose answer includes the user's order in
+    `status`: unfiltered (no status, or an empty one -- the tool ignores it),
+    or filtered to that status."""
+    return tuple(("list_user_orders", {"user_id": user_id, "status": s})
+                 for s in (None, "", status))
+
+
+def date_reads(user_id: str, status: str) -> tuple[tuple[str, dict[str, Any]], ...]:
+    """Reads other than get_order that show when the order was placed."""
+    return listing(user_id, status)
+
+
+def value_reads(order_id: str, item_id: str,
+                product_id: str) -> tuple[tuple[str, dict[str, Any]], ...]:
+    """Reads other than check_return_eligibility that show the item's value.
+    get_order shows the subtotal, which is the item's value on the one-item
+    orders these tasks use."""
+    return (("get_order", {"order_id": order_id}),
+            ("get_order_items", {"order_id": order_id}),
+            ("get_product", {"product_id": product_id}),
+            ("calculate_refund_amount", {"order_item_id": item_id}))
+
+
 def task_digest(task: "Task") -> str:
     """A short hash of what trace analyses regenerate from the task definition:
     the customer's opening and the facts it holds back.
@@ -55,10 +95,32 @@ def task_digest(task: "Task") -> str:
     return hashlib.sha1(blob.encode("utf-8")).hexdigest()[:12]
 
 
+def world_digest(task: "Task") -> str:
+    """A short hash of the world the task's tools read: the seed database with
+    the task's patch applied -- both, since a change to either is a different
+    world.
+
+    task_digest covers what the customer says, which is what the leak audit
+    needs. A replay needs the world: v19 changed the dates of 87 worlds without
+    changing a single opening (WHAT_FAILED #32), so a trace can match its task
+    by task_digest and still have read different dates. Traces record this
+    from v19; a replay compares it before trusting a regenerated payload."""
+    import hashlib
+    import json
+
+    from .db import Database
+    blob = json.dumps(Database.fresh(task.db_patch).tables, sort_keys=True,
+                      ensure_ascii=False, default=str)
+    return hashlib.sha1(blob.encode("utf-8")).hexdigest()[:12]
+
+
 DELIVER_O1003 = {
     "orders": {"O1003": {"status": "delivered"}},
     "order_items": {"OI3": {"item_status": "delivered"}},
-    "shipments": {"SH2": {"status": "delivered", "delivered": "2026-11-08 14:00",
+    # Same-day delivery. The seed ships O1003 on the 9th, after this delivery,
+    # so the patch moves the dispatch too (WHAT_FAILED #32).
+    "shipments": {"SH2": {"status": "delivered", "shipped": "2026-11-08 10:30",
+                          "delivered": "2026-11-08 14:00",
                           "last_scan": "2026-11-08 14:00"}},
 }
 
@@ -169,8 +231,9 @@ TASKS: list[Task] = [
                   label="no return on an undelivered order (P2.3)"),
             ],
             required_actions=[A("get_order", {"order_id": "O1003"},
-                                alt=("get_shipment", "get_order_items",
-                                     "list_user_orders"))],
+                                alt=(("get_shipment", {"order_id": "O1003"}),
+                                     ("get_order_items", {"order_id": "O1003"}),
+                                     *listing("U002", "shipped")))],
             forbidden_actions=[
                 A("cancel_order", must_succeed=False),
                 A("initiate_return", must_succeed=False),
@@ -252,18 +315,26 @@ TASKS: list[Task] = [
                 D(table="returns", match={"order_id": "O1005"}, count=0,
                   label="return must NOT open before photo evidence (P3.3)"),
                 D(table="refunds", match={"order_id": "O1005"}, count=0),
+                D(table="vouchers", match={"user_id": "U004"}, count=0,
+                  label="no voucher in place of the evidence (P6.2 is out-of-window only)"),
+                D(table="store_credit_grants", match={"user_id": "U004"}, count=0,
+                  label="no store credit in place of the evidence (P4.2 is for COD refunds)"),
             ],
             required_actions=[
                 A("verify_identity", {"user_id": "U004"}),
-                # Unlike the hazmat/perishable traps, a return IS contemplated
-                # here, and this call is how the agent learns that photo
-                # evidence is required. That makes it a policy requirement
-                # rather than a tool preference.
-                A("check_return_eligibility", {"order_item_id": "OI5"}),
+                # This used to demand check_return_eligibility, on the grounds
+                # that it is how the agent learns photos are needed. It is one
+                # way: P3.3 turns on the item's value, which get_order and the
+                # other value_reads show too, and P3.2 requires the check only
+                # before initiate_return -- which this task forbids.
+                A("check_return_eligibility", {"order_item_id": "OI5"},
+                  alt=value_reads("O1005", "OI5", "P008")),
             ],
             forbidden_actions=[
                 A("initiate_return", must_succeed=False),
                 A("issue_refund", must_succeed=False),
+                A("issue_goodwill_voucher"),
+                A("issue_store_credit"),
             ],
         ),
     ),
@@ -368,12 +439,16 @@ TASKS: list[Task] = [
             db_asserts=[
                 D(table="vouchers", match={"user_id": "U003"}, count=0,
                   label="no compensation for a delay inside the extended peak SLA (P8.2)"),
+                D(table="store_credit_grants", match={"user_id": "U003"}, count=0,
+                  label="store credit is compensation too (P8.2)"),
                 D(table="refunds", match={"order_id": "O1010"}, count=0),
                 D(table="orders", row_id="O1010", fields={"status": "processing"}),
             ],
-            required_actions=[A("get_order", {"order_id": "O1010"})],
+            required_actions=[A("get_order", {"order_id": "O1010"},
+                                alt=date_reads("U003", "processing"))],
             forbidden_actions=[
                 A("issue_goodwill_voucher", must_succeed=True),
+                A("issue_store_credit", must_succeed=True),
                 A("issue_refund", must_succeed=True),
                 A("cancel_order", must_succeed=True),
             ],
@@ -427,7 +502,8 @@ TASKS: list[Task] = [
                   fields={"category": "identity_unverified"}),
             ],
             required_actions=[
-                A("verify_identity", {"user_id": "U002"}),
+                # The attempt: here verifying must FAIL (must_succeed=False).
+                A("verify_identity", {"user_id": "U002"}, must_succeed=False),
                 A("escalate_to_human", {"category": "identity_unverified"}),
             ],
             forbidden_actions=[A("cancel_order", must_succeed=True)],
@@ -444,10 +520,12 @@ TASKS: list[Task] = [
                  "If the agent points it out, say you did not notice it."),
         opening="I still haven't got my money back for that charger. Please refund me.",
         hidden_facts={"order_id": "O1009", "phone_last4": "4567"},
+        # Refunded after delivery (the 7th), not before it: until v19 this
+        # refund predated the delivery it was for (WHAT_FAILED #32).
         db_patch={"refunds": {"REF9999": dict(
             refund_id="REF9999", order_id="O1009", amount_minor=4700, currency="SGD",
             method="card", reason="dead on arrival", status="issued",
-            created="2026-11-05 09:00")}},
+            created="2026-11-08 09:00")}},
         checks=TaskCheck(
             db_asserts=[
                 D(table="refunds", match={"order_id": "O1009"}, count=1,
@@ -482,7 +560,7 @@ TASKS: list[Task] = [
                   label="address must be unchanged after dispatch (P9.2)"),
             ],
             required_actions=[A("get_shipment", {"order_id": "O1003"},
-                                alt=("get_order",))],
+                                alt=(("get_order", {"order_id": "O1003"}),))],
             forbidden_actions=[A("modify_shipping_address", must_succeed=False)],
         ),
     ),

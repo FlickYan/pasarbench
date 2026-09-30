@@ -268,13 +268,23 @@ def episode_examples(ep: dict[str, Any], tokenizer, kwargs: dict[str, Any],
 
 def build(run_dir: str | Path, tasks: dict[str, Any], folds: dict[str, Any],
           tokenizer, max_per_task: int = 3, max_len: int = 16384,
-          expect_model: str | None = None, server=None
+          expect_model: str | None = None, server=None, checker: str = "current"
           ) -> tuple[dict[str, list[dict]], dict[str, Any]]:
     """Examples per fold from a collection run, and the stats to read first.
 
     Fold X's file holds examples from fold X's tasks only; the model trained on
-    it is evaluated on the other fold."""
+    it is evaluated on the other fold.
+
+    `checker` decides which episodes passed. A trace's footer holds the verdict
+    of the checker the day it ran; once a check is corrected that verdict is
+    stale, and training on it teaches the stale check. It did: v18's peak and
+    photo checks demanded one lookup tool each, the fine-tune learned to call
+    them, and most of what it gained was that (WHAT_FAILED #30). "current"
+    re-scores every episode under today's checks (pasarbench/rescore.py);
+    "recorded" reproduces a build from before v19."""
     from ..tasks import task_digest
+    if checker not in ("current", "recorded"):
+        raise ValueError(f"checker is 'current' or 'recorded', not {checker!r}")
 
     eps = [read_trace(p) for p in sorted(Path(run_dir).glob("*.jsonl"))]
     if not eps:
@@ -308,6 +318,11 @@ def build(run_dir: str | Path, tasks: dict[str, Any], folds: dict[str, Any],
             raise SystemExit(f"{e['path']}: task {tid} has changed since this was "
                              f"collected; re-collect")
         by_task[tid].append(e)
+        e["passed_recorded"] = bool(e["footer"].get("passed"))
+        e["passed"] = e["passed_recorded"]
+        if checker == "current" and e["footer"]:
+            from ..rescore import rescore_file
+            e["passed"] = rescore_file(e["path"], tasks).verdict
 
     tf = folds["task_fold"]
     files: dict[str, list[dict]] = {f: [] for f in folds["folds"]}
@@ -317,8 +332,8 @@ def build(run_dir: str | Path, tasks: dict[str, Any], folds: dict[str, Any],
     for tid, group in sorted(by_task.items()):
         fold = tf[tid]
         for e in group:
-            trap_runs[fold][tasks[tid].trap].append(bool(e["footer"].get("passed")))
-        passed = sorted((e for e in group if e["footer"].get("passed")),
+            trap_runs[fold][tasks[tid].trap].append(e["passed"])
+        passed = sorted((e for e in group if e["passed"]),
                         key=lambda e: (len(e["steps"]), e["path"]))
         seen, n = set(), 0
         for e in passed:
@@ -361,7 +376,12 @@ def build(run_dir: str | Path, tasks: dict[str, Any], folds: dict[str, Any],
             if server is not None else None),
         "split": folds.get("split_digest"),
         "episodes": len(eps),
-        "pass_rate": round(sum(bool(e["footer"].get("passed")) for e in eps) / len(eps), 4),
+        # Which verdicts picked the examples, and how far they are from the
+        # recorded ones: a large gap means the checker changed since collection.
+        "checker": checker,
+        "pass_rate": round(sum(e["passed"] for e in eps) / len(eps), 4),
+        "pass_rate_recorded": round(sum(e["passed_recorded"] for e in eps) / len(eps), 4),
+        "verdicts_changed": sum(e["passed"] != e["passed_recorded"] for e in eps),
         "episodes_used": dict(used_eps),
         "examples": {f: len(v) for f, v in files.items()},
         "tokens": {f: sum(x["tokens"] for x in v) for f, v in files.items()},

@@ -11,6 +11,8 @@ Read tools do not appear in the verifier's action checks. Write tools do.
 
 from __future__ import annotations
 
+import functools
+import inspect
 import re
 from pathlib import Path
 from typing import Any, Callable
@@ -104,8 +106,12 @@ def verify_identity(db: Database, user_id: str, phone_last4: str) -> dict:
     if str(phone_last4).strip() == u["verified_phone_last4"]:
         db.verified.add(user_id)
         return _ok(db, "verify_identity", args, verified=True)
-    return _ok(db, "verify_identity", args, verified=False,
-               note="digits do not match; do not proceed with write actions")
+    out = _ok(db, "verify_identity", args, verified=False,
+              note="digits do not match; do not proceed with write actions")
+    # ok: the call worked. denied: the answer was no. A check that requires
+    # verification needs both (verifier.ActionSpec.must_succeed).
+    db.action_log[-1].denied = True
+    return out
 
 
 @tool("get_order", "Get one order by id, including status, payment method and totals.",
@@ -527,6 +533,13 @@ def locals_of(**kw):
     return kw
 
 
+@functools.lru_cache(maxsize=None)
+def _parameters(fn: Callable) -> tuple[frozenset[str], bool]:
+    """A tool function's parameter names, and whether it takes **kwargs."""
+    ps = inspect.signature(fn).parameters.values()
+    return frozenset(p.name for p in ps), any(p.kind is p.VAR_KEYWORD for p in ps)
+
+
 def call(db: Database, name: str, args: dict[str, Any]) -> dict:
     """Dispatch with schema-ish validation. Returns a structured error, never raises."""
     if name not in TOOLS:
@@ -536,6 +549,17 @@ def call(db: Database, name: str, args: dict[str, Any]) -> dict:
     missing = [r for r in required if r not in args]
     if missing:
         return {"ok": False, "error": f"missing required argument(s): {missing}"}
+    # An argument the tool does not take is reported here, not by Python's
+    # TypeError. The two said the same until 3.13, which appends "Did you mean
+    # 'user_id'?": an agent run on 3.13 was told more than one run on 3.12, and
+    # a replay on 3.13 could not reproduce what a 3.12 run recorded. This is
+    # the wording every recorded run shows, on every interpreter.
+    fn = spec["fn"]
+    names, open_ended = _parameters(fn)
+    extra = None if open_ended else next((k for k in args if k not in names), None)
+    if extra is not None:
+        return {"ok": False, "error": f"bad arguments: {fn.__qualname__}() got an "
+                                      f"unexpected keyword argument '{extra}'"}
     try:
         return spec["fn"](db, **args)
     except TypeError as e:

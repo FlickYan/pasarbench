@@ -1,0 +1,54 @@
+
+=== 2026-09-28 21:52:30 $ bash scripts/download_weights.sh
+into /vol/hf:
+  agent     Qwen/Qwen3.8-27B (~56 GB)
+[90mHint: A new version of huggingface_hub (2.0.0) is available! You are using version 1.33.0.[0m
+[90mHint: The `hf-cli` skill is not installed. Run `hf skills add -g` to teach your AI agents how to use the `hf` CLI.[0m
+
+Fetching 32 files:   0%|          | 0/32 [00:00<?, ?it/s]
+Fetching 32 files:   3%|▎         | 1/32 [00:00<00:11,  2.81it/s]
+Fetching 32 files:  25%|██▌       | 8/32 [00:00<00:01, 19.23it/s]
+Fetching 32 files:  25%|██▌       | 8/32 [00:19<00:01, 19.23it/s]
+Fetching 32 files:  28%|██▊       | 9/32 [00:39<02:20,  6.09s/it]
+Fetching 32 files:  31%|███▏      | 10/32 [00:48<02:26,  6.68s/it]
+Fetching 32 files:  31%|███▏      | 10/32 [01:00<02:26,  6.68s/it]
+Fetching 32 files:  34%|███▍      | 11/32 [01:00<02:43,  7.80s/it]
+Fetching 32 files:  38%|███▊      | 12/32 [01:02<02:09,  6.49s/it]
+Fetching 32 files:  41%|████      | 13/32 [01:11<02:15,  7.15s/it]
+Fetching 32 files:  44%|████▍     | 14/32 [01:12<01:36,  5.38s/it]
+Fetching 32 files:  47%|████▋     | 15/32 [01:12<01:10,  4.15s/it]
+Fetching 32 files:  50%|█████     | 16/32 [01:14<00:55,  3.48s/it]
+Fetching 32 files:  53%|█████▎    | 17/32 [01:25<01:23,  5.58s/it]
+Fetching 32 files:  56%|█████▋    | 18/32 [01:29<01:12,  5.19s/it]
+Fetching 32 files:  59%|█████▉    | 19/32 [01:48<01:58,  9.14s/it]
+Fetching 32 files:  62%|██████▎   | 20/32 [01:49<01:19,  6.64s/it]
+Fetching 32 files:  66%|██████▌   | 21/32 [01:49<00:52,  4.79s/it]
+Fetching 32 files:  69%|██████▉   | 22/32 [02:02<01:10,  7.07s/it]
+Fetching 32 files:  75%|███████▌  | 24/32 [02:02<00:31,  3.94s/it]
+Fetching 32 files:  78%|███████▊  | 25/32 [02:02<00:21,  3.09s/it]
+Fetching 32 files:  81%|████████▏ | 26/32 [02:03<00:13,  2.31s/it]
+Fetching 32 files:  84%|████████▍ | 27/32 [02:03<00:09,  1.82s/it]
+Fetching 32 files:  88%|████████▊ | 28/32 [02:04<00:06,  1.57s/it]
+Fetching 32 files:  91%|█████████ | 29/32 [02:07<00:06,  2.04s/it]
+Fetching 32 files:  94%|█████████▍| 30/32 [02:11<00:05,  2.54s/it]
+Fetching 32 files:  97%|█████████▋| 31/32 [02:11<00:01,  1.84s/it]
+Fetching 32 files: 100%|██████████| 32/32 [02:12<00:00,  1.42s/it]
+Fetching 32 files: 100%|██████████| 32/32 [02:12<00:00,  4.13s/it]
+  customer  RedHatAI/gemma-4-31B-it-FP8-Dynamic (~33 GB)
+
+Fetching 18 files:   0%|          | 0/18 [00:00<?, ?it/s]
+Fetching 18 files:   6%|▌         | 1/18 [00:00<00:07,  2.19it/s]
+Fetching 18 files:  50%|█████     | 9/18 [00:00<00:00, 11.17it/s]
+Fetching 18 files:  78%|███████▊  | 14/18 [00:01<00:00, 13.59it/s]
+Fetching 18 files:  89%|████████▉ | 16/18 [00:07<00:01,  1.51it/s]
+Fetching 18 files:  94%|█████████▍| 17/18 [00:45<00:05,  5.53s/it]
+Fetching 18 files: 100%|██████████| 18/18 [01:38<00:00, 12.83s/it]
+Fetching 18 files: 100%|██████████| 18/18 [01:38<00:00,  5.48s/it]
+  tokenizer google/gemma-4-31B-it (no weights)
+
+Fetching 10 files:   0%|          | 0/10 [00:00<?, ?it/s]
+Fetching 10 files:  10%|█         | 1/10 [00:00<00:03,  2.72it/s]
+Fetching 10 files: 100%|██████████| 10/10 [00:00<00:00, 15.88it/s]
+Fetching 10 files: 100%|██████████| 10/10 [00:00<00:00, 13.85it/s]
+83G	/vol/hf
+weights ready

@@ -1,0 +1,3 @@
+
+16 episodes in 1.9 min; 13 passed; 98 s and 43,440 tokens per episode
+projected sweeps: stage 1 ~3.2 h (baseline 215x5 + collection 215x8), stage 2 evaluation ~1.2 h, plus two LoRA runs (logs/train-probe.txt has the time per turn). At ~$6.88/h for this machine, the sweeps alone are ~$30.

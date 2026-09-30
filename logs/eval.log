@@ -1,0 +1,83 @@
+$ /opt/pasar/bin/python -m pasarbench.sweep --backend openai --model Qwen/Qwen3.8-27B --base-url http://localhost:8000/v1 --simulator openai --sim-model RedHatAI/gemma-4-31B-it-FP8-Dynamic --sim-url http://localhost:8001/v1 --suite all -k 5 --temperature 0.0 --strategies full --workers 24 --run-id P-rft --resume --max-tokens 2048 --extra-body '{"chat_template_kwargs": {"enable_thinking": false}}' --sim-extra-body '{}' --folds data/splits/folds.json --fold-models A=Qwen/Qwen3.8-27B:pasar-rft-A,B=Qwen/Qwen3.8-27B:pasar-rft-B
+model families: agent qwen, simulator gemma
+the server answers every fold model with its own weights: Qwen/Qwen3.8-27B:pasar-rft-A, Qwen/Qwen3.8-27B:pasar-rft-B
+215 tasks | 16 traps | 8 languages | 1075 episodes
+running full over 215 tasks x k=5 ...
+    25/1075 episodes
+    50/1075 episodes
+    75/1075 episodes
+    100/1075 episodes
+    125/1075 episodes
+    150/1075 episodes
+    175/1075 episodes
+    200/1075 episodes
+    225/1075 episodes
+    250/1075 episodes
+    275/1075 episodes
+    300/1075 episodes
+    325/1075 episodes
+    350/1075 episodes
+    375/1075 episodes
+    400/1075 episodes
+    425/1075 episodes
+    450/1075 episodes
+    475/1075 episodes
+    500/1075 episodes
+    525/1075 episodes
+    550/1075 episodes
+    575/1075 episodes
+    600/1075 episodes
+    625/1075 episodes
+    650/1075 episodes
+    675/1075 episodes
+    700/1075 episodes
+    725/1075 episodes
+    750/1075 episodes
+    775/1075 episodes
+    800/1075 episodes
+    825/1075 episodes
+    850/1075 episodes
+    875/1075 episodes
+    900/1075 episodes
+    925/1075 episodes
+    950/1075 episodes
+    975/1075 episodes
+    1000/1075 episodes
+    1025/1075 episodes
+    1050/1075 episodes
+    1075/1075 episodes
+
+| cell | pass^1 | pass^k | mean tokens | mean steps | stops |
+|---|---|---|---|---|---|
+| `full` | 0.882 | 0.837 | 40,833.0 | 7.31 | done:1071, max_tokens:1, max_wall_seconds:3 |
+
+pass rate by language -- UNPAIRED, so NOT yet a controlled
+comparison. With --sample these rates cover different traps per
+language. Run the full suite and use diagnose.paired_language_gap
+for the comparison the twin design actually licenses:
+  full             en=0.857  id=0.938 (+0.081)  ms=0.950 (+0.093)  sg-en=0.846 (-0.011)  th=0.875 (+0.018)  vi=0.887 (+0.030)  zh-MY=0.975 (+0.118)  zh-SG=0.862 (+0.005)
+
+per-trap pass rate (read this before the aggregate):
+
+  full:
+    1.00  address_change_after_dispatch
+    1.00  cancel_while_processing
+    1.00  cannot_cancel_shipped_order
+    1.00  cod_cancel_no_refund_due
+    0.94  cod_cannot_refund_to_original_method
+    0.89  customs_hold_escalate
+    1.00  duplicate_refund_escalate
+    1.00  happy_path_return_refund
+    1.00  hazmat_refund_without_return
+    0.10  high_value_photo_required_first  <-- weak
+    0.99  identity_verification_failure
+    1.00  livestream_claim_overrides_window
+    0.91  out_of_window_dispute_escalate
+    0.94  out_of_window_offer_voucher
+    0.37  peak_period_delay_not_compensable  <-- weak
+    1.00  perishable_refund_without_return
+
+traces + summary + report: traces/P-rft
+
+Next: pasarbench.analyze.what_compaction_lost(<full trace_dir>, <strategy trace_dir>)
+  -- that is the finding, not the table above.

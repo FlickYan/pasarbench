@@ -10,7 +10,7 @@ Ordered by what you can do **right now**, not by chapter number.
 | **1. Context + tool + multilingual sweeps** | an API key | ~$15–40 | **no** |
 | **2. Judge calibration** | your own eyes, ~6 hours | free | **no** |
 | **3. Serving measurements** | the Phase 4 node | an hour or two, optional | yes |
-| **4. Post-training** | 2× H100, rented | ~8–12 hours of node time | yes |
+| **4. Post-training** | 1× B200 (or H200, or 2× H100), rented | ~10–20 hours of GPU time | yes |
 
 Phases 1 and 2 produce **three of the five results** in `RESULTS.md`, including
 the multilingual diagnosis — the one to lead the writeup with. Phase 2 needs no
@@ -326,14 +326,41 @@ INCONCLUSIVE is a frequent and honest answer.
 
 ---
 
-# Phase 4 — post-training on two rented H100s
+# Phase 4 — post-training on one rented B200
 
-**The question:** does rejection-sampling fine-tuning make Qwen3-8B better on
-tasks it did not train on — measured against itself, with deepseek-v4-pro as
-the reference, and all three against the **same** simulated customer?
+**The question:** does rejection-sampling fine-tuning make Qwen3.8-27B better
+on tasks it did not train on — measured against itself, with deepseek-v4-pro
+as the reference, and all three against the **same** simulated customer?
 
-**Three things differ from the published runs, on purpose.**
+**Every step, from creating the account to the report, is in
+[GPU_GUIDE.md](GPU_GUIDE.md)**: in a Modal Notebook (cells in the browser), as
+Modal jobs from the laptop (detached, billed per second of a running stage),
+or on Lambda (a rented machine over SSH). All run the same three stages of
+`scripts/gpu_pipeline.sh` — `smoke`, `stage1`, `stage2` — with a human step
+between the last two.
 
+**One card, both models.** The agent's 52 GiB of bf16 weights and the
+customer's 31 GiB of FP8 ones do not fit one 80 GB H100 but do fit one B200
+(180 GB) with ~80 GiB left for the two KV caches, or an H200 (141 GB) with ~40.
+SGLang sizes its cache as a fraction of the memory free *when a server
+starts*, so on one card the agent starts first and the customer's fraction is
+worked out from what the agent left (`scripts/gpu_plan.py`); each stage logs
+the plan and the memory in use to `logs/gpu.txt`. One B200 does the work of two
+H100s — rollouts are bandwidth bound (8 TB/s against 3.35) and training compute
+bound (~2.3x) — for $6.25/h instead of $7.90. Not B300: Modal requires CUDA
+13.1 for it, and SGLang 0.5.20's torch is built on 13.0.
+
+**Four things differ from the published runs, on purpose.**
+
+- **The agent is Qwen3.8-27B, trained with LoRA in bf16.** Dense, 27B, and a
+  hybrid: 48 of its 64 layers are linear attention (Gated DeltaNet), so its KV
+  cache is small and bf16 serving fits one 80 GB card. Training keeps the base
+  in bf16 (no QLoRA: the model trained is the model evaluated), one copy per
+  card with 32 turns per optimizer step on any number of cards, and asks the
+  model for logits at the trained turn only — the vocabulary
+  is 248k tokens, and full logits for a 16k-token prompt would take more memory
+  than the card has left. It writes tool calls as XML; SGLang's `qwen3_coder`
+  parser reads them back.
 - **The customer is Gemma 4 31B, not Qwen.** A customer from the agent's own
   family is easier for it to satisfy, and the published customer was Qwen. The
   sweep refuses a same-family pair. The reference is re-run against the new
@@ -341,9 +368,7 @@ the reference, and all three against the **same** simulated customer?
   served in FP8 — RedHat's FP8-Dynamic checkpoint of Google's weights, with
   Google's tokenizer and chat template — because in bf16 its 62 GB of weights
   leave an 80 GB card KV cache for only two or three of the 24 concurrent
-  conversations. The traces name the checkpoint. On a bigger card,
-  `SIM_MODEL=google/gemma-4-31B-it bash scripts/gpu_pipeline.sh …` moves the
-  server, the sweeps and the reference row to bf16 together.
+  conversations. The traces name the checkpoint.
 - **The split is by family, in two folds.** Locale twins stay together; every
   trap is in both folds. The model trained on fold A is scored on fold B and
   vice versa, so all 215 tasks are held out once — paired by task against the
@@ -352,54 +377,17 @@ the reference, and all three against the **same** simulated customer?
   prompt's token ids come from the serving SGLang's `/tokenize`, because the
   server renders the tool list from its own dump of it and a local render of
   the same template differs; the turn is tokenized locally. See
-  `pasarbench/rl/sft.py` for why a whole-conversation render is wrong for Qwen3.
+  `pasarbench/rl/sft.py` for why a whole-conversation render is wrong for
+  Qwen3 (Qwen3.8 keeps every turn's think block, so for it the two agree).
 
-### Before renting
-
-1. Pick a provider with **2× H100 80 GB**, a machine image with **NVIDIA driver
-   580 or newer** (CUDA 13: SGLang 0.5.20 and the torch it pins need it;
-   `setup_node.sh` checks before installing anything), and a **persistent
-   volume**. Put the repo and `HF_HOME` on the volume: every stage resumes from
-   what is on disk, an evicted instance takes its own disk with it, and the
-   weights are ~50 GB.
-2. Optional: `export DEEPSEEK_API_KEY=...` on the node for the reference row
-   (1,075 API episodes, run alongside stage 2's evaluation).
-
-No licence step: Qwen3-8B, Gemma 4 and RedHat's FP8 checkpoint of it are all
-Apache 2.0. `HF_TOKEN` is optional; set it if a download asks for one or is
-rate-limited.
-
-### On the node, in tmux
-
-```bash
-bash scripts/setup_node.sh             # once: driver check, venv, SGLang, peft, weights, all tests
-bash scripts/gpu_pipeline.sh smoke     # ~15 min: 16 episodes, projects the rest
-bash scripts/gpu_pipeline.sh stage1    # split, baseline 215x5, collection 215x8, examples, checks
-```
-
-**Read three files before stage 2.** If your provider keeps the volume, stop
-the instance while you read.
-
-| file | what to look for |
-|---|---|
-| `logs/sim_audit.txt` | section 0 first: **any** chat-format token (`<\|channel>`, `<turn\|>`, `<tool_call>`…) in either side's text means a server parser is missing or wrong — fix it before reading anything else (the smoke stage prints the same section). Then the leak rate and **unanswered-request rate** by language. A language far above English is the detector or the customer, not the agent: read the flagged lines. If the agent asked in words `simqa.ASK_PATTERNS` lacks, extend the list (#26). Do not train against a customer you have not checked. |
-| `logs/check-A.txt`, `logs/check-B.txt` | the printed example — loss on the agent's turn only — and whether the prompts carry the server's own token ids (`build --server`, the default in the pipeline). Expect a line saying most of them are not what the local template renders: SGLang dumps the tool list its own way (`"strict": false`, its own key order), which is why the build takes prompts from the server. The server check then re-renders a sample: `N of N … token-identical to the ids stored`. If `logs/build.log` says it rendered **locally** instead, **stop**: those prompts are not the ones the model sees. |
-| `data/rft/stats.json` | collection pass rate, and per fold the traps never solved. A trap at zero in a fold gives that fold's model nothing to learn. If the base model already passes ~0.95, there is little headroom — say so rather than training anyway. |
-
-```bash
-bash scripts/gpu_pipeline.sh stage2    # one LoRA per fold on both GPUs, then held-out eval (+ reference)
-```
-
-Any stage can be re-run after a crash: sweeps keep finished episodes, training
-resumes from its last checkpoint, and finished adapters are skipped.
+No licence step: Qwen3.8-27B, Gemma 4 and RedHat's FP8 checkpoint of it are all
+Apache 2.0.
 
 ### Back on your laptop
 
+With the results pulled (GPU_GUIDE.md, step N10, A7 or B11):
+
 ```bash
-rsync -av node:~/pasarbench/traces/P-base node:~/pasarbench/traces/P-rft \
-          node:~/pasarbench/traces/P-ref node:~/pasarbench/traces/P-collect traces/
-rsync -av node:~/pasarbench/data/splits data/
-rsync -av node:~/pasarbench/data/rft/stats.json data/rft/
 python scripts/make_report.py --out RESULTS.md --tools-run I-tools2 \
   --multilingual-run C-clean,D-nozh,G-gated --noise-pair H-context/full,I-tools2/full+all-20
 ```
@@ -411,20 +399,39 @@ answered by the model that did **not** train on its fold. **The only number
 that counts is held-out pass^k.** Training loss is not a result, and an
 INCONCLUSIVE row is reported as one.
 
+Every number is on today's checks: each recorded episode is replayed and
+re-scored (`pasarbench/rescore.py`), so a check corrected after a run moves
+the report without re-running anything, and section 7 says what moved. Before
+reading a per-trap gain, read the failures it removed: a trap whose failures
+all share one `missing required action` line is a check to read before it is a
+result (WHAT_FAILED #30). After correcting a check, read a sample of the
+episodes it promoted: a replay proves the state, not that the state means what
+the check assumes. `train_rft.py build` picks its training episodes by today's
+checks as well (`--checker recorded` reproduces a pre-v19 build).
+
+```bash
+python scripts/rescore.py traces/P-base traces/P-rft traces/P-ref --changed
+python scripts/make_report.py --checker recorded --out RESULTS-recorded.md   # as the runs scored it
+```
+
 ### Budget
 
-The smoke stage prints a projection from your node's actual throughput; trust
-it over this. As an order of magnitude: stage 1 is ~2,800 episodes of sweeps,
-stage 2 is two LoRA runs of a few thousand examples each plus ~1,100 more
-episodes — roughly **8–12 hours of the 2-GPU node end to end**, more if the 31B
-customer is the bottleneck (the smoke projection shows it). Multiply by your
-provider's hourly rate for both cards.
+The smoke stage prints a projection from your node's actual throughput, in
+hours and dollars (`logs/smoke-projection.txt`); trust it over this. As an
+order of magnitude: stage 1 is ~2,800 episodes of sweeps, stage 2 is two LoRA
+runs on a 27B model plus ~1,100 more episodes — roughly **10–20 hours of one
+B200 end to end**, $70–150 as Modal jobs (~$7/h), $90–190 in a Modal Notebook
+(~$9/h: its CPU and memory cost more). The smoke stage's training check
+(`logs/train-probe.txt`) gives the seconds per turn. `PASAR_K`, `PASAR_COLLECT_K` and
+`PASAR_EPOCHS` trade statistical power for money (GPU_GUIDE.md shows how);
+set them before stage 1.
 
 ### GRPO
 
 Only after RFT has a held-out result, starting from the RFT adapter, trained
-on one fold and scored on the other. On two cards rollout and update cannot
-overlap; `scripts/train_grpo.py` says what that means and what is not built.
+on one fold and scored on the other. With the servers and the trainer on the
+same cards, rollout and update cannot overlap; `scripts/train_grpo.py` says
+what that means and what is not built.
 
 ---
 
@@ -465,9 +472,9 @@ Phase 1  sweeps against an API model                   this week, ~$30
 Phase 2  label 200 transcripts                         next week, 6 hours
          (regenerate RESULTS.md -- 3 of 5 sections now filled)
          (write the blog post from docs/WRITEUP.md)
-Phase 4  on a rented 2x H100 node:                    ~8-12 hours
-         setup_node.sh, gpu_pipeline.sh smoke / stage1,
-         read the audit and the checks, then stage2
+Phase 4  on 1x B200 (Modal or Lambda, GPU_GUIDE.md):   ~10-20 hours
+         weights, smoke, stage1, read the audit and the
+         checks, then stage2
 Phase 3  serving comparison on the same node           optional
          GRPO only once RFT has a held-out result
 ```
@@ -479,4 +486,6 @@ python scripts/make_report.py
 ```
 
 It prints how many results remain unmeasured and the exact command for each.
-Never hand-fill it.
+Never hand-fill it. After changing a check, regenerate too: the report
+re-scores every recorded episode against today's checks
+(`python scripts/rescore.py` shows what moved).

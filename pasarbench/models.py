@@ -18,8 +18,11 @@ SeaLLMs and Sailor are built on Qwen, SEA-LION variants on Llama or Gemma
 
 from __future__ import annotations
 
-# The simulated customer the GPU pipeline serves (scripts/serve_sglang.sh):
-# Gemma 4 31B-it, FP8, from another family than the Qwen agent under training.
+# The two models the GPU pipeline serves (scripts/serve_sglang.sh). The agent
+# is the model under training; the simulated customer is from another family.
+# AGENT_MODEL and SIM_MODEL override them in the scripts, the sweeps and the
+# serve script together.
+AGENT_DEFAULT = "Qwen/Qwen3.8-27B"
 SIM_DEFAULT = "RedHatAI/gemma-4-31B-it-FP8-Dynamic"
 
 # Order matters: the first match wins, so derived names come before bases.
@@ -52,7 +55,7 @@ def check_agent_simulator(agent: str, simulator: str, allow_same: bool = False) 
 
     Returns a one-line note for the log. Unknown families pass with a warning
     rather than a refusal. An adapter requested SGLang's way,
-    `Qwen/Qwen3-8B:pasar-rft-A`, carries its base model's name and is checked
+    `Qwen/Qwen3.8-27B:pasar-rft-A`, carries its base model's name and is checked
     by it; a bare `pasar-rft-A` does not, and is checked where the base is
     known."""
     fa, fs = model_family(agent), model_family(simulator)

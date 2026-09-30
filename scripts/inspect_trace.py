@@ -170,12 +170,13 @@ def empties(eps: list[dict]) -> None:
 
 
 # Chat-format tokens that reached the text: `<|turn>`, `<channel|>`, `<|im_end|>`,
-# a `<think>` block, or a `<tool_call>` the server did not parse. SGLang keeps
+# a `<think>` block, or a tool call the server did not parse (`<tool_call>`, or
+# Qwen3.8's `<function=...>` / `<parameter=...>` inside one). SGLang keeps
 # Gemma 4's special tokens in the decoded text for its parsers, so a customer
 # served without the right one hands the agent "<|channel>thought...", and every
 # audit below reads it as speech. An unparsed tool call on the agent's side is
 # worse: the harness sends it to the customer as a message.
-MARKUP = re.compile(r"<\|[a-z_\"]+\|?>|<[a-z_]+\|>|</?think>|</?tool_call>")
+MARKUP = re.compile(r"<\|[a-z_\"]+\|?>|<[a-z_]+\|>|</?think>|</?tool_call>|<function=|<parameter=")
 
 
 def markup(eps: list[dict]) -> int:

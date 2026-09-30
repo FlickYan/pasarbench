@@ -21,12 +21,16 @@ agreement for reasons that have nothing to do with the rubric. qwen3.8-flash is
 a different family and costs almost nothing at this volume.
 
 TOOL RESULTS, AND HOW THE JUDGE GETS THEM.
-Traces record each tool call's NAME, ARGUMENTS, ok/error and the LENGTH of the
-payload -- not the payload. Without it a judge cannot check any fact the agent
-read from a lookup, and a strict one flags them as invented. The environment
-is deterministic, so harness/replay.py regenerates every result by replaying
-the calls against the task's fresh database, and verifies each one against the
-recorded length. `--traces ... --payloads` gives the judge those results.
+Traces record each tool call's NAME, ARGUMENTS, ok/error, the LENGTH of the
+payload and, from v19, a DIGEST of it -- not the payload. Without it a judge
+cannot check any fact the agent read from a lookup, and a strict one flags them
+as invented. The environment is deterministic, so harness/replay.py regenerates
+every result by replaying the calls against the world the episode ran in, and
+verifies each one against the recorded digest, or length in older traces.
+`--traces ... --payloads` gives the judge those results. A length cannot tell a
+tracking number from another of the same length, and v18's came from a salted
+hash: in a trace without digests, a generated shipment's payload is withheld
+rather than shown with a number the agent never saw (WHAT_FAILED #33).
 The calibration run against human labels deliberately does NOT: the humans
 labelled from the same payload-free view, and the two must see the same thing.
 """
@@ -123,10 +127,15 @@ def judge_vs_verifier(cell: Path, mk, mode: str = "batched", workers: int = 8,
     if limit:
         files = files[:limit]
 
+    from pasarbench.rescore import rescore_records
+
     def one(f: Path) -> dict:
         recs = [json.loads(l) for l in f.read_text().splitlines() if l.strip()]
         head = next((r for r in recs if r.get("type") == "header"), {})
         foot = next((r for r in reversed(recs) if r.get("type") == "footer"), {})
+        # Ground truth is today's checks, as everywhere else (WHAT_FAILED #30);
+        # the verdict the run recorded is kept beside it for --checker recorded.
+        truth = rescore_records(recs, f.stem).verdict if foot else False
         steps = [r for r in recs if r.get("type") == "step"]
         task = by_id.get(head.get("task_id"))
         rp = replay_payloads(recs, task) if payloads and task else None
@@ -143,7 +152,8 @@ def judge_vs_verifier(cell: Path, mk, mode: str = "batched", workers: int = 8,
         return {
             "transcript_id": f.stem, "task_id": head.get("task_id"),
             "trap": head.get("trap"), "language": head.get("language"),
-            "verifier_passed": bool(foot.get("passed")),
+            "verifier_passed": truth,
+            "verifier_passed_recorded": bool(foot.get("passed")),
             "naive_score": s,
             "naive_reason": nj.get("reason", ""),
             # a naive response with no valid 1-5 score is not a verdict
@@ -198,9 +208,13 @@ def judge_vs_verifier(cell: Path, mk, mode: str = "batched", workers: int = 8,
         print(f"\ntool results replayed and verified for {v}/{t} calls"
               + ("" if v == t else f" -- {t - v} did not reproduce and fell back "
                  f"to arguments-only"))
+    rec = sum(r["verifier_passed_recorded"] for r in rows)
+    moved = sum(r["verifier_passed"] != r["verifier_passed_recorded"] for r in rows)
     print(f"\n{len(rows)} episodes: verifier passed {len(passed)}, failed "
-          f"{len(failed)}, of which {len(claimed)} claim an action that never "
-          f"happened.  errors {errs}\n")
+          f"{len(failed)} (today's checks"
+          + (f"; as the runs recorded them, {rec} and {len(rows) - rec}" if moved else "")
+          + f"), of which {len(claimed)} claim an action that never happened.  "
+          f"errors {errs}\n")
     print(f"{'judge accepted …':28s} {'verifier passed':>16s} {'verifier FAILED':>16s} "
           f"{'claimed, not done':>18s}")
     for name, key in (("naive (one 1-5 score)", "naive_ok"),

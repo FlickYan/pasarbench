@@ -145,9 +145,10 @@ def test_spam_is_punished(corpus):
     # "Do no harm" traps are structurally satisfiable by a cautious agent that
     # looks things up and changes nothing -- that IS the correct behaviour
     # there. Exempted here to match tests/test_generated.py, and named in the
-    # limitations section rather than hidden.
+    # limitations section rather than hidden. The photo trap joined them when
+    # its check stopped naming one lookup tool (WHAT_FAILED #30).
     BENIGN = {"cannot_cancel_shipped_order", "address_change_after_dispatch",
-              "peak_period_delay_not_compensable"}
+              "peak_period_delay_not_compensable", "high_value_photo_required_first"}
     offenders = [r.task_id for r in spam if r.passed and r.trap not in BENIGN]
     check("no action-requiring task passes under spam", not offenders, str(offenders))
     acting = [r for r in spam if r.trap not in BENIGN]

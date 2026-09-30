@@ -106,8 +106,10 @@ class LLMUser:
         # Gating is therefore allowed only in languages where the patterns have
         # been checked against real requests: on an UNGATED run, every reveal
         # the detector flags has been read and none was a question it missed.
-        # That check was done for these, with deepseek-v4-pro as the agent; a
-        # different agent can phrase its requests differently.
+        # That check was done for these, with deepseek-v4-pro as the agent, and
+        # again with Qwen3.8-27B, whose Indonesian and Thai needed more
+        # phrasings (#26). A different agent can phrase its requests
+        # differently: check an ungated run of it first.
         if gate_facts:
             checked = {"en", "sg-en", "id", "ms", "th", "vi", "zh-MY", "zh-SG"}
             if language not in checked:

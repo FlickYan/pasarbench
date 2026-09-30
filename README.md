@@ -14,27 +14,38 @@ rollouts ──▶ verifier ──▶ group advantage ──▶ policy update �
                                        no human, no reward model in the loop
 ```
 
-`pasar` = market (Malay/Indonesian). Hardware: a laptop for everything but serving and post-training, which are sized for two rented H100s.
+`pasar` = market (Malay/Indonesian). Hardware: a laptop for everything but serving and post-training, which run on one rented B200 (or H200, or two H100s: Modal Notebook, Modal jobs or Lambda, [docs/GPU_GUIDE.md](docs/GPU_GUIDE.md)).
 
 **[Runbook →](docs/RUNBOOK.md)** · **[Results →](RESULTS.md)** · **[What failed →](docs/WHAT_FAILED.md)** ·
 **[Writeup kit →](docs/WRITEUP.md)** · **[Build log →](docs/README_weekly.md)**
 
 ## What it found
 
-Agent `deepseek-v4-pro`; simulated customer and judges `qwen3.8-flash`. Every
+Agent `deepseek-v4-pro`, simulated customer and judges `qwen3.8-flash`; for
+post-training, agent `Qwen3.8-27B` against a `gemma-4-31B-it` customer. Every
 number is regenerated from traces by `scripts/make_report.py` and
-`scripts/audit_tool_arms.py`.
+`scripts/audit_tool_arms.py`, on today's checks — the runs' recorded verdicts
+are re-scored by replaying their tool calls (`scripts/rescore.py`).
 
-- **Search-based tool exposure lost on both axes**: 13.5 points below exposing
-  all 20 tools (9 tasks worse, 1 better, p = 0.021) at 22% more tokens. Of 23
-  times a failed episode needed a hidden tool, the agent never searched for it
-  17 times — always a tool the policy describes but never names.
+- **The fine-tune learned the verifier, not the policy.** RFT gained 2.3 points
+  (p = 0.18) because two checks demanded one lookup tool where the policy only
+  needs the fact. Corrected and re-scored — nothing re-run — the gain is 0.5
+  points (p = 0.71), and the API reference the quirk had put 4 points above the
+  base model is 6.7 below it (p = 0.007; on pass^k it was never ahead, and now
+  trails by 9.7). A review found the first fix too loose; tightened, it moved no
+  verdict ([WHAT_FAILED #30](docs/WHAT_FAILED.md)).
+- **Search-based tool exposure cost 22% more tokens and bought nothing**: 11.5
+  points below exposing all 20 tools (7 tasks worse, 1 better, p = 0.07 — it
+  read p = 0.021 before the checker fix). Of 21 times a failed episode needed a
+  hidden tool, the agent never searched for it 17 times — always a tool the
+  policy describes but never names.
 - **The agent claimed actions it never took** — in this run, only when the tool
-  was out of sight: 3 of 16 readable search-arm failures, 0 of 20 elsewhere.
+  was out of sight: 3 of 14 readable search-arm failures, 0 of 20 elsewhere.
 - **An LLM judge could not stand in for the database.** Its best configuration —
-  with every tool result and the policy — reached κ = 0.56 and still accepted 8
-  of 17 failed episodes. Given everything, no judge rejected a false claim for
-  being false.
+  with the tool results and the policy — reached κ = 0.72 and still accepted 6
+  of 15 failed episodes. It caught one of three false claims and noticed another
+  but passed it; on its first run, given the same evidence, it had credited the
+  one it caught.
 - **No language differed from English beyond noise**, in two independent runs.
   The only significant gaps in the project came from a fact-gating bug, and the
   simulator "leaks" behind it were the detector's ([WHAT_FAILED #26](docs/WHAT_FAILED.md)).
@@ -56,16 +67,18 @@ python -m pasarbench.run          # null agent → 0.0, reference agent → 1.0
 python -m tests.test_traps        # 10 naive solutions, all must be rejected
 python -m tests.test_harness      # 28 harness invariants
 python -m tests.test_reward       # 30 reward + dataset invariants
-python -m tests.test_generated    # 63 checks over all 199 generated tasks + simulator QA
+python -m tests.test_generated    # 107 checks over all 199 generated tasks: dates in causal order, the same world in every process, reads of the task's own order, simulator QA
+python -m tests.test_rescore      # 29 re-scoring invariants: the pre-v19 world, replay by digest and by length, the same tool errors on every Python, nothing re-scored on a guess
 python -m tests.test_context      # 39 context-strategy + analysis invariants
-python -m tests.test_judge        # 81 judge + agreement-statistics invariants
-python -m tests.test_exposure     # 105 tool-scaling + diagnosis invariants
+python -m tests.test_judge        # 83 judge + agreement-statistics invariants, judged against today's checks
+python -m tests.test_exposure     # 108 tool-scaling + diagnosis invariants
 python -m tests.test_serving      # 54 metrics (SGLang and vLLM), cost and quality-guard invariants
-python -m tests.test_report       # 30 report invariants: paired verdicts, ties, replication, calibration, noise floor, post-training
-python -m tests.test_training     # 75 checks: split, customer family, collection, examples against an SGLang-like server, adapter routing, serve scripts, a LoRA step (47 without transformers/torch)
+python -m tests.test_report       # 48 report invariants: paired verdicts, ties, replication, calibration, noise floor, post-training, both scorings in every section
+python -m tests.test_training     # 155 checks: split, customer family, collection and resume, examples (Qwen3 and Qwen3.8 formats) against an SGLang-like server, adapter routing, the LoRA probe, serve and Modal scripts, one-GPU memory plans, the notebook helper (progress in place, an interrupt-proof cleanup), the CUDA compiler, run settings, LoRA steps on Qwen3 and Qwen3.8's hybrid architecture, training data picked by today's checks (113 without transformers/torch)
 
 python -m pasarbench.sweep --backend scripted --suite all
 python scripts/make_report.py     # regenerates RESULTS.md; never hand-fill it
+python scripts/rescore.py         # what today's checks change in every recorded run
 ```
 
 The benchmark, harness, reward and judge layers have **zero dependencies**
@@ -267,7 +280,20 @@ the gain with no RL infrastructure, and it is the only meaningful GRPO baseline.
 A GRPO number reported against the base model conflates "RL worked" with
 "training on correct trajectories worked."
 
-The design, sized for two rented H100s (`docs/RUNBOOK.md`, phase 4):
+**What it did:** nothing measurable, once two checks that preferred a lookup
+tool were corrected — on those traps the fine-tune had learned the preference
+([WHAT_FAILED #30](docs/WHAT_FAILED.md)) — and it moved behaviour between traps
+([#31](docs/WHAT_FAILED.md)). RESULTS.md §6 has both scorings. `train_rft.py
+build` now picks training episodes by today's checks, not the verdicts the
+collection recorded.
+
+The design, sized for one rented B200 (`docs/RUNBOOK.md`, phase 4; every step
+of running it, for a first-time GPU user, in `docs/GPU_GUIDE.md`):
+
+- **Qwen3.8-27B, LoRA in bf16.** No quantized base, so the model trained is the
+  model evaluated; logits only at the trained turn, because a 248k vocabulary
+  makes full logits the largest tensor in the step. 32 turns per optimizer
+  step whether one card accumulates them or several share them.
 
 - **Two folds by family.** Locale twins stay together and every trap is in
   both folds; each fine-tune is scored only on the fold it did not train on, so
@@ -279,7 +305,9 @@ The design, sized for two rented H100s (`docs/RUNBOOK.md`, phase 4):
   Qwen3 (`pasarbench/rl/sft.py`).
 - **A customer from another model family** (Gemma 4 31B for a Qwen agent),
   enforced by the sweep, with the API reference re-run against the same
-  customer. Serving is SGLang: agent on one H100, customer (FP8) on the other.
+  customer. Serving is SGLang: agent (bf16) and customer (FP8) on one card,
+  each server's memory worked out from what is free when it starts
+  (`scripts/gpu_plan.py`), or one card each on a two-GPU machine.
 
 ---
 
@@ -293,13 +321,16 @@ pasarbench/
   rl/                                             reward, folds, per-turn SFT examples
   judge/                                          rubric, judges, agreement stats
   analyze.py diagnose.py simqa.py                 turning sweeps into findings
+  rescore.py                                      recorded episodes, today's checks
   serving/                                        metrics, cost, quality guards
   sweep.py run.py                                 entry points
-scripts/    gpu_pipeline.sh setup_node.sh serve_sglang.sh train_rft.py train_grpo.py
-            make_report.py audit_tool_arms.py inspect_trace.py run_judges.py
+scripts/    gpu_pipeline.sh gpu_plan.py modal_pipeline.py pasar_notebook.py
+            cuda_home.py setup_node.sh download_weights.sh
+            serve_sglang.sh train_rft.py train_grpo.py make_report.py
+            audit_tool_arms.py inspect_trace.py run_judges.py rescore.py
             slurm_train.sh slurm_sweep.sh modal_vllm.py
-tests/      11 suites, 450+ assertions
-docs/       RUNBOOK.md  WHAT_FAILED.md  WRITEUP.md  README_weekly.md
+tests/      12 suites, 650+ assertions
+docs/       RUNBOOK.md  GPU_GUIDE.md  WHAT_FAILED.md  WRITEUP.md  README_weekly.md
 ```
 
 ---
@@ -312,8 +343,13 @@ careful reader notices.
 - **215 tasks cannot detect a 2-point regression.** ~6,000 per arm would be
   needed. The tool arms are 32 tasks each. Several verdicts in this work are
   honestly INCONCLUSIVE.
-- **One agent model and one judge model.** Every finding above is about
-  `deepseek-v4-pro` judged by `qwen3.8-flash`.
+- **Few models.** The ablations are one agent (`deepseek-v4-pro`) judged by
+  one judge (`qwen3.8-flash`); post-training is one base model (`Qwen3.8-27B`),
+  one recipe, one run.
+- **A check encodes a choice about what establishes a fact.** v19 found two
+  that demanded one lookup tool ([WHAT_FAILED #30](docs/WHAT_FAILED.md)); the
+  photo trap still requires `verify_identity`, a process step the policy
+  demands before a write, and this trap has no write.
 - **The false-claim check reads English only**, and only the phrasings it was
   written for — the same kind of instrument as the leak detector, so its counts
   are a floor.
@@ -321,9 +357,11 @@ careful reader notices.
   Singlish, Malay, Indonesian and both Chinese varieties were written directly;
   Singlish deliberately was not machine-translated, because the particles and
   code-switching are the part that breaks agents.
-- **36 of 199 tasks are "do no harm" traps** that a cautious lookup-only agent
-  passes for free. `tests/test_generated.py` exempts them explicitly rather than
-  pretending otherwise. They are the argument for the judge.
+- **52 of 199 generated tasks are "do no harm" traps** that a cautious
+  lookup-only agent passes for free — and so does one that stalls: 4 of the 186
+  photo-trap episodes the v19 checks promoted never asked for photos.
+  `tests/test_generated.py` exempts them explicitly rather than pretending
+  otherwise. They are the argument for the judge.
 - **Prose-only policy rules are unverifiable by state checks.** P1.4 (never
   disclose another customer's data) cannot be checked by looking at the
   database; those tasks were left out rather than checked badly.
@@ -332,9 +370,10 @@ careful reader notices.
   and HF, turn-level loss masking, per-token advantage normalisation — are named
   explicitly in that file rather than glossed.
 - **The leak audit is only as good as its ask-patterns.** They cover the
-  phrasings `deepseek-v4-pro` used across four runs, where no reveal outside
-  English was unprompted ([WHAT_FAILED #26](docs/WHAT_FAILED.md)). Another agent
-  can ask in words the list lacks, and the customer's answers will read as
-  leaks: read the line `inspect_trace.py` prints under each one first.
+  phrasings `deepseek-v4-pro` used across four runs and `Qwen3.8-27B` across
+  three, where no reveal outside English was unprompted
+  ([WHAT_FAILED #26](docs/WHAT_FAILED.md)). Another agent can ask in words the
+  list lacks, and the customer's answers will read as leaks: read the line
+  `inspect_trace.py` prints under each one first.
 - **Default cost rates are illustrative placeholders.** GPU hourly rates vary by
   3× across providers.

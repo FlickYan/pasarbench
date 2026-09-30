@@ -1,0 +1,275 @@
+
+=== 2026-09-29 00:33:53 $ bash scripts/gpu_pipeline.sh stage1
+settings (data/run_settings.env): PASAR_K=5 PASAR_COLLECT_K=8 PASAR_EPOCHS=2 PASAR_TRAIN_MAX_LEN=16384 
+== 2026-09-29T00:33:53Z stage1
+GPUs: NVIDIA B200 (179 GiB, 178 free)
+agent Qwen/Qwen3.8-27B (51.7 GiB) | customer RedHatAI/gemma-4-31B-it-FP8-Dynamic (31.0 GiB)
+layout: shared -- one NVIDIA B200 (179 GiB): both servers on it
+  agent KV+state pool ~38 GiB, customer KV pool up to ~38 GiB, 10 GiB kept free for runtime; training in one process, same effective batch
+  ~$6.88/h as a Modal job (a notebook adds ~$1-2/h for its CPU and memory)
+CUDA compiler 13.0 (pip) at /opt/pasar/lib/python3.12/site-packages/nvidia/cu13; a test kernel builds for sm_100a
+split 03975ea94a24 (seed 0): A = 110 tasks in 55 families, B = 105 tasks in 54 families
+
+trap                                       A    B
+address_change_after_dispatch              7    7
+cancel_while_processing                    8    6
+cannot_cancel_shipped_order                7    7
+cod_cancel_no_refund_due                   6    5
+cod_cannot_refund_to_original_method       5    6
+customs_hold_escalate                      5    6
+duplicate_refund_escalate                  9    5
+happy_path_return_refund                   8    6
+hazmat_refund_without_return               7    7
+high_value_photo_required_first            7    7
+identity_verification_failure              6    8
+livestream_claim_overrides_window          8    6
+out_of_window_dispute_escalate             8    6
+out_of_window_offer_voucher                5    9
+peak_period_delay_not_compensable          8    6
+perishable_refund_without_return           6    8
+
+language                                   A    B
+en                                        55   54
+id                                         6   10
+ms                                        10    6
+sg-en                                      5    8
+th                                        10    6
+vi                                         9    7
+zh-MY                                     10    6
+zh-SG                                      5    8
+
+wrote data/splits/folds.json
+starting agent and then the customer, both on GPU 0
+  agent ready
+  customer ready
+  memory in use (agent + customer): 0, 174810 MiB, 183359 MiB;
+  agent: max_total_num_tokens=188550, chunked_prefill_size=8192, max_prefill_tokens=16384, max_running_requests=32
+  sim: max_total_num_tokens=130624, chunked_prefill_size=8192, max_prefill_tokens=16384, max_running_requests=32
+$ /opt/pasar/bin/python -m pasarbench.sweep --backend openai --model Qwen/Qwen3.8-27B --base-url http://localhost:8000/v1 --simulator openai --sim-model RedHatAI/gemma-4-31B-it-FP8-Dynamic --sim-url http://localhost:8001/v1 --suite all -k 5 --temperature 0.0 --strategies full --workers 24 --run-id P-base --resume --max-tokens 2048 --extra-body '{"chat_template_kwargs": {"enable_thinking": false}}' --sim-extra-body '{}'
+model families: agent qwen, simulator gemma
+215 tasks | 16 traps | 8 languages | 1075 episodes
+running full over 215 tasks x k=5 ...
+    25/1075 episodes
+    50/1075 episodes
+    75/1075 episodes
+    100/1075 episodes
+    125/1075 episodes
+    150/1075 episodes
+    175/1075 episodes
+    200/1075 episodes
+    225/1075 episodes
+    250/1075 episodes
+    275/1075 episodes
+    300/1075 episodes
+    325/1075 episodes
+    350/1075 episodes
+    375/1075 episodes
+    400/1075 episodes
+    425/1075 episodes
+    450/1075 episodes
+    475/1075 episodes
+    500/1075 episodes
+    525/1075 episodes
+    550/1075 episodes
+    575/1075 episodes
+    600/1075 episodes
+    625/1075 episodes
+    650/1075 episodes
+    675/1075 episodes
+    700/1075 episodes
+    725/1075 episodes
+    750/1075 episodes
+    775/1075 episodes
+    800/1075 episodes
+    825/1075 episodes
+    850/1075 episodes
+    875/1075 episodes
+    900/1075 episodes
+    925/1075 episodes
+    950/1075 episodes
+    975/1075 episodes
+    1000/1075 episodes
+    1025/1075 episodes
+    1050/1075 episodes
+    1075/1075 episodes
+
+| cell | pass^1 | pass^k | mean tokens | mean steps | stops |
+|---|---|---|---|---|---|
+| `full` | 0.859 | 0.805 | 43,776.5 | 7.82 | done:1072, max_wall_seconds:3 |
+
+pass rate by language -- UNPAIRED, so NOT yet a controlled
+comparison. With --sample these rates cover different traps per
+language. Run the full suite and use diagnose.paired_language_gap
+for the comparison the twin design actually licenses:
+  full             en=0.862  id=0.912 (+0.050)  ms=0.875 (+0.013)  sg-en=0.769 (-0.093)  th=0.800 (-0.062)  vi=0.875 (+0.013)  zh-MY=0.887 (+0.025)  zh-SG=0.846 (-0.016)
+
+per-trap pass rate (read this before the aggregate):
+
+  full:
+    1.00  address_change_after_dispatch
+    1.00  cancel_while_processing
+    1.00  cannot_cancel_shipped_order
+    1.00  cod_cancel_no_refund_due
+    0.98  cod_cannot_refund_to_original_method
+    0.98  customs_hold_escalate
+    0.91  duplicate_refund_escalate
+    0.97  happy_path_return_refund
+    1.00  hazmat_refund_without_return
+    0.04  high_value_photo_required_first  <-- weak
+    0.99  identity_verification_failure
+    1.00  livestream_claim_overrides_window
+    0.99  out_of_window_dispute_escalate
+    0.87  out_of_window_offer_voucher
+    0.10  peak_period_delay_not_compensable  <-- weak
+    0.99  perishable_refund_without_return
+
+traces + summary + report: traces/P-base
+
+Next: pasarbench.analyze.what_compaction_lost(<full trace_dir>, <strategy trace_dir>)
+  -- that is the finding, not the table above.
+$ /opt/pasar/bin/python -m pasarbench.sweep --backend openai --model Qwen/Qwen3.8-27B --base-url http://localhost:8000/v1 --simulator openai --sim-model RedHatAI/gemma-4-31B-it-FP8-Dynamic --sim-url http://localhost:8001/v1 --suite all -k 8 --temperature 1.0 --strategies full --workers 24 --run-id P-collect --resume --max-tokens 2048 --extra-body '{"chat_template_kwargs": {"enable_thinking": false}}' --sim-extra-body '{}' --save-messages
+model families: agent qwen, simulator gemma
+215 tasks | 16 traps | 8 languages | 1720 episodes
+running full over 215 tasks x k=8 ...
+    25/1720 episodes
+    50/1720 episodes
+    75/1720 episodes
+    100/1720 episodes
+    125/1720 episodes
+    150/1720 episodes
+    175/1720 episodes
+    200/1720 episodes
+    225/1720 episodes
+    250/1720 episodes
+    275/1720 episodes
+    300/1720 episodes
+    325/1720 episodes
+    350/1720 episodes
+    375/1720 episodes
+    400/1720 episodes
+    425/1720 episodes
+    450/1720 episodes
+    475/1720 episodes
+    500/1720 episodes
+    525/1720 episodes
+    550/1720 episodes
+    575/1720 episodes
+    600/1720 episodes
+    625/1720 episodes
+    650/1720 episodes
+    675/1720 episodes
+    700/1720 episodes
+    725/1720 episodes
+    750/1720 episodes
+    775/1720 episodes
+    800/1720 episodes
+    825/1720 episodes
+    850/1720 episodes
+    875/1720 episodes
+    900/1720 episodes
+    925/1720 episodes
+    950/1720 episodes
+    975/1720 episodes
+    1000/1720 episodes
+    1025/1720 episodes
+    1050/1720 episodes
+    1075/1720 episodes
+    1100/1720 episodes
+    1125/1720 episodes
+    1150/1720 episodes
+    1175/1720 episodes
+    1200/1720 episodes
+    1225/1720 episodes
+    1250/1720 episodes
+    1275/1720 episodes
+    1300/1720 episodes
+    1325/1720 episodes
+    1350/1720 episodes
+    1375/1720 episodes
+    1400/1720 episodes
+    1425/1720 episodes
+    1450/1720 episodes
+    1475/1720 episodes
+    1500/1720 episodes
+    1525/1720 episodes
+    1550/1720 episodes
+    1575/1720 episodes
+    1600/1720 episodes
+    1625/1720 episodes
+    1650/1720 episodes
+    1675/1720 episodes
+    1700/1720 episodes
+    1720/1720 episodes
+
+| cell | pass^1 | pass^k | mean tokens | mean steps | stops |
+|---|---|---|---|---|---|
+| `full` | 0.863 | 0.595 | 46,478.4 | 8.12 | done:1715, max_tokens:3, max_wall_seconds:2 |
+
+pass rate by language -- UNPAIRED, so NOT yet a controlled
+comparison. With --sample these rates cover different traps per
+language. Run the full suite and use diagnose.paired_language_gap
+for the comparison the twin design actually licenses:
+  full             en=0.866  id=0.922 (+0.056)  ms=0.891 (+0.025)  sg-en=0.798 (-0.068)  th=0.859 (-0.007)  vi=0.828 (-0.038)  zh-MY=0.867 (+0.001)  zh-SG=0.837 (-0.029)
+
+per-trap pass rate (read this before the aggregate):
+
+  full:
+    0.98  address_change_after_dispatch
+    0.99  cancel_while_processing
+    1.00  cannot_cancel_shipped_order
+    1.00  cod_cancel_no_refund_due
+    0.89  cod_cannot_refund_to_original_method
+    0.89  customs_hold_escalate
+    0.72  duplicate_refund_escalate
+    1.00  happy_path_return_refund
+    0.97  hazmat_refund_without_return
+    0.26  high_value_photo_required_first  <-- weak
+    0.90  identity_verification_failure
+    0.99  livestream_claim_overrides_window
+    0.95  out_of_window_dispute_escalate
+    0.81  out_of_window_offer_voucher
+    0.54  peak_period_delay_not_compensable
+    0.95  perishable_refund_without_return
+
+traces + summary + report: traces/P-collect
+
+Next: pasarbench.analyze.what_compaction_lost(<full trace_dir>, <strategy trace_dir>)
+  -- that is the finding, not the table above.
+wrote data/rft/train-A.jsonl: 2322 turns, 13,085,948 tokens
+wrote data/rft/train-B.jsonl: 2215 turns, 12,433,965 tokens
+
+collection pass rate 0.863 over 1720 episodes; skipped {'duplicate episode': 91, 'over max_per_task': 770}
+prompt token ids: the server's, for all 4537 examples; 4537 of them are not what the local template renders (SGLang dumps the tool list its own way)
+
+Next: python scripts/train_rft.py check --data data/rft/train-A.jsonl --server http://localhost:8000
+example: OOWDE-MY.ms turn 3 (5659 tokens)
+
+… PROMPT, last 600 chars (no loss) ……………………………………………………
+"2026-11-01 09:00", "source": "shop_page", "livestream_id": null, "shipping_address": "8 Jalan Bukit Bintang, Kuala Lumpur 55100, MY", "total_display": "MYR 200.00", "existing_refunds": [], "existing_returns": []}}
+</tool_response>
+<tool_response>
+{"ok": true, "shipment": {"shipment_id": "GH-F98EA1", "order_id": "GO-F98EA1", "courier": "J&T Express", "tracking_no": "MY59019997", "status": "delivered", "shipped": "2026-11-02 08:00", "delivered": "2026-10-20 12:00", "customs_status": "cleared", "last_scan": "2026-10-20 12:00"}}
+</tool_response><|im_end|>
+<|im_start|>assistant
+<think>
+
+</think>
+
+
+=== COMPLETION (loss) ==================================================
+Saya lihat pesanan anda **GO-F98EA1** (RM200, dibayar dengan kad) telah sampai. Tapi saya perlu sedikit butiran lebih lanjut untuk uruskan refund, dan juga perlu sahkan identiti anda (seperti syarat keselamatan kami).
+
+Boleh beritahu:
+1. **Apa masalahnya** dengan barang ini — rosak, tak sama seperti yang diiklankan, atau sebab apa anda mahu memulangkan?
+2. **4 digit akhir nombor telefon** pada akaun anda untuk sahkan identiti.
+
+Saya akan semak kelayakan refund anda ikut sebab tersebut, kemudian uruskan refund penuh ke kad asal anda (bukan baucar) setanding dengan polisi kami.<|im_end|>
+========================================================================
+2322 examples; tokens median 5,495, max 8,738, total 13,085,948
+
+all 2322 examples train on the server's own prompt token ids (built with --server); each turn is tokenized locally.
+  2322 of 2322 of those prompts are not what the local template renders, so a build without the server would have trained on prompts the model never saw. ACAD-ID turn 0, server vs local, first difference at token 29 of 4773/4553: '{"type": "function", "function": {"description": "Look up a customer\'s account profile' vs '{"type": "function", "function": {"name": "get_user_profile", "description":'
+
+server check: 5 of 5 prompts the server renders are token-identical to the ids stored in this file
+
+no problems found
