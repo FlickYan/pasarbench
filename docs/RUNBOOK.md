@@ -277,6 +277,43 @@ print(report(load_episodes("traces/multiling/full")))
 `max_steps` more often than English ones, raise `--max-steps` and re-run before
 concluding anything. Every other reading is invalid until that is ruled out.
 
+### 1g. Does naming the tools fix search? (API only, no GPU)
+
+Behind `search_tools` the agent never looked for three tools — escalation,
+shipment lookup, goodwill voucher — and the policy describes those actions
+without naming a tool; the tools it does name, it found (WRITEUP, Result 1).
+That is a hypothesis until it is tested. `--policy-mode preload-named` gives
+the agent the same policy with those three names added where each action is
+described, and nothing else (a test strips them and gets the policy back byte
+for byte). Run it with a same-day control on the 32 tasks of `I-tools2`, so
+that a model update since September cannot pass for the effect:
+
+```bash
+set -a; . ./.env; set +a      # your keys, as for the I-tools runs: agent and customer
+TASKS=ACAD-VN,CCNRD-PH,CCNRD-TH,CCRTOM-PH,CCRTOM-TH,CCSO-VN.vi,CHE-MY,CHE-VN,CWP-ID,CWP-SG.sg-en,DRE-PH,HPRR-PH,HPRR-SG.sg-en,HRWR-MY,HRWR-SG.sg-en,HVPRF-PH,IVF-MY,IVF-SG.sg-en,LCOW-MY,LCOW-TH,OOWDE-MY,OOWDE-VN.vi,OOWOV-TH,OOWOV-VN,PPDNC-SG,PPDNC-TH,PRWR-VN.vi,T04,T07,T09,T14,T15
+for MODE in preload preload-named; do
+  python -m pasarbench.sweep \
+    --backend openai --model deepseek-v4-pro --base-url https://api.deepseek.com/v1 \
+    --extra-body '{"thinking":{"type":"disabled"}}' \
+    --simulator openai --sim-model qwen3.8-flash \
+    --sim-url https://dashscope-intl.aliyuncs.com/compatible-mode/v1 \
+    --sim-extra-body '{"reasoning_effort":"low"}' \
+    --suite all --tasks "$TASKS" --strategies full --exposure search-300 -k 3 \
+    --policy-mode $MODE --run-id J-$MODE --workers 8
+done
+python scripts/compare_cells.py traces/J-preload/full+search-300 traces/J-preload-named/full+search-300
+python scripts/audit_tool_arms.py traces/J-preload-named
+```
+
+192 episodes, the size of two tool arms. The sweep will warn that an `all-N`
+arm has no `random-N` pair; that warning is about tool scaling and does not
+apply here. Read `compare_cells.py`'s paired line first: at 32 tasks only a
+large effect resolves. Then the line for each named tool — how often an episode
+that needed it called it — and the audit's breakdown of why the remaining
+failures failed. If the named arm calls the tools and closes most of the gap to
+`all-20` (0.958 in `I-tools2`), naming is the mechanism. If it searches for
+them and still fails, the ranker is; if it still never looks, it is neither.
+
 ---
 
 # Phase 2 — judge calibration (no GPU, ~6 hours of your time)
@@ -471,7 +508,7 @@ Phase 0  verify                                        today, 10 min
 Phase 1  sweeps against an API model                   this week, ~$30
 Phase 2  label 200 transcripts                         next week, 6 hours
          (regenerate RESULTS.md -- 3 of 5 sections now filled)
-         (write the blog post from docs/WRITEUP.md)
+         (blog post: docs/BLOG.md; its numbers follow docs/WRITEUP.md)
 Phase 4  on 1x B200 (Modal or Lambda, GPU_GUIDE.md):   ~10-20 hours
          weights, smoke, stage1, read the audit and the
          checks, then stage2
