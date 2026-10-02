@@ -21,25 +21,56 @@ waiting for a node.
 
 # Updating an already-pushed repo
 
-If you pushed an earlier snapshot, the histories have diverged at the root and
-`git pull` will refuse to merge them. Replace the remote contents instead —
-nothing depends on the old commits:
+A new version arrives as an archive of code and docs — no traces, data, logs,
+`.env` or RESULTS.md — so unpack it over your working copy, where `.git` and
+your runs already are, and commit what changed. Commit one file at a time and
+each file on GitHub shows its own message, rather than one message for all:
 
 ```bash
-tar xzf pasarbench-repo.tar.gz && cd pasarbench
-git config --global user.name  "Your Name"
-git config --global user.email "your@email.com"
+cd ~/Downloads && tar -xf pasarbench-MMDD-vNN.tar   # in the folder that holds pasarbench/
+cd pasarbench
+bash run_tests.sh                     # never commit a red tree
+git status                            # what the new version changed
+git add -A                            # .gitignore keeps .env, traces/ and data/ out
+git commit -m "What changed in this file" -- path/to/file      # once per file
+python scripts/make_report.py --out RESULTS.md --tools-run I-tools2 \
+  --multilingual-run C-clean,D-nozh,G-gated --noise-pair H-context/full,I-tools2/full+all-20
+git commit -m "Regenerate RESULTS.md" -- RESULTS.md
+git status                            # nothing left to commit
+git push
+```
+
+`git commit -- <file>` commits that file alone and leaves the rest staged for
+the next commit; list several files after the `--` to give them one message.
+GitHub shows each file with the message of the last commit that changed it.
+Unpacking never deletes: a file a new version drops stays on disk, and in git,
+until you `git rm` it.
+
+Once per folder, check that git will never upload your keys:
+
+```bash
+git check-ignore .env      # prints .env when it is ignored; nothing means it is NOT
+```
+
+**Only if the histories have diverged** — `git push` is rejected and you want
+GitHub to match this folder exactly — replace GitHub's history with one commit:
+
+```bash
 ./scripts/push_to_github.sh git@github.com:<you>/pasarbench.git
 ```
 
-It runs the full suite first and refuses to push a broken tree, strips run
-artifacts, creates one commit authored by you, and force-pushes. It asks you to
-type `REPLACE` before doing anything destructive.
+It refuses to start unless `.gitignore` keeps `.env`, `traces/`, `data/` and
+`checkpoints/` out; runs the full suite and refuses to push a broken tree; asks
+you to type `REPLACE`; then builds one commit authored by you, checks that it
+holds no `.env` file and no run artifact, and force-pushes it. It deletes
+nothing in the folder, and the history it replaced stays in `git reflog main`.
+Before v23 it deleted `traces/`, `data/`, `logs/` and `checkpoints/` from the
+folder it ran in: never run an older copy in your working folder.
 
 Then confirm the update landed:
 
 ```bash
-grep -c "extra-body" pasarbench/sweep.py     # expect 5
+git log origin/main --oneline -5      # GitHub's copy has your commits
 python -c "import pasarbench.sweep as m; print(m.__file__)"
 ```
 
@@ -59,8 +90,8 @@ git clone <your-repo> && cd pasarbench
 ./run_tests.sh
 ```
 
-Expect: reference 1.0, null 0.0, 9 green suites, and a scripted end-to-end
-sweep. If anything fails here, stop — everything downstream inherits it.
+Expect: reference 1.0, null 0.0, every suite green, and a scripted
+end-to-end sweep. If anything fails here, stop — everything downstream inherits it.
 
 ### `ModuleNotFoundError: No module named 'pasarbench'`
 
@@ -113,8 +144,12 @@ export DEEPSEEK_API_KEY=sk-...        # then pass NO --api-key flag
 ```
 
 The sweep searches `PASARBENCH_API_KEY`, `DEEPSEEK_API_KEY`, `OPENAI_API_KEY`,
-`TOGETHER_API_KEY`, `GROQ_API_KEY` in that order, and fails immediately with
-guidance if none is set rather than sending a request and handing you a 401.
+`DASHSCOPE_API_KEY`, `TOGETHER_API_KEY`, `GROQ_API_KEY` in that order for the
+agent, and `PASARBENCH_SIM_API_KEY`, `DASHSCOPE_API_KEY`, ... for a simulated
+customer on another provider. It fails immediately with guidance if none is
+set rather than sending a request and handing you a 401, and it refuses to
+send the agent's key to the customer's provider when the customer's key is
+missing.
 
 **Do not pass `--api-key sk-...` on a shared cluster.** Command-line arguments
 land in `/proc/<pid>/cmdline`, which is world-readable — any other user on the
@@ -125,20 +160,29 @@ Three ways to set it, safest first:
 
 ```bash
 # 1. A .env file, already in .gitignore. Best for repeated runs.
-echo 'DEEPSEEK_API_KEY=sk-...' > .env
+nano .env                  # one NAME=value per line, no spaces, no quotes;
+                           # Ctrl+O then Return saves, Ctrl+X quits
 set -a; source .env; set +a
 
 # 2. Interactive, never echoed and never in shell history.
-read -rs -p "DeepSeek key: " DEEPSEEK_API_KEY && export DEEPSEEK_API_KEY
+read -rs -p "DeepSeek key: " DEEPSEEK_API_KEY && export DEEPSEEK_API_KEY   # bash
+read -rs "DEEPSEEK_API_KEY?DeepSeek key: " && export DEEPSEEK_API_KEY      # zsh (macOS)
 
 # 3. Plain export with a LEADING SPACE, which keeps it out of ~/.bash_history
 #    when HISTCONTROL includes ignorespace (bash default on most distros).
+#    zsh, the macOS default, does this only after `setopt HIST_IGNORE_SPACE`.
  export DEEPSEEK_API_KEY=sk-...
 ```
+
+For the runs below, `.env` holds two lines: `DEEPSEEK_API_KEY=...` for the
+agent and `DASHSCOPE_API_KEY=...` for the simulated customer. Edit it in an
+editor rather than with `echo 'KEY=...' > .env`, which leaves the key in your
+shell history and replaces the whole file.
 
 Check it took without printing it:
 
 ```bash
+cut -d= -f1 .env                      # the names in the file, never the keys
 echo "${#DEEPSEEK_API_KEY} chars"     # ~35 for a DeepSeek key
 ```
 
@@ -313,6 +357,28 @@ that needed it called it — and the audit's breakdown of why the remaining
 failures failed. If the named arm calls the tools and closes most of the gap to
 `all-20` (0.958 in `I-tools2`), naming is the mechanism. If it searches for
 them and still fails, the ranker is; if it still never looks, it is neither.
+
+**Run on 2026-10-02**, the two arms back to back within eleven minutes. The
+control matched `I-tools2`'s search arm: 81 of 96, pass^k 0.75, and three
+claimed-not-done failures on the same three tasks. With the names:
+
+| | control | named |
+|---|---|---|
+| escalated, of the 24 episodes that need it | 12 | 21 (21 called it by name first) |
+| looked up the shipment, of 18 | 3 | 12 |
+| issued the voucher, of 6 | 4 | 5 |
+| pass^1 (pass^k) | 0.844 (0.750) | 0.938 (0.875) |
+| tokens per episode | 44,187 | 52,354 |
+| failures claiming an action never taken (English) | 3 of 14 | 0 of 6 |
+
+Paired by task, 6 better and 1 worse, p = 0.125: INCONCLUSIVE at 32 tasks.
+Tokens +18%, 25 tasks costlier and 7 cheaper, p = 0.002. The named arm's 88
+calls to tools it had not been shown were all refused, and 87 ended with the
+tool found by search and used. By the reading above the agent now calls the
+tools and closes most of the gap, so naming is the mechanism, with the pass
+rate itself still to be confirmed on more tasks. Of its six failures, three
+are T14 never escalating a duplicate refund — no search at all, a decision
+rather than a missing tool. WRITEUP, Result 1 has the write-up.
 
 ---
 
