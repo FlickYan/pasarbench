@@ -32,14 +32,15 @@ post containing a number you never ran is a worse outcome than no post.
 `docs/BLOG.md` is Part 1 as a post ready to publish: no source comments, no
 recorded-verdict asides, and the two "What failed" stories folded into a closing
 list of lessons. Its numbers are the ones below, so a number that changes here
-changes there too. Set the repo link in its last line before posting.
+changes there too.
 
 **Models, as served.** Agent `deepseek-v4-pro`; simulated customer and judges
 `qwen3.8-flash` — a different family from the agent, to avoid self-preference.
 No alias re-routing was recorded in the traces. Runs of 2026-09-18 to 09-19
 (language) and 2026-09-25 (context, tools, judges); the two judge views with
 tool results were re-run on 2026-09-30, withholding the two results no replay
-can rebuild (WHAT_FAILED #33). Post-training, 2026-09-29:
+can rebuild (WHAT_FAILED #33); the tool-naming experiment and its control ran
+on 2026-10-02. Post-training, 2026-09-29:
 agent `Qwen/Qwen3.8-27B` (base, and a LoRA fine-tune per fold) served with
 SGLang on one B200, customer `gemma-4-31B-it` (FP8) on the same card, and
 `deepseek-v4-pro` through its API against the same customer as the reference.
@@ -158,6 +159,32 @@ arms where the needed tools were always visible: none, in nineteen failures. The
 numbers are small, but the shape is right — an agent that knows what it should
 do and can't find the tool to do it says it did it anyway.
 <!-- audit_tool_arms.py §3: search-300 read 14, claimed-not-done 3; all-100 0/6, all-20 0/4, oracle 0/2, random-100 0/7 -->
+
+If not knowing the tools existed was the problem, naming them should fix it.
+The named policy is the same text with the three tool names added where it
+describes each action — *Escalate with category `customs_hold` (tool:
+`escalate_to_human`)* — and nothing else. I ran it on the same 32 tasks, three
+seeds each, back to back with a control that had no names. The control repeated
+the first search run: 81 of 96 passed both times, and it made three false
+claims again, on the same three tasks.
+<!-- RUNBOOK 1g; --policy-mode preload-named (pasarbench/harness/prompts.py, NAMED_MARK); traces/J-preload and traces/J-preload-named, 2026-10-02 08:17-08:28 UTC; compare_cells.py: control 0.844 = I-tools2 search-300 0.844 (81/96, pass^k 0.750 both); audit_tool_arms.py traces/J-preload §3: claimed-not-done 3 of 14 read (CHE-MY, DRE-PH, OOWOV-TH) -->
+
+With the names, the agent went looking. In 21 of the 24 conversations that
+needed an escalation, it called the tool by name before it had been shown it;
+the harness refused, and the agent searched for the tool and used it — the
+pattern it had always shown with tools the policy named. Escalations went from
+12 of 24 to 21, shipment lookups from 3 of 18 to 12. Accuracy rose from 0.844 to
+0.938, most of the way to the 0.958 of showing all 20 tools: 6 tasks better,
+1 worse, p = 0.125 — the direction the explanation predicts, though 32 tasks
+can't confirm it. And none of the six failures left claimed an action that
+hadn't happened.
+<!-- python scripts/compare_cells.py traces/J-preload/full+search-300 traces/J-preload-named/full+search-300: escalate_to_human 12/24 (0) -> 21/24 (21); get_shipment 3/18 -> 12/18; pass^1 0.844 -> 0.938; paired +0.094, 6 better 1 worse, p=0.125 INCONCLUSIVE. audit_tool_arms.py traces/J-preload-named §1: 88 hidden calls refused, 87 found & used; §3: read 6, claimed-not-done 0 -->
+
+Naming didn't make search cheap: the extra calls cost 18% more tokens per
+episode (p = 0.002), and showing all 20 tools had been cheaper still. If an
+agent has to search for its tools, name them where its instructions describe
+the action. If there are only twenty, show them.
+<!-- compare_cells.py: tokens 44,187 -> 52,354 (+18%), paired +8,167, 25 costlier 7 cheaper, p=0.002; RESULTS.md §2 all-20: 38,041 tokens, 0.958 (I-tools2, 2026-09-25) -->
 
 ### Result 2: an LLM judge takes the agent's word for it
 
@@ -366,11 +393,12 @@ verdicts are honestly inconclusive. The language comparison has 13–16 twin
 pairs per language: it rules out large gaps, not small ones. One agent model
 and one judge model for the first three results, one base model for the
 fourth. The false-claim check reads English only, and only the phrasings I
-wrote — the same kind of instrument as the leak detector, so its three are a
-floor. The Thai and Vietnamese translations are not native-reviewed. The
+wrote — the same kind of instrument as the leak detector, so its counts are a
+floor: in the re-run, the one failure it couldn't read told the customer, in
+Vietnamese, that the case had gone to the complaints team. It hadn't. The Thai and Vietnamese translations are not native-reviewed. The
 fine-tune is one run of one recipe; a second, with training data balanced
 across traps, is designed but not run. Serving cost is built but not measured.
-<!-- RESULTS.md §3 paired table (pairs 13–16); audit_tool_arms.py §3 header -->
+<!-- RESULTS.md §3 paired table (pairs 13–16); audit_tool_arms.py §3 header; traces/J-preload OOWDE-VN.vi__r2: "Trường hợp của bạn đã được chuyển lên bộ phận xử lý khiếu nại", escalate_to_human never searched for, never called -->
 
 The code, the trace generators, and all 33 failures are in the repo.
 
@@ -396,10 +424,11 @@ One line each, a number, and the mechanism. Pick three.
 > failed episodes, crediting actions the tool log showed never happened. Removed
 > the missing-evidence confound with deterministic tool-result replay.
 
-> **Measured search-based tool exposure**: 22% more tokens for no measurable
-> accuracy gain (11.5 points lower, p = 0.07); replayed every query to show the
-> agent never searched for tools its policy described but didn't name (17 of
-> 21 missing-tool cases).
+> **Diagnosed search-based tool exposure**: replayed every query to show
+> the agent never searched for tools its policy described but didn't name (17
+> of 21 missing-tool cases); naming them, in a controlled re-run, raised
+> escalations from 12 to 21 of 24 and accuracy from 0.844 to 0.938 (p = 0.125),
+> at 18% more tokens.
 
 > **Traced a measured simulator bias to my own detector**: an 11–22% "leak"
 > rate concentrated in four languages, and three runs of fixes, came from
@@ -481,9 +510,11 @@ evidence. A claim about an action is checkable, so check it.
 **"Why is search worse — isn't retrieval the fix for big tool sets?"** At 32
 tasks it isn't measurably less accurate (p = 0.07); it is 22% more expensive.
 Retrieval fixes finding a tool you're looking for. The failures here were tools
-the agent never looked for, because nothing told it they existed. The test I'd
-run next names those tools in the policy: if search recovers, that's the
-mechanism.
+the agent never looked for, because nothing told it they existed. So I named
+them in the policy and re-ran search against a same-day control: escalations
+went from 12 to 21 of the 24 conversations that needed one, accuracy from 0.844
+to 0.938 — 6 tasks better, 1 worse, p = 0.125, so the direction, not proof. It
+cost 18% more tokens again; at twenty tools, just show them.
 
 **"How do you know your false-claim detector isn't wrong the way the leak
 detector was?"** I don't, fully — it's the same kind of instrument. So it's
@@ -518,8 +549,8 @@ a run from before an ID format change. Then I read the conversations the fix
 had promoted — a replay proves the state, not that the state means what the
 check assumes.
 
-**"What would you do next?"** Name the missing tools in the policy and re-run
-search — a direct test of the mechanism. Add the claim check as a guardrail and
+**"What would you do next?"** Confirm the naming effect on more tasks: 32 can't
+resolve 6 better against 1 worse. Add the claim check as a guardrail and
 measure how many false claims it stops. A second fine-tune on trap-balanced
 data built with the corrected checks. Get the Thai and Vietnamese translations
 reviewed. Then serving cost.
