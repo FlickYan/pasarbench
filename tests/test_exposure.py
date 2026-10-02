@@ -638,6 +638,73 @@ def test_audit_classifies_search_failures():
                     ).get("unreconstructable") is True)
 
 
+def test_tool_naming_experiment():
+    """docs/RUNBOOK.md 1g: behind search the agent never looked for the tools
+    the policy describes but never names. The experiment names them, and must
+    change nothing else -- or it tests two things at once."""
+    print("\n=== the tool-naming experiment: one variable, measured ===")
+    import contextlib
+    import io
+    import importlib.util
+    import json
+    import re
+    import tempfile
+    from pathlib import Path
+
+    from pasarbench.harness.prompts import (NAMED_TOOLS, policy_text,
+                                            system_prompt)
+    from pasarbench.harness.trace import TraceWriter
+    from pasarbench.verifier import verify
+
+    std, named = policy_text(), policy_text(named=True)
+    check("the named policy names the three tools; the policy names none of them",
+          all(t in named for t in NAMED_TOOLS) and not any(t in std for t in NAMED_TOOLS))
+    check("…and strip the names and it is the policy, byte for byte",
+          re.sub(r" \(tool: `[a-z_]+`\)", "", named) == std)
+    check("only --policy-mode preload-named shows them to the agent",
+          "escalate_to_human" in system_prompt("U005", "SG", "preload-named")
+          and "escalate_to_human" not in system_prompt("U005", "SG", "preload"))
+
+    # Two arms through the real loop under search-300: a control that never
+    # escalates, and a named arm that calls the tool by name, is refused,
+    # searches, and escalates. compare_cells must see both and say so.
+    t, sol = BY_ID["T12"], SOLUTIONS["T12"]
+    ver, ship, esc = sol
+    tmp = Path(tempfile.mkdtemp())
+    arms = {"preload": [ver, ship],
+            "preload-named": [ver, ship,
+                              ("search_tools", {"query": "shipment tracking status"}), ship,
+                              esc, ("search_tools", {"query": "escalate to human"}), esc]}
+    for run, (mode, script) in zip(("C", "N"), arms.items()):
+        for i in range(2):
+            w = TraceWriter(root=str(tmp), run_id=f"{run}/full+search-300")
+            db = Database.fresh(t.db_patch)
+            res = run_episode(t, db, ScriptedBackend(list(script)), trace=w,
+                              run_index=i, policy_mode=mode,
+                              exposure=build_exposure("search-300", SOLUTIONS))
+            v = verify(t, db)
+            w.close_episode(res.stop_reason.value, v.passed, v.failures, res.budget)
+            w.close()
+    head = json.loads(next((tmp / "N" / "full+search-300").glob("*.jsonl"))
+                      .read_text().splitlines()[0])
+    check("the trace header records the policy variant",
+          head.get("policy_mode") == "preload-named", str(head.get("policy_mode")))
+    spec = importlib.util.spec_from_file_location(
+        "cc", Path(__file__).resolve().parent.parent / "scripts" / "compare_cells.py")
+    cc = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(cc)
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out):
+        cc.main([str(tmp / "C" / "full+search-300"), str(tmp / "N" / "full+search-300")])
+    text = out.getvalue()
+    line = next((l for l in text.splitlines() if l.strip().startswith("escalate_to_human")), "")
+    check("compare_cells counts the escalations among episodes that need one, "
+          "and the refused first guesses",
+          re.search(r"0/2 \(0\)\s+2/2 \(2\)", line) is not None, line)
+    check("…and both arms' pass rates and policy modes",
+          "preload-named" in text and "pass^1" in text and "1.000" in text, text[:600])
+
+
 def main() -> int:
     test_distractors()
     test_arms_are_comparable()
@@ -653,6 +720,7 @@ def main() -> int:
     test_audit_uses_todays_verdicts()
     test_lookups_are_read_only()
     test_search_is_confined_to_its_arm()
+    test_tool_naming_experiment()
     print(f"\n{len(PASS)} passed, {len(FAIL)} failed")
     for f in FAIL:
         print(f"  FAILED: {f}")
