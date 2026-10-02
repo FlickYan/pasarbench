@@ -50,8 +50,49 @@ The full policy follows. It is authoritative.
 ---"""
 
 
-def policy_text() -> str:
-    return POLICY_PATH.read_text()
+# The tool-naming experiment (docs/RUNBOOK.md, 1g). Behind search, the agent
+# never looked for three tools -- escalation, shipment lookup, goodwill
+# voucher -- and the policy describes those actions without naming a tool;
+# the tools it does name, the agent found (WRITEUP, Result 1). This variant
+# names them where the policy describes each action and changes nothing
+# else: strip every NAMED_MARK and the text is the policy, byte for byte.
+NAMED_MARK = " (tool: `{}`)"
+_NAMED = (
+    ("action. Escalate with category `identity_unverified`.",
+     "action. Escalate with category `identity_unverified`{esc}."),
+    ("Compute this from the shipment's `delivered` timestamp, not the order date.",
+     "Compute this from the shipment's `delivered` timestamp{ship}, not the order date."),
+    ("**P6.2** You may offer a **goodwill voucher** worth",
+     "**P6.2** You may offer a **goodwill voucher**{vou} worth"),
+    ("escalate with category `out_of_window_dispute`.",
+     "escalate with category `out_of_window_dispute`{esc}."),
+    ("**P8.3** A shipment in `customs_hold` for more than 5 days",
+     "**P8.3** A shipment in `customs_hold`{ship} for more than 5 days"),
+    ("Escalate with category\n`customs_hold` and offer",
+     "Escalate with category\n`customs_hold`{esc} and offer"),
+    ("**P8.4** A shipment with no scan for more than 10 days",
+     "**P8.4** A shipment with no scan{ship} for more than 10 days"),
+    ("courier's redelivery service and provide the tracking number.",
+     "courier's redelivery service and provide the tracking number{ship}."),
+    ("Escalate, and take no other write action, when",
+     "Escalate{esc}, and take no other write action, when"),
+)
+NAMED_TOOLS = ("escalate_to_human", "get_shipment", "issue_goodwill_voucher")
+
+
+def policy_text(named: bool = False) -> str:
+    text = POLICY_PATH.read_text()
+    if not named:
+        return text
+    marks = {"esc": NAMED_MARK.format("escalate_to_human"),
+             "ship": NAMED_MARK.format("get_shipment"),
+             "vou": NAMED_MARK.format("issue_goodwill_voucher")}
+    for old, new in _NAMED:
+        if text.count(old) != 1:
+            raise ValueError(f"policy.md changed: {old!r} must occur exactly once "
+                             f"for the named variant")
+        text = text.replace(old, new.format(**marks))
+    return text
 
 
 def system_prompt(user_id: str, market: str, mode: str = "preload") -> str:
@@ -59,6 +100,8 @@ def system_prompt(user_id: str, market: str, mode: str = "preload") -> str:
         block = PREAMBLE_JIT
     elif mode == "preload":
         block = PREAMBLE_PRELOAD.format(policy=policy_text())
+    elif mode == "preload-named":
+        block = PREAMBLE_PRELOAD.format(policy=policy_text(named=True))
     elif mode == "none":
         block = ""
     else:
