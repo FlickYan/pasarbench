@@ -17,7 +17,7 @@ rollouts ──▶ verifier ──▶ group advantage ──▶ policy update �
 `pasar` = market (Malay/Indonesian). Hardware: a laptop for everything but serving and post-training, which run on one rented B200 (or H200, or two H100s: Modal Notebook, Modal jobs or Lambda, [docs/GPU_GUIDE.md](docs/GPU_GUIDE.md)).
 
 **[Runbook →](docs/RUNBOOK.md)** · **[Results →](RESULTS.md)** · **[What failed →](docs/WHAT_FAILED.md)** ·
-**[Writeup kit →](docs/WRITEUP.md)** · **[Build log →](docs/README_weekly.md)**
+**[Writeup kit →](docs/WRITEUP.md)** · **[Blog post →](docs/BLOG.md)** · **[Build log →](docs/README_weekly.md)**
 
 ## What it found
 
@@ -29,9 +29,9 @@ are re-scored by replaying their tool calls (`scripts/rescore.py`).
 
 - **The fine-tune learned the verifier, not the policy.** RFT gained 2.3 points
   (p = 0.18) because two checks demanded one lookup tool where the policy only
-  needs the fact. Corrected and re-scored — nothing re-run — the gain is 0.5
-  points (p = 0.71), and the API reference the quirk had put 4 points above the
-  base model is 6.7 below it (p = 0.007; on pass^k it was never ahead, and now
+  needs the fact. Corrected and re-scored — nothing re-run — the gain is 0.3
+  points (p = 0.84), and the API reference the quirk had put 4 points above the
+  base model is 6.6 below it (p = 0.004; on pass^k it was never ahead, and now
   trails by 9.7). A review found the first fix too loose; tightened, it moved no
   verdict ([WHAT_FAILED #30](docs/WHAT_FAILED.md)).
 - **Search-based tool exposure cost 22% more tokens and bought nothing**: 11.5
@@ -67,11 +67,11 @@ python -m pasarbench.run          # null agent → 0.0, reference agent → 1.0
 python -m tests.test_traps        # 10 naive solutions, all must be rejected
 python -m tests.test_harness      # 28 harness invariants
 python -m tests.test_reward       # 30 reward + dataset invariants
-python -m tests.test_generated    # 107 checks over all 199 generated tasks: dates in causal order, the same world in every process, reads of the task's own order, simulator QA
+python -m tests.test_generated    # 108 checks over all 199 generated tasks: dates in causal order, the same world in every process, reads of the task's own order, simulator QA
 python -m tests.test_rescore      # 29 re-scoring invariants: the pre-v19 world, replay by digest and by length, the same tool errors on every Python, nothing re-scored on a guess
 python -m tests.test_context      # 39 context-strategy + analysis invariants
 python -m tests.test_judge        # 83 judge + agreement-statistics invariants, judged against today's checks
-python -m tests.test_exposure     # 108 tool-scaling + diagnosis invariants
+python -m tests.test_exposure     # 114 tool-scaling + diagnosis invariants, the tool-naming experiment
 python -m tests.test_serving      # 54 metrics (SGLang and vLLM), cost and quality-guard invariants
 python -m tests.test_report       # 48 report invariants: paired verdicts, ties, replication, calibration, noise floor, post-training, both scorings in every section
 python -m tests.test_training     # 155 checks: split, customer family, collection and resume, examples (Qwen3 and Qwen3.8 formats) against an SGLang-like server, adapter routing, the LoRA probe, serve and Modal scripts, one-GPU memory plans, the notebook helper (progress in place, an interrupt-proof cleanup), the CUDA compiler, run settings, LoRA steps on Qwen3 and Qwen3.8's hybrid architecture, training data picked by today's checks (113 without transformers/torch)
@@ -134,8 +134,8 @@ Mandarin-register simplified is the faithful choice for a text benchmark.
 
 SEA-specific content that no US-built benchmark has: **cash on delivery** (no
 instrument to refund to), **livestream purchase disputes**, **zero-minor-unit
-currencies** (IDR and VND — an agent that divides by 100 is wrong in half the
-markets), peak-sale SLA extensions, and customs holds.
+currencies** (IDR and VND — an agent that divides by 100 is wrong in two of the
+six markets), peak-sale SLA extensions, and customs holds.
 
 ### The flagship trap
 
@@ -328,9 +328,10 @@ scripts/    gpu_pipeline.sh gpu_plan.py modal_pipeline.py pasar_notebook.py
             cuda_home.py setup_node.sh download_weights.sh
             serve_sglang.sh train_rft.py train_grpo.py make_report.py
             audit_tool_arms.py inspect_trace.py run_judges.py rescore.py
+            compare_cells.py
             slurm_train.sh slurm_sweep.sh modal_vllm.py
 tests/      12 suites, 650+ assertions
-docs/       RUNBOOK.md  GPU_GUIDE.md  WHAT_FAILED.md  WRITEUP.md  README_weekly.md
+docs/       RUNBOOK.md  GPU_GUIDE.md  WHAT_FAILED.md  WRITEUP.md  BLOG.md  README_weekly.md
 ```
 
 ---
@@ -347,9 +348,10 @@ careful reader notices.
   one judge (`qwen3.8-flash`); post-training is one base model (`Qwen3.8-27B`),
   one recipe, one run.
 - **A check encodes a choice about what establishes a fact.** v19 found two
-  that demanded one lookup tool ([WHAT_FAILED #30](docs/WHAT_FAILED.md)); the
-  photo trap still requires `verify_identity`, a process step the policy
-  demands before a write, and this trap has no write.
+  that demanded one lookup tool, and one that demanded identity verification
+  where the policy asks for it only before a write
+  ([WHAT_FAILED #30](docs/WHAT_FAILED.md)). Others may still be waiting: what a
+  trap's failures have in common is where to look.
 - **The false-claim check reads English only**, and only the phrasings it was
   written for — the same kind of instrument as the leak detector, so its counts
   are a floor.
@@ -358,7 +360,7 @@ careful reader notices.
   Singlish deliberately was not machine-translated, because the particles and
   code-switching are the part that breaks agents.
 - **52 of 199 generated tasks are "do no harm" traps** that a cautious
-  lookup-only agent passes for free — and so does one that stalls: 4 of the 186
+  lookup-only agent passes for free — and so does one that stalls: 4 of the 234
   photo-trap episodes the v19 checks promoted never asked for photos.
   `tests/test_generated.py` exempts them explicitly rather than pretending
   otherwise. They are the argument for the judge.
