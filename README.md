@@ -38,9 +38,13 @@ are re-scored by replaying their tool calls (`scripts/rescore.py`).
   points below exposing all 20 tools (7 tasks worse, 1 better, p = 0.07 — it
   read p = 0.021 before the checker fix). Of 21 times a failed episode needed a
   hidden tool, the agent never searched for it 17 times — always a tool the
-  policy describes but never names.
-- **The agent claimed actions it never took** — in this run, only when the tool
-  was out of sight: 3 of 14 readable search-arm failures, 0 of 20 elsewhere.
+  policy describes but never names. Naming those three tools in the policy, in
+  a re-run against a same-day control, took escalations from 12 to 21 of the 24
+  episodes that needed one and pass^1 from 0.844 to 0.938 (6 tasks better, 1
+  worse, p = 0.125), for 18% more tokens ([RUNBOOK 1g](docs/RUNBOOK.md)).
+- **The agent claimed actions it never took** — only when the tool was out of
+  sight: 3 of 14 readable search-arm failures, 0 of 19 elsewhere. The same-day
+  control repeated it, 3 of 14; with the tools named, 0 of 6.
 - **An LLM judge could not stand in for the database.** Its best configuration —
   with the tool results and the policy — reached κ = 0.72 and still accepted 6
   of 15 failed episodes. It caught one of three false claims and noticed another
@@ -74,7 +78,7 @@ python -m tests.test_judge        # 83 judge + agreement-statistics invariants, 
 python -m tests.test_exposure     # 114 tool-scaling + diagnosis invariants, the tool-naming experiment
 python -m tests.test_serving      # 54 metrics (SGLang and vLLM), cost and quality-guard invariants
 python -m tests.test_report       # 48 report invariants: paired verdicts, ties, replication, calibration, noise floor, post-training, both scorings in every section
-python -m tests.test_training     # 155 checks: split, customer family, collection and resume, examples (Qwen3 and Qwen3.8 formats) against an SGLang-like server, adapter routing, the LoRA probe, serve and Modal scripts, one-GPU memory plans, the notebook helper (progress in place, an interrupt-proof cleanup), the CUDA compiler, run settings, LoRA steps on Qwen3 and Qwen3.8's hybrid architecture, training data picked by today's checks (113 without transformers/torch)
+python -m tests.test_training     # 160 checks: split, customer family, collection and resume, examples (Qwen3 and Qwen3.8 formats) against an SGLang-like server, adapter routing, the LoRA probe, serve and Modal scripts, one-GPU memory plans, the notebook helper (progress in place, an interrupt-proof cleanup), the CUDA compiler, run settings, LoRA steps on Qwen3 and Qwen3.8's hybrid architecture, training data picked by today's checks, a push script that keeps runs and keys off GitHub (118 without transformers/torch)
 
 python -m pasarbench.sweep --backend scripted --suite all
 python scripts/make_report.py     # regenerates RESULTS.md; never hand-fill it
