@@ -321,12 +321,13 @@ TASKS: list[Task] = [
                   label="no store credit in place of the evidence (P4.2 is for COD refunds)"),
             ],
             required_actions=[
-                A("verify_identity", {"user_id": "U004"}),
                 # This used to demand check_return_eligibility, on the grounds
                 # that it is how the agent learns photos are needed. It is one
                 # way: P3.3 turns on the item's value, which get_order and the
                 # other value_reads show too, and P3.2 requires the check only
-                # before initiate_return -- which this task forbids.
+                # before initiate_return -- which this task forbids. It also
+                # demanded verify_identity, which P1.1 requires only before a
+                # write; the right answer here writes nothing (#30).
                 A("check_return_eligibility", {"order_item_id": "OI5"},
                   alt=value_reads("O1005", "OI5", "P008")),
             ],
