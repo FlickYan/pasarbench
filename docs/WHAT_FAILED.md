@@ -713,7 +713,7 @@ had no Chinese ask-patterns and stonewalled (#11, #26). That run holds the only
 significant language gaps in the project: zh-MY +26 points (p < 0.01) and
 zh-SG +29 points (p = 0.02). In `C-clean`, the same tasks without gating, both
 are within nine points of English with p ≥ 0.62. (Under the v19 checks, #30:
-+23 and +28 points in G, and within three points in C.) The report attributed the
++21 and +28 points in G, and within three points in C.) The report attributed the
 fake gap to tokenisation.
 
 **Why it matters.** Nothing flagged it. The section named its source run in
@@ -1017,15 +1017,15 @@ change of #9, and one in run F.
 
 | | as recorded | today's checks |
 |---|---|---|
-| base, pass^1 (pass^k) | 0.859 (0.805) | 0.972 (0.916) |
-| RFT | 0.882 (0.837) | 0.977 (0.935) |
-| reference | 0.899 (0.800) | 0.905 (0.819) |
-| RFT vs base, paired | +0.023; 22 better, 13 worse, p = 0.175 | +0.005; 16 better, 13 worse, p = 0.711 |
-| reference vs base, paired | +0.040; 39 better, 32 worse, p = 0.477 | −0.067; 15 better, 35 worse, **p = 0.007** |
+| base, pass^1 (pass^k) | 0.859 (0.805) | 0.979 (0.930) |
+| RFT | 0.882 (0.837) | 0.981 (0.949) |
+| reference | 0.899 (0.800) | 0.913 (0.833) |
+| RFT vs base, paired | +0.023; 22 better, 13 worse, p = 0.175 | +0.003; 13 better, 11 worse, p = 0.839 |
+| reference vs base, paired | +0.040; 39 better, 32 worse, p = 0.477 | −0.066; 12 better, 32 worse, **p = 0.004** |
 | search-300 vs all-20 (tool scaling) | −0.135; 9 worse, 1 better, p = 0.021 | −0.115; 7 worse, 1 better, p = 0.070 |
 
-Twenty of the fine-tune's 25-episode gain were the checker (923 → 948
-passing, recorded; 1,045 → 1,050 now); its pass^k lead shrinks from 3.2 points
+Twenty-two of the fine-tune's 25-episode gain were the checker (923 → 948
+passing, recorded; 1,052 → 1,055 now); its pass^k lead shrinks from 3.2 points
 to 1.9. On pass^1 the reference and the base model swap places. On pass^k —
 every seed of a task passing, the number this benchmark calls the one that
 matters — the reference was already level with the base model (0.800 against
@@ -1037,8 +1037,7 @@ longer significant. The judges' agreement with the verifier moves too (best
 κ 0.65 → 0.72 on the judges' re-run, 0.56 → 0.61 on their first), as do the
 noise floor and the context and language tables a little; RESULTS.md shows
 each paired test under both scorings and names any conclusion that changed —
-only these two did. No verdict moved from pass to
-fail, and none moved in a trap whose checks did not change — which is what a
+only these two did. No verdict moved from pass to fail, and none moved in a trap whose checks did not change — which is what a
 correct replay of a relaxed check has to show, and `rescore.py` prints it per
 trap.
 
@@ -1049,12 +1048,15 @@ the photo trap (`check_return_eligibility`, `get_order`, `get_order_items`,
 `get_product` of this item's product, `calculate_refund_amount` for this
 item). P3.2 requires the eligibility check before `initiate_return`, and a
 return is what this task forbids. The photo trap is now a do-no-harm trap like
-the peak trap, and the spam tests exempt it for the same reason.
-`verify_identity` is still required there — a deliberate choice, since the
-customer is asking for a return and P1.1 puts verification before one — but it
-is now the one process requirement left on that trap: 20 of its 21 remaining
-failures across the three runs are that alone, and in all 20 the agent never
-called it.
+the peak trap, and the spam tests exempt it for the same reason. It also
+required `verify_identity` — kept at first, since the customer is asking for a
+return — until that was the only thing its failures had in common: 20 of the
+21 left across the three runs, none of which called it. P1.1 puts verification
+before a *write*, P1.3 lets the agent answer without it, and the right answer
+here writes nothing: the same mistake as naming one lookup. Dropped, it
+promotes 48 more episodes across all runs, every one of them asking for
+photos, and leaves one failure on the trap in the three runs: the base model
+opening the return and refunding on photos the customer never sent.
 
 The first version of the fix was looser, and a review of it found three ways
 to pass without the fact. Alternatives matched on the tool's name, so reading
@@ -1068,7 +1070,7 @@ the order total `list_user_orders` shows, shipping included, is no longer
 taken for the item's value. Re-scored, none of it moves a verdict: every
 promoted episode read its own order, none compensated, and none relied on a
 failed verification. The promoted episodes were read as well: all 117 on the
-peak trap tell the customer about the extended sale SLA, and 182 of the 186 on
+peak trap tell the customer about the extended sale SLA, and 230 of the 234 on
 the photo trap ask for photos. The four that do not are one tool-scaling arm's
 (`I-tools`, random-100), where the agent stalled asking for an item id — and a
 do-no-harm check passes a stall.
