@@ -29,6 +29,11 @@ Full judge reasons (RESULTS.md truncates them) are in
 If you change a number, change it by re-running, never by hand. A published
 post containing a number you never ran is a worse outcome than no post.
 
+`docs/BLOG.md` is Part 1 as a post ready to publish: no source comments, no
+recorded-verdict asides, and the two "What failed" stories folded into a closing
+list of lessons. Its numbers are the ones below, so a number that changes here
+changes there too. Set the repo link in its last line before posting.
+
 **Models, as served.** Agent `deepseek-v4-pro`; simulated customer and judges
 `qwen3.8-flash` — a different family from the agent, to avoid self-preference.
 No alias re-routing was recorded in the traces. Runs of 2026-09-18 to 09-19
@@ -102,9 +107,10 @@ refuses a cash-on-delivery order because there is no card to refund, but
 *that* is the agent's job. If the tools enforced policy, every agent would
 score 100%.
 
-Each task has **locale twins**: the same world and byte-identical pass
-criteria, in another language. Only the words change, so a gap between twins
-is language and nothing else.
+183 of the 215 tasks have **locale twins**: the same world and byte-identical
+pass criteria, in another language. Only the words change, so a gap between
+twins is language and nothing else.
+<!-- python -c "from collections import Counter; from pasarbench.rescore import all_tasks; t = all_tasks(); c = Counter(id(x.checks) for x in t.values()); print(sum(c[id(x.checks)] > 1 for x in t.values()), 'of', len(t))"  -> 183 of 215; the 32 without a twin are the 16 PH tasks (English only) and the hand-written T01-T16 -->
 
 ### Result 1: the agent searches for tools it already knows about
 
@@ -117,8 +123,8 @@ needed; and search over 300.
 <!-- RESULTS.md §2 -->
 
 With 100 tools the agent was not measurably less accurate than with the oracle
-set — 4 tasks worse, none better, p = 0.125 — but each episode cost 2.7 times
-the tokens of the 20-tool registry.
+set — 3 tasks worse, none better, p = 0.25 (4 and p = 0.125 on the recorded
+verdicts) — but each episode cost 2.7 times the tokens of the 20-tool registry.
 <!-- RESULTS.md §2 Reading: INCONCLUSIVE at 100 tools; 101,708 vs 38,041 = 2.7x -->
 
 Search cost more and bought nothing: 22% more tokens per episode, and 11.5
@@ -148,10 +154,10 @@ the 11.11 sale.
 
 And this is where the false claims came from. Three of the fourteen search-arm
 failures I could read said an action had happened that never did. In the four
-arms where the needed tools were always visible: none, in twenty failures. The
+arms where the needed tools were always visible: none, in nineteen failures. The
 numbers are small, but the shape is right — an agent that knows what it should
 do and can't find the tool to do it says it did it anyway.
-<!-- audit_tool_arms.py §3: search-300 read 14, claimed-not-done 3; all-100 0/7, all-20 0/4, oracle 0/2, random-100 0/7 -->
+<!-- audit_tool_arms.py §3: search-300 read 14, claimed-not-done 3; all-100 0/6, all-20 0/4, oracle 0/2, random-100 0/7 -->
 
 ### Result 2: an LLM judge takes the agent's word for it
 
@@ -248,7 +254,7 @@ It went further than a wrong number. My third fix withheld each fact from the
 simulator until the agent asked for it — judged by the same patterns. In
 Indonesian and Chinese, the customer now stonewalled: it left 74% and 85% of
 the agent's requests unanswered, against 17% in English. That run holds the
-only significant language gaps in the project: Chinese 23 and 28 points below
+only significant language gaps in the project: Chinese 21 and 28 points below
 English (26 and 29 on the recorded verdicts). When my report picked a run for
 its language section, a tie-break chose that one, and pointed at
 tokenisation.
@@ -290,14 +296,14 @@ the base model.
 The environment is deterministic, so I didn't re-run anything. I corrected both
 checks and replayed the tool calls of every conversation I had recorded —
 8,941 of 9,766 reproduced call for call; the rest keep their original verdict
-— and scored the rebuilt databases again. Base and fine-tune now tie: 0.972 and
-0.977, 16 tasks better, 13 worse, p = 0.71. Twenty of the fine-tune's 25 extra
-passes were my checker. The API model I used as a reference calls `get_order`
+— and scored the rebuilt databases again. Base and fine-tune now tie: 0.979 and
+0.981, 13 tasks better, 11 worse, p = 0.84. Twenty-two of the fine-tune's 25
+extra passes were my checker. The API model I used as a reference calls `get_order`
 in 95% of its conversations, and the quirk had flattered it too: it goes from
-4 points above the base model to 6.7 points below it, p = 0.007. On pass^k —
+4 points above the base model to 6.6 points below it, p = 0.004. On pass^k —
 every seed of a task passing — it had never been ahead (0.800 against 0.805),
 and now trails by 9.7 points.
-<!-- RESULTS.md §6 (both tables) and §7; get_order in 1,024 of 1,075 reference episodes; pass^k 0.800/0.805 recorded, 0.819/0.916 now -->
+<!-- RESULTS.md §6 (both tables) and §7; get_order in 1,024 of 1,075 reference episodes; pass^k 0.800/0.805 recorded, 0.833/0.930 now -->
 
 It reached back to Result 1. Search keeps `get_order` in view and hides the
 eligibility check, so two of search's failures were this quirk, and its
@@ -306,11 +312,15 @@ accuracy loss stopped being significant.
 Before quoting any of it I went back over the fix, and it was too loose: a
 read of *another* customer's orders counted, a verification with the wrong
 digits counted, and nothing stopped store credit standing in for the forbidden
-voucher. Tightened, it moved not one verdict. Then I read the conversations it
-had promoted: all 117 on the sale-delay trap explain the extended delivery
-window, and 182 of 186 on the photo trap ask for photos. A replay can re-score
-everything; only reading says the re-scoring means what you think.
-<!-- WHAT_FAILED #30 Fix: 0 of 9,766 verdicts moved; promoted episodes read: peak 117/117, photo 182/186 -->
+voucher. Tightened, it moved not one verdict. And the same question — does
+the policy require this? — caught one more requirement: the photo trap still
+demanded identity verification, which the policy asks for only before a
+write, in a case whose right answer writes nothing. Then I read the
+conversations the fixes had promoted: all 117 on the sale-delay trap explain
+the extended delivery window, and 230 of 234 on the photo trap ask for photos.
+A replay can re-score everything; only reading says the re-scoring means what
+you think.
+<!-- WHAT_FAILED #30 Fix: tightening moved 0 of 9,766 verdicts; promoted episodes read: peak 117/117, photo 230/234 -->
 
 What the fine-tune really changed is small and mixed. It got better at
 escalating duplicate refunds, and worse at out-of-window disputes: in four
@@ -377,8 +387,8 @@ One line each, a number, and the mechanism. Pick three.
 > **Caught a fine-tune learning my verifier instead of my policy**: RFT on
 > Qwen3.8-27B gained 2.3 points (p = 0.18) only because two checks demanded one
 > lookup tool the policy didn't require; re-scoring 9,766 recorded episodes by
-> deterministic replay — no GPU — cut the gain to 0.5 (p = 0.71) and put the
-> API reference 6.7 points below the base model (p = 0.007), where the quirk
+> deterministic replay — no GPU — cut the gain to 0.3 (p = 0.84) and put the
+> API reference 6.6 points below the base model (p = 0.004), where the quirk
 > had put it 4 points above.
 
 > **Showed an LLM judge cannot stand in for state verification**: its best
@@ -490,12 +500,12 @@ runs, and that the one "significant" gap traced to a bug.
 agent and simulator at 32 tasks. It's why every comparison in the report is a
 paired test, and why several verdicts say INCONCLUSIVE.
 
-**"So did RFT work?"** Not measurably, once the checker was fixed: +0.5 points,
-p = 0.71. What it did do is move behaviour between traps — better at
+**"So did RFT work?"** Not measurably, once the checker was fixed: +0.3 points,
+p = 0.84. What it did do is move behaviour between traps — better at
 escalating duplicate refunds, worse at out-of-window disputes, where it copied
 the livestream trap's answer. The next run would build its data with the
 corrected checks and balance it by trap, and I'd read the per-trap table as the
-result. GRPO isn't worth it yet: at 0.97 the suite is nearly saturated for this
+result. GRPO isn't worth it yet: at 0.98 the suite is nearly saturated for this
 model, so it needs harder traps first.
 
 **"Why didn't you re-run the evaluation after fixing the checker?"** I didn't
