@@ -31,7 +31,7 @@ is shown inline. **Do not fill these in by hand** — re-run and regenerate.
 | `full` | 0.927 | 0.875 | 38,720 | +0.0% | baseline | baseline |
 | `window8` | 0.979 | 0.969 | 38,256 | +1.2% | +0.052; 4↑ 0↓, p=0.125 | 19 cheaper, 13 costlier, p=0.377 |
 | `window4` | 0.885 | 0.812 | 43,344 | -11.9% | -0.042; 1↑ 5↓, p=0.219 | 16 cheaper, 16 costlier, p=1.000 |
-| `trim3` | 0.927 | 0.875 | 38,946 | -0.6% | +0.000; 2↑ 3↓, p=1.000 | 17 cheaper, 15 costlier, p=0.860 |
+| `trim3` | 0.938 | 0.906 | 38,946 | -0.6% | +0.010; 2↑ 2↓, p=1.000 | 17 cheaper, 15 costlier, p=0.860 |
 | `notes4` | 0.948 | 0.906 | 39,638 | -2.4% | +0.021; 3↑ 2↓, p=1.000 | 14 cheaper, 18 costlier, p=0.597 |
 
 **INCONCLUSIVE on accuracy** — no strategy's pass rate differs from `full` beyond noise over 32 tasks. Do not rank strategies by the pass^1 column.
@@ -46,8 +46,7 @@ No strategy's token cost differs from `full` beyond noise either.
   - `perishable_refund_without_return` -0.33
   - `out_of_window_dispute_escalate` -0.17
 
-**`trim3`** -- 2 trap(s) lower by more than 0.05, but the strategy is not resolved overall (+0.000; 2↑ 3↓, p=1.000): leads to read, not losses
-  - `high_value_photo_required_first` -0.17
+**`trim3`** -- 1 trap(s) lower by more than 0.05, but the strategy is not resolved overall (+0.010; 2↑ 2↓, p=1.000): leads to read, not losses
   - `livestream_claim_overrides_window` -0.17
 
 **`notes4`** -- 2 trap(s) lower by more than 0.05, but the strategy is not resolved overall (+0.021; 3↑ 2↓, p=1.000): leads to read, not losses
@@ -61,7 +60,7 @@ No strategy's token cost differs from `full` beyond noise either.
 | `full` | 0.920 | 0.917 | 1.000 |
 | `window8` | 0.973 | 1.000 | 1.000 |
 | `window4` | 0.893 | 0.833 | 0.889 |
-| `trim3` | 0.907 | 1.000 | 1.000 |
+| `trim3` | 0.920 | 1.000 | 1.000 |
 | `notes4` | 0.933 | 1.000 | 1.000 |
 
 Unpaired rates over whatever tasks each language drew in this run: a gap here mixes language with task difficulty. A language effect is measured on locale twins, in the multilingual section.
@@ -72,7 +71,7 @@ Unpaired rates over whatever tasks each language drew in this run: a gap here mi
 |---|---|---|
 | `window8` vs `full` | +0.062; 0 worse, 5 better, p=0.062 | +0.052; 0 worse, 4 better, p=0.125 |
 | `window4` vs `full` | -0.031; 5 worse, 2 better, p=0.453 | -0.042; 5 worse, 1 better, p=0.219 |
-| `trim3` vs `full` | +0.010; 3 worse, 3 better, p=1.000 | +0.000; 3 worse, 2 better, p=1.000 |
+| `trim3` vs `full` | +0.010; 3 worse, 3 better, p=1.000 | +0.010; 2 worse, 2 better, p=1.000 |
 
 
 ## 2. Tool scaling
@@ -85,13 +84,13 @@ Unpaired rates over whatever tasks each language drew in this run: a gap here mi
 |---|---|---|---|---|---|---|
 | `oracle` | 5 | 452 | 25,285 | 0.979 | 0/96 | 0.979 (96) |
 | `all-20` | 20 | 1,762 | 38,041 | 0.958 | 0/96 | 0.958 (96) |
-| `all-100` | 100 | 9,670 | 101,708 | 0.927 | 0/96 | 0.927 (96) |
+| `all-100` | 100 | 9,670 | 101,708 | 0.938 | 0/96 | 0.938 (96) |
 | `random-100` | 100 | 9,753 | 88,974 | 0.927 | 0/96 | 0.927 (96) |
 | `search-300` | 5 | 793 | 46,423 | 0.844 | 0/96 | 0.844 (96) |
 
 ### Reading
 
-- **INCONCLUSIVE at 100 tools** — no accuracy loss distinguishable from noise. `all-100` vs oracle: -0.052; 4 tasks worse, 0 better, sign test p=0.125 over 32 tasks. `random-100` vs oracle: -0.052; 6 tasks worse, 1 better, sign test p=0.125 over 32 tasks. Cost is not in doubt: 101,708 tokens per episode against 25,285 for oracle (4.0x) and 38,041 for all-20 (2.7x — what the distractors alone cost).
+- **INCONCLUSIVE at 100 tools** — no accuracy loss distinguishable from noise. `all-100` vs oracle: -0.042; 3 tasks worse, 0 better, sign test p=0.250 over 32 tasks. `random-100` vs oracle: -0.052; 6 tasks worse, 1 better, sign test p=0.125 over 32 tasks. Cost is not in doubt: 101,708 tokens per episode against 25,285 for oracle (4.0x) and 38,041 for all-20 (2.7x — what the distractors alone cost).
   Both 100-tool arms lose on: `identity_verification_failure` (oracle 1.00, all 0.50, random 0.67). A lead to read in the traces, not a result.
 - `search-300` vs `all-20`: -0.115; 7 tasks worse, 1 better, sign test p=0.070 over 32 tasks. Total tokens per episode 46,423 vs 38,041 (+22%), steps 10.4 vs 7.7, schema tokens per call 793 vs 1,762.
   Loses ≥0.5 on: `customs_hold_escalate`, `duplicate_refund_escalate`. Before naming a cause, read those traces: did the agent search for the tool and the ranker miss it, or never search at all? `python scripts/audit_tool_arms.py traces/<run>` separates the two, from the traces alone.
@@ -100,6 +99,8 @@ Unpaired rates over whatever tasks each language drew in this run: a gap here mi
 
 | contrast | recorded | today's checks |
 |---|---|---|
+| `all-100` vs `oracle` | -0.052; 4 worse, 0 better, p=0.125 | -0.042; 3 worse, 0 better, p=0.250 |
+| `all-100` vs `random-100` | +0.000; 4 worse, 4 better, p=1.000 | +0.010; 3 worse, 4 better, p=1.000 |
 | `search-300` vs `all-20` | -0.135; 9 worse, 1 better, p=0.021 | -0.115; 7 worse, 1 better, p=0.070 |
 
 **The checker change moves a conclusion here:** `search-300` vs `all-20`: worse (p=0.021) recorded, inconclusive (p=0.070) now.
@@ -117,7 +118,7 @@ Unpaired rates over whatever tasks each language drew in this run: a gap here mi
 | `en` | 545 | 0.912 | 0.000 | 0.000 | 0.000 | 0.000 | 29.048 |
 | `id` | 80 | 0.887 | 0.000 | 0.000 | 0.000 | 0.000 | 27.782 |
 | `ms` | 80 | 0.950 | 0.000 | 0.000 | 0.030 | 0.000 | 33.945 |
-| `sg-en` | 65 | 0.923 | 0.000 | 0.000 | 0.000 | 0.000 | 28.974 |
+| `sg-en` | 65 | 0.954 | 0.000 | 0.000 | 0.000 | 0.000 | 28.974 |
 | `th` | 80 | 0.988 | 0.000 | 0.000 | 0.000 | 0.000 | 29.943 |
 | `vi` | 80 | 0.938 | 0.000 | 0.000 | 0.000 | 0.000 | 29.109 |
 | `zh-MY` | 80 | 0.938 | 0.000 | 0.000 | - | 0.000 | 71.924 |
@@ -129,7 +130,7 @@ Unpaired rates over whatever tasks each language drew in this run: a gap here mi
 |---|---|---|---|---|---|---|
 | `id` | 16 | 0.900 | 0.887 | +0.013 | 1 / 1 | 1.000 |
 | `ms` | 16 | 0.912 | 0.950 | -0.038 | 0 / 2 | 0.500 |
-| `sg-en` | 13 | 0.908 | 0.923 | -0.015 | 2 / 2 | 1.000 |
+| `sg-en` | 13 | 0.908 | 0.954 | -0.046 | 1 / 2 | 1.000 |
 | `th` | 16 | 0.912 | 0.988 | -0.075 | 0 / 4 | 0.125 |
 | `vi` | 16 | 0.950 | 0.938 | +0.012 | 3 / 1 | 0.625 |
 | `zh-MY` | 16 | 0.912 | 0.938 | -0.025 | 0 / 1 | 1.000 |
@@ -147,12 +148,12 @@ Gap = English minus this language on the SAME tasks (positive: this language doe
 
 | lang | `C-clean/full` | `D-nozh/full` | `G-gated/full` | reading |
 |---|---|---|---|---|
-| `id` | +0.013 (1↓ 1↑, p=1.00) | +0.000 (2↓ 2↑, p=1.00) | +0.450 (9↓ 2↑, p=0.07) | null in every run; closest: `G-gated/full` +0.450, p=0.07 |
-| `ms` | -0.038 (0↓ 2↑, p=0.50) | +0.037 (1↓ 0↑, p=1.00) | -0.000 (3↓ 1↑, p=0.62) | null in every run — and the sign flips |
-| `sg-en` | -0.015 (2↓ 2↑, p=1.00) | -0.031 (1↓ 1↑, p=1.00) | -0.046 (1↓ 2↑, p=1.00) | null in every run |
+| `id` | +0.013 (1↓ 1↑, p=1.00) | +0.000 (2↓ 2↑, p=1.00) | +0.412 (9↓ 2↑, p=0.07) | null in every run; closest: `G-gated/full` +0.412, p=0.07 |
+| `ms` | -0.038 (0↓ 2↑, p=0.50) | +0.037 (1↓ 0↑, p=1.00) | -0.013 (2↓ 1↑, p=1.00) | null in every run — and the sign flips |
+| `sg-en` | -0.046 (1↓ 2↑, p=1.00) | -0.062 (0↓ 1↑, p=1.00) | -0.077 (0↓ 2↑, p=0.50) | null in every run |
 | `th` | -0.075 (0↓ 4↑, p=0.12) | +0.037 (2↓ 1↑, p=1.00) | -0.050 (2↓ 2↑, p=1.00) | null in every run — and the sign flips |
-| `vi` | +0.012 (3↓ 1↑, p=0.62) | -0.013 (0↓ 1↑, p=1.00) | -0.038 (0↓ 2↑, p=0.50) | null in every run — and the sign flips |
-| `zh-MY` | -0.025 (0↓ 1↑, p=1.00) | - | +0.225 (11↓ 1↑, p=0.01) | significant in some runs only — does not replicate |
+| `vi` | +0.012 (3↓ 1↑, p=0.62) | -0.013 (0↓ 1↑, p=1.00) | -0.025 (0↓ 1↑, p=1.00) | null in every run — and the sign flips |
+| `zh-MY` | -0.025 (0↓ 1↑, p=1.00) | - | +0.212 (11↓ 1↑, p=0.01) | significant in some runs only — does not replicate |
 | `zh-SG` | -0.015 (1↓ 2↑, p=1.00) | - | +0.277 (6↓ 0↑, p=0.03) | significant in some runs only — does not replicate |
 
 > `G-gated/full` ran with the fact gate (`+gated` in the trace headers): the customer withholds each fact until the ask-patterns recognise a request for it, so a request they miss stalls the customer. Check the stall rate by language before reading its gaps: `python scripts/inspect_trace.py traces/<run> --leaks-only`. In run G the patterns could not read how the agent asks in Indonesian and Chinese, and its gaps there measure the gate, not the language (WHAT_FAILED #26).
@@ -162,18 +163,18 @@ Gap = English minus this language on the SAME tasks (positive: this language doe
 | run | lang | recorded | today's checks |
 |---|---|---|---|
 | `C-clean/full` | `id` | +0.025 (p=1.00) | +0.013 (p=1.00) |
-| `C-clean/full` | `sg-en` | -0.077 (p=0.62) | -0.015 (p=1.00) |
+| `C-clean/full` | `sg-en` | -0.077 (p=0.62) | -0.046 (p=1.00) |
 | `C-clean/full` | `th` | -0.025 (p=0.38) | -0.075 (p=0.12) |
 | `C-clean/full` | `vi` | -0.000 (p=1.00) | +0.012 (p=0.62) |
 | `C-clean/full` | `zh-SG` | -0.092 (p=0.62) | -0.015 (p=1.00) |
 | `D-nozh/full` | `id` | +0.013 (p=1.00) | +0.000 (p=1.00) |
-| `D-nozh/full` | `sg-en` | -0.015 (p=1.00) | -0.031 (p=1.00) |
+| `D-nozh/full` | `sg-en` | -0.015 (p=1.00) | -0.062 (p=1.00) |
 | `D-nozh/full` | `th` | +0.062 (p=0.62) | +0.037 (p=1.00) |
-| `G-gated/full` | `ms` | +0.025 (p=0.38) | -0.000 (p=0.62) |
-| `G-gated/full` | `sg-en` | -0.062 (p=1.00) | -0.046 (p=1.00) |
+| `G-gated/full` | `id` | +0.450 (p=0.07) | +0.412 (p=0.07) |
+| `G-gated/full` | `ms` | +0.025 (p=0.38) | -0.013 (p=1.00) |
+| `G-gated/full` | `sg-en` | -0.062 (p=1.00) | -0.077 (p=0.50) |
 | `G-gated/full` | `th` | -0.013 (p=1.00) | -0.050 (p=1.00) |
-| `G-gated/full` | `vi` | -0.025 (p=1.00) | -0.038 (p=0.50) |
-| `G-gated/full` | `zh-MY` | +0.263 (p=0.00) | +0.225 (p=0.01) |
+| `G-gated/full` | `zh-MY` | +0.263 (p=0.00) | +0.212 (p=0.01) |
 | `G-gated/full` | `zh-SG` | +0.292 (p=0.02) | +0.277 (p=0.03) |
 
 ## 4. Judge calibration
@@ -213,9 +214,9 @@ With no variance in the human labels both kappas are zero by construction, so th
 
 Human labels measure whether a judge reads a transcript the way a person does. This measures whether it can tell a solved case from an unsolved one, with the database as ground truth, and how that depends on what it is shown.
 
-*Ground truth is today's checks: 2 of the 96 episodes' verdicts moved since the judges were scored against the recorded ones (section 7). The judges' own answers are unchanged.*
+*Ground truth is today's checks: 2 of the 96 episodes' verdicts differ from the ones the runs recorded (section 7). The judges' answers are the same either way; only what they are scored against changes.*
 
-> **`I-tools2__full+search-300`, views with tool results:** 2 of 96 episodes looked up a generated shipment, and the replay that built these views showed the judge a tracking number the agent never saw -- v18 drew them from Python's salted hash, and the replay checked only lengths (WHAT_FAILED #33). A judge that compared the numbers compared them against the wrong one. Re-running `scripts/run_judges.py --payloads` withholds those payloads instead.
+> **`I-tools2__full+search-300`, views with tool results:** 2 of 96 episodes looked up a generated shipment, whose result no replay can rebuild for a run before v19 (WHAT_FAILED #33). These views withhold it -- the judges saw that call's arguments only -- so what the agent said about the shipment has no tool result behind it, and a strict judge may take it for invention.
 
 #### `I-tools2__full+search-300` — 96 episodes: the verifier passed 81 and failed 15; 3 of the failures claim an action that never happened
 
@@ -273,22 +274,22 @@ The transcripts that claim an action the database never saw, under every view:
 
 | model | run | tasks | pass^1 | pass^k | tokens per resolved | vs base, paired by task |
 |---|---|---|---|---|---|---|
-| base `Qwen/Qwen3.8-27B` | `P-base` | 215 | 0.972 | 0.916 (k=5) | 45,033 | — |
-| RFT, each on its held-out fold | `P-rft` | 215 | 0.977 | 0.935 (k=5) | 41,805 | +0.005; 16 tasks better, 13 worse, p=0.711 |
-| reference `deepseek-v4-pro` | `P-ref` | 215 | 0.905 | 0.819 (k=5) | 40,194 | -0.067; 15 tasks better, 35 worse, p=0.007 |
+| base `Qwen/Qwen3.8-27B` | `P-base` | 215 | 0.979 | 0.930 (k=5) | 44,734 | — |
+| RFT, each on its held-out fold | `P-rft` | 215 | 0.981 | 0.949 (k=5) | 41,607 | +0.003; 13 tasks better, 11 worse, p=0.839 |
+| reference `deepseek-v4-pro` | `P-ref` | 215 | 0.913 | 0.833 (k=5) | 39,866 | -0.066; 12 tasks better, 32 worse, p=0.004 |
 
-- RFT vs base: **INCONCLUSIVE** — 16 tasks better and 13 worse is within noise (p=0.711).
-- **reference is worse than base** on held-out tasks (p=0.007).
+- RFT vs base: **INCONCLUSIVE** — 13 tasks better and 11 worse is within noise (p=0.839).
+- **reference is worse than base** on held-out tasks (p=0.004).
 
 **The same runs, as recorded at run time** — the checker of the day, before v19 corrected two of its checks (WHAT_FAILED #30):
 
 | model | pass^1 | pass^k | vs base, paired by task | episodes re-scored differently |
 |---|---|---|---|---|
-| base | 0.859 | 0.805 (k=5) | — | 122 of 1075 |
-| RFT | 0.882 | 0.837 (k=5) | +0.023; 22 better, 13 worse, p=0.175 | 102 of 1075 |
-| reference | 0.899 | 0.800 (k=5) | +0.040; 39 better, 32 worse, p=0.477 | 7 of 1075 |
+| base | 0.859 | 0.805 (k=5) | — | 129 of 1075 |
+| RFT | 0.882 | 0.837 (k=5) | +0.023; 22 better, 13 worse, p=0.175 | 107 of 1075 |
+| reference | 0.899 | 0.800 (k=5) | +0.040; 39 better, 32 worse, p=0.477 | 15 of 1075 |
 
-**The checker change moves a conclusion here:** reference vs base: inconclusive +0.040 (p=0.477) recorded, resolved -0.067 (p=0.007) now. Section 7 lists the traps that moved.
+**The checker change moves a conclusion here:** reference vs base: inconclusive +0.040 (p=0.477) recorded, resolved -0.066 (p=0.004) now. Section 7 lists the traps that moved.
 
 Checks:
 
@@ -311,9 +312,9 @@ Checks:
 | `identity_verification_failure` | 0.99 | 0.99 | +0.00 |
 | `livestream_claim_overrides_window` | 1.00 | 1.00 | +0.00 |
 | `peak_period_delay_not_compensable` | 1.00 | 1.00 | +0.00 |
+| `high_value_photo_required_first` | 0.99 | 1.00 | +0.01 |
 | `perishable_refund_without_return` | 0.99 | 1.00 | +0.01 |
 | `happy_path_return_refund` | 0.97 | 1.00 | +0.03 |
-| `high_value_photo_required_first` | 0.89 | 0.93 | +0.04 |
 | `out_of_window_offer_voucher` | 0.87 | 0.94 | +0.07 |
 | `duplicate_refund_escalate` | 0.91 | 1.00 | +0.09 |
 
@@ -328,33 +329,33 @@ Each episode's recorded tool calls are replayed against the world it ran in, and
 | run | episodes | pass^1 recorded → now | pass^k recorded → now | fail → pass | pass → fail | kept as recorded |
 |---|---|---|---|---|---|---|
 | `B-multilingual/full` | 930 | 0.901 → 0.901 | 0.747 → 0.747 | 0 | 0 | 824 |
-| `C-clean/full` | 1075 | 0.909 → 0.924 | 0.823 → 0.856 | 16 | 0 | 0 |
-| `D-nozh/full` | 930 | 0.919 → 0.928 | 0.796 → 0.812 | 8 | 0 | 0 |
-| `F-clean-sim/full` | 1075 | 0.904 → 0.914 | 0.819 → 0.837 | 11 | 0 | 1 |
-| `G-gated/full` | 1075 | 0.839 → 0.854 | 0.698 → 0.726 | 16 | 0 | 0 |
+| `C-clean/full` | 1075 | 0.909 → 0.926 | 0.823 → 0.860 | 18 | 0 | 0 |
+| `D-nozh/full` | 930 | 0.919 → 0.937 | 0.796 → 0.839 | 16 | 0 | 0 |
+| `F-clean-sim/full` | 1075 | 0.904 → 0.919 | 0.819 → 0.851 | 16 | 0 | 1 |
+| `G-gated/full` | 1075 | 0.839 → 0.863 | 0.698 → 0.744 | 26 | 0 | 0 |
 | `H-context/full` | 96 | 0.917 → 0.927 | 0.844 → 0.875 | 1 | 0 | 0 |
 | `H-context/notes4` | 96 | 0.938 → 0.948 | 0.875 → 0.906 | 1 | 0 | 0 |
-| `H-context/trim3` | 96 | 0.927 → 0.927 | 0.875 → 0.875 | 0 | 0 | 0 |
+| `H-context/trim3` | 96 | 0.927 → 0.938 | 0.875 → 0.906 | 1 | 0 | 0 |
 | `H-context/window4` | 96 | 0.885 → 0.885 | 0.812 → 0.812 | 0 | 0 | 0 |
 | `H-context/window8` | 96 | 0.979 → 0.979 | 0.969 → 0.969 | 0 | 0 | 0 |
-| `I-tools/full+all-100` | 96 | 0.854 → 0.854 | 0.719 → 0.719 | 0 | 0 | 0 |
+| `I-tools/full+all-100` | 96 | 0.854 → 0.865 | 0.719 → 0.750 | 1 | 0 | 0 |
 | `I-tools/full+all-20` | 96 | 0.938 → 0.958 | 0.875 → 0.906 | 2 | 0 | 0 |
 | `I-tools/full+oracle` | 96 | 0.656 → 0.719 | 0.531 → 0.594 | 6 | 0 | 0 |
 | `I-tools/full+random-100` | 96 | 0.698 → 0.760 | 0.625 → 0.688 | 6 | 0 | 0 |
 | `I-tools/full+search-300` | 96 | 0.781 → 0.792 | 0.656 → 0.688 | 1 | 0 | 0 |
-| `I-tools2/full+all-100` | 96 | 0.927 → 0.927 | 0.812 → 0.812 | 0 | 0 | 0 |
+| `I-tools2/full+all-100` | 96 | 0.927 → 0.938 | 0.812 → 0.844 | 1 | 0 | 0 |
 | `I-tools2/full+all-20` | 96 | 0.958 → 0.958 | 0.906 → 0.906 | 0 | 0 | 0 |
 | `I-tools2/full+oracle` | 96 | 0.979 → 0.979 | 0.938 → 0.938 | 0 | 0 | 0 |
 | `I-tools2/full+random-100` | 96 | 0.927 → 0.927 | 0.812 → 0.812 | 0 | 0 | 0 |
 | `I-tools2/full+search-300` | 96 | 0.823 → 0.844 | 0.688 → 0.750 | 2 | 0 | 0 |
-| `P-base/full` | 1075 | 0.859 → 0.972 | 0.805 → 0.916 | 122 | 0 | 0 |
-| `P-ref/full` | 1075 | 0.899 → 0.905 | 0.800 → 0.819 | 7 | 0 | 0 |
-| `P-rft/full` | 1075 | 0.882 → 0.977 | 0.837 → 0.935 | 102 | 0 | 0 |
+| `P-base/full` | 1075 | 0.859 → 0.979 | 0.805 → 0.930 | 129 | 0 | 0 |
+| `P-ref/full` | 1075 | 0.899 → 0.913 | 0.800 → 0.833 | 15 | 0 | 0 |
+| `P-rft/full` | 1075 | 0.882 → 0.981 | 0.837 → 0.949 | 107 | 0 | 0 |
 | `P-smoke/full` | 16 | 0.812 → 0.938 | 0.812 → 0.938 | 2 | 0 | 0 |
 
 | trap | fail → pass | pass → fail |
 |---|---|---|
-| `high_value_photo_required_first` | 186 | 0 |
+| `high_value_photo_required_first` | 234 | 0 |
 | `peak_period_delay_not_compensable` | 117 | 0 |
 
 Kept as recorded: 788 because the task's opening or facts changed since the run; 37 because a payload differs from the recording (a world older than the replay can rebuild).
