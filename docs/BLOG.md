@@ -101,9 +101,28 @@ needed tools were always visible: none, in nineteen failures. The numbers are
 small, but the shape is right — an agent that knows what it should do and can't
 find the tool to do it says it did it anyway.
 
-The obvious test is to name those three tools in the policy and run search
-again. If the agent then calls them, the missing names were the problem; if it
-doesn't, something else is. That run is next.
+If not knowing the tools existed was the problem, naming them should fix it.
+The named policy is the same text with the three tool names added where it
+describes each action — *Escalate with category `customs_hold` (tool:
+`escalate_to_human`)* — and nothing else. I ran it on the same 32 tasks, three
+seeds each, back to back with a control that had no names. The control repeated
+the first search run: 81 of 96 passed both times, and it made three false
+claims again, on the same three tasks.
+
+With the names, the agent went looking. In 21 of the 24 conversations that
+needed an escalation, it called the tool by name before it had been shown it;
+the harness refused, and the agent searched for the tool and used it — the
+pattern it had always shown with tools the policy named. Escalations went from
+12 of 24 to 21, shipment lookups from 3 of 18 to 12. Accuracy rose from 0.844 to
+0.938, most of the way to the 0.958 of showing all 20 tools: 6 tasks better,
+1 worse, p = 0.125 — the direction the explanation predicts, though 32 tasks
+can't confirm it. And none of the six failures left claimed an action that
+hadn't happened.
+
+Naming didn't make search cheap: the extra calls cost 18% more tokens per
+episode (p = 0.002), and showing all 20 tools had been cheaper still. If an
+agent has to search for its tools, name them where its instructions describe
+the action. If there are only twenty, show them.
 
 ## Result 2: an LLM judge takes the agent's word for it
 
@@ -292,9 +311,10 @@ twin pairs per language: it rules out large gaps, not small ones. There is one
 agent model (`deepseek-v4-pro`) and one judge model (`qwen3.8-flash`) for the
 first three results, and one base model for the fourth. The false-claim check
 reads English only, and only the phrasings I wrote — the same kind of
-instrument as the leak detector — so its three are a floor. The Thai and
-Vietnamese translations are not native-reviewed. The fine-tune is one run of
-one recipe.
+instrument as the leak detector — so its counts are a floor: in the re-run, the
+one failure it couldn't read told the customer, in Vietnamese, that the case
+had gone to the complaints team. It hadn't. The Thai and Vietnamese
+translations are not native-reviewed. The fine-tune is one run of one recipe.
 
 The code, the trace generators, and all 33 failures are in the repo:
 [github.com/FlickYan/pasarbench](https://github.com/FlickYan/pasarbench).
