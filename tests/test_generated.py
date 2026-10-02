@@ -312,9 +312,17 @@ def test_read_alternatives():
     check("photo: get_order_items on the order passes",
           run_script(photo, [ver, ("get_order_items", {"order_id": oid})]).passed)
     wrong = "0000" if photo.hidden_facts["phone_last4"] != "0000" else "1111"
-    check("photo: a verification with the wrong digits is an attempt, not a pass",
-          not run_script(photo, [("verify_identity", {"user_id": uid, "phone_last4": wrong}),
-                                 ("get_order", {"order_id": oid})]).passed)
+    check("photo: no verification is required -- P1.1 asks for it before a write, "
+          "and the right answer writes nothing",
+          run_script(photo, [("get_order", {"order_id": oid})]).passed)
+    import dataclasses
+    from pasarbench.verifier import ActionSpec, TaskCheck
+    needs = dataclasses.replace(photo, checks=TaskCheck(
+        required_actions=[ActionSpec("verify_identity", {"user_id": uid})]))
+    check("a verification with the wrong digits is an attempt, not a verification",
+          not run_script(needs, [("verify_identity", {"user_id": uid,
+                                                      "phone_last4": wrong})]).passed
+          and run_script(needs, [ver]).passed)
     cur = photo.db_patch["orders"][oid]["currency"]
     r = run_script(photo, [ver, ("get_order", {"order_id": oid}),
                            ("issue_goodwill_voucher", {"user_id": uid, "amount_minor": 100,
@@ -338,7 +346,8 @@ def test_read_alternatives():
     check("address: get_order on another order fails",
           not run_script(addr, [("get_order", {"order_id": other_order})]).passed)
     check("T07 and T11 accept the same tools as their generated twins",
-          BY_ID["T07"].checks.required_actions[1].tools == photo.checks.required_actions[1].tools
+          [a.tools for a in BY_ID["T07"].checks.required_actions]
+          == [a.tools for a in photo.checks.required_actions]
           and BY_ID["T11"].checks.required_actions[0].tools == peak.checks.required_actions[0].tools)
 
 
