@@ -515,7 +515,10 @@ def main() -> None:
                     help="comma list: oracle,all-20,all-100,random-100,search-300. "
                          "Include BOTH all-N and random-N or the arms cannot "
                          "separate token cost from selection difficulty.")
-    ap.add_argument("--policy-mode", default="preload", choices=["preload", "jit"])
+    ap.add_argument("--policy-mode", default="preload",
+                    choices=["preload", "jit", "preload-named"],
+                    help="preload-named: the policy with the tools it describes but "
+                         "never names named (docs/RUNBOOK.md, 1g)")
     ap.add_argument("-k", type=int, default=1)
     ap.add_argument("--suite", default="core", choices=["core", "generated", "all"])
     ap.add_argument("--sample", type=int, default=0,
