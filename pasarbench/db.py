@@ -10,7 +10,7 @@ Design notes
 2. Money is stored as INTEGER MINOR UNITS with a per-currency exponent.
    IDR and VND have no minor unit (exponent 0), SGD/MYR/THB/PHP have 2.
    This is real SEA texture and a genuine trap: an agent that assumes
-   "divide by 100" will be wrong on half the markets.
+   "divide by 100" will be wrong on two of the six markets.
 
 3. NOW is frozen. Every relative-time policy rule (the 14-day return window,
    peak-sale SLA) is deterministic. Never call datetime.now() anywhere.
