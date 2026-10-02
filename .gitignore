@@ -3,9 +3,12 @@ __pycache__/
 .venv/
 venv/
 .env
+.env.*
 .DS_Store
 .idea/
 .vscode/
+*.tar
+*.tar.gz
 
 # run artifacts -- regenerate, never commit
 traces/
