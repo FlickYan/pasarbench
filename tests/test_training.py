@@ -1529,6 +1529,78 @@ def test_cuda_home():
           'export SGLANG_ENABLE_JIT_DEEPGEMM="${SGLANG_ENABLE_JIT_DEEPGEMM:-0}"' in serve)
 
 
+def test_push_script():
+    """push_to_github.sh once ran `rm -rf traces data logs checkpoints` in the
+    folder it was started from -- the user's working copy, runs and all -- and
+    committed whatever was left, a .env file included. A local bare repo stands
+    in for GitHub."""
+    print("\n=== push_to_github.sh keeps runs and keys on your disk, off GitHub ===")
+    import shutil
+    if not (shutil.which("bash") and shutil.which("git")):
+        skip("the push script", "no bash or git")
+        return
+    root = Path(__file__).resolve().parent.parent
+    work = Path(tempfile.mkdtemp())
+    (work / ".gitconfig").write_text(
+        "[user]\n\tname = Test Author\n\temail = test@pasar.invalid\n")
+    env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+    env.update(HOME=str(work), XDG_CONFIG_HOME=str(work), GIT_CONFIG_NOSYSTEM="1",
+               GIT_CONFIG_GLOBAL=str(work / ".gitconfig"))
+    remote = work / "github.git"
+    subprocess.run(["git", "init", "-q", "--bare", str(remote)], check=True, env=env)
+    repo = work / "pasarbench"
+    runs = ["traces/A/full/x.jsonl", "data/labels/y.jsonl", "checkpoints/rft-A/a.bin",
+            "logs/gpu.txt", ".env", ".env.local"]
+
+    def unpack(gitignore: str) -> None:
+        shutil.rmtree(repo, ignore_errors=True)
+        (repo / "scripts").mkdir(parents=True)
+        shutil.copy(root / "scripts" / "push_to_github.sh", repo / "scripts")
+        (repo / ".gitignore").write_text(gitignore)
+        (repo / "run_tests.sh").write_text("echo all suites stubbed\n")
+        (repo / "README.md").write_text("readme\n")
+        (repo / "tests" / "fixtures").mkdir(parents=True)
+        (repo / "tests" / "fixtures" / "f.jsonl").write_text("{}\n")
+        for p in runs:
+            (repo / p).parent.mkdir(parents=True, exist_ok=True)
+            (repo / p).write_text("DEEPSEEK_API_KEY=sk-test\n" if ".env" in p else "{}\n")
+
+    def push():
+        r = subprocess.run(["bash", "scripts/push_to_github.sh", str(remote)], cwd=repo,
+                           input="REPLACE\n", capture_output=True, text=True, env=env,
+                           timeout=120)
+        return r.returncode, r.stdout + r.stderr
+
+    def on_github() -> tuple[str, list[str]]:
+        head = subprocess.run(["git", "--git-dir", str(remote), "rev-parse", "-q", "--verify",
+                               "main"], capture_output=True, text=True, env=env).stdout.strip()
+        files = subprocess.run(["git", "--git-dir", str(remote), "ls-tree", "-r", "--name-only",
+                                "main"], capture_output=True, text=True, env=env).stdout.split()
+        return head, files
+
+    shipped = (root / ".gitignore").read_text()
+    unpack(shipped)
+    code, out = push()
+    head, files = on_github()
+    check("it pushes the code -- and a test fixture the *.jsonl rule exempts",
+          code == 0 and {"README.md", "tests/fixtures/f.jsonl"} <= set(files), out[-800:])
+    check("…but no .env file, trace, label, or checkpoint",
+          files and not any(f.startswith((".env", "traces/", "data/", "checkpoints/"))
+                            for f in files), files)
+    check("…and every run and key is still on disk afterwards",
+          all((repo / p).exists() for p in runs), [p for p in runs if not (repo / p).exists()])
+
+    unpack("".join(l + "\n" for l in shipped.splitlines() if not l.startswith(".env")))
+    code, out = push()
+    check("a .gitignore that would let .env through: it refuses before asking, and "
+          "GitHub keeps what it had", code != 0 and "REFUSING" in out
+          and "Type REPLACE" not in out and on_github()[0] == head, out[-800:])
+    unpack("".join(l + "\n" for l in shipped.splitlines() if l != ".env.*"))
+    code, out = push()
+    check("…and one that misses .env.local is caught in the snapshot itself",
+          code != 0 and ".env.local" in out and on_github()[0] == head, out[-800:])
+
+
 def main() -> int:
     test_split()
     test_family_guard()
@@ -1547,7 +1619,8 @@ def main() -> int:
     test_notebook_helper()
     test_notebook_stream()
     test_cuda_home()
-    tail = f", {len(SKIP)} skipped" if SKIP else ""
+    test_push_script()
+    tail =f", {len(SKIP)} skipped" if SKIP else ""
     print(f"\n{len(PASS)} passed, {len(FAIL)} failed{tail}")
     for f in FAIL:
         print(f"  FAILED: {f}")
