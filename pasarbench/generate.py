@@ -397,9 +397,12 @@ def _photo(s: Slot) -> Built:
                       label="no store credit in place of the evidence (P4.2 is for COD refunds)")],
         # check_return_eligibility is what P3.2 requires before initiate_return,
         # and a return is exactly what this task forbids. P3.3 needs the item's
-        # value, which any of these reads of THIS order shows.
-        required_actions=[A("verify_identity", {"user_id": s.user_id}),
-                          A("check_return_eligibility", {"order_item_id": s.item_id},
+        # value, which any of these reads of THIS order shows. No
+        # verify_identity either: P1.1 puts verification before a WRITE, P1.3
+        # lets the agent answer without it, and the right answer here writes
+        # nothing -- requiring it tested a step the policy does not demand,
+        # the same mistake as naming one lookup (WHAT_FAILED #30).
+        required_actions=[A("check_return_eligibility", {"order_item_id": s.item_id},
                             alt=value_reads(s.order_id, s.item_id, s.product_id))],
         forbidden_actions=[A("initiate_return", must_succeed=False),
                            A("issue_refund", must_succeed=False),
