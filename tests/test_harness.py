@@ -209,6 +209,149 @@ def pairing_ok(messages: list[Message]) -> tuple[bool, str]:
     return True, ""
 
 
+def test_claim_guardrail():
+    """docs/RUNBOOK.md 1i. Behind search the agent told customers it had
+    escalated when no escalation existed. The guardrail holds such a reply
+    back -- the customer must never see it, nor the note that replaces it --
+    and must not fire on what happened before the conversation."""
+    print("\n=== the claim guardrail holds back a claim no call backs ===")
+    import subprocess
+    import sys
+
+    from pasarbench.claims import own_claims
+    from pasarbench.harness import guardrail as g
+    from pasarbench.harness.backends import OpenAICompatBackend
+    from pasarbench.harness.simulator import LLMUser
+    from pasarbench.harness.types import ModelResponse, Usage
+
+    cases = [
+        ("I've escalated your case with the `customs_hold` category", ["escalate_to_human"]),
+        ("so I'm escalating this to our team for investigation", ["escalate_to_human"]),
+        ("I've issued a goodwill voucher of **THB 300** to your account", ["issue_goodwill_voucher"]),
+        ("I'll issue the goodwill voucher now. The item value is THB 1,500.00", ["issue_goodwill_voucher"]),
+        ("I’ve escalated your case", ["escalate_to_human"]),
+        ("I can see that a full refund of PHP 2,630.00 was already issued on 9 November", []),
+        ("We've already issued a full refund on 9 November", []),
+        ("Your refund was issued on 9 November.", []),
+        ("Your case has been escalated to a specialist", []),
+        ("I have not escalated this yet", []),
+        ("I'll escalate if it reaches 10 days", []),
+        ("Would you like me to escalate this?", []),
+    ]
+    wrong = [(t, want, got) for t, want in cases
+             if (got := [x for x, _ in own_claims(t)]) != want]
+    check("it reads the agent's own claims -- \"I've escalated\", \"I'm escalating\", "
+          "\"I'll issue it now\" -- and not \"we've already refunded\", \"your refund was "
+          "issued\", a negation, a conditional or a question", not wrong, str(wrong))
+
+    class Customer:
+        """An LLM customer's backend that records what the customer is shown."""
+        name = "seen"
+        reports_usage = False
+
+        def __init__(self):
+            self.views: list[list[str]] = []
+
+        def chat(self, messages, tools):
+            self.views.append([m.content for m in messages[1:]])
+            return ModelResponse(content="ok ###END###" if len(self.views) > 1 else "thanks",
+                                 usage=Usage(1, 1))
+
+    class Rec:
+        def __init__(self):
+            self.meta, self.steps = {}, []
+
+        def open_episode(self, task_id, run_index=None, meta=None):
+            self.meta = meta or {}
+
+        def step(self, record):
+            self.steps.append(record)
+
+        def event(self, *a, **kw):
+            pass
+
+    task = BY_ID["T14"]
+    esc = ("escalate_to_human", {"order_id": "O1009", "category": "duplicate_refund",
+                                 "reason": "refund already issued for this order"})
+    claim = "I've escalated your case to a specialist."
+
+    def run(plan, guard):
+        cust, rec = Customer(), Rec()
+        db = Database.fresh(task.db_patch)
+        res = run_episode(task, db, ScriptedBackend(plan), trace=rec, guardrail=guard,
+                          simulator=LLMUser(cust, persona="a customer", facts={}))
+        return res, cust, rec, db
+
+    _, cust, rec, _ = run([claim], "off")
+    check("off: the claim reaches the customer, and the trace is as it always was",
+          claim in cust.views[0] and "guardrail" not in rec.meta
+          and not any("guardrail" in s for s in rec.steps), str(cust.views))
+
+    res, cust, rec, db = run([claim, esc, claim], "claims")
+    held = [s for s in rec.steps if s.get("guardrail")]
+    last = cust.views[-1]
+    check("on: the unbacked claim is held back, and the customer sees neither it nor the "
+          "note -- only the reply that came after the call",
+          len(held) == 1 and held[0]["guardrail"]["claims"][0][0] == "escalate_to_human"
+          and last.count(claim) == 1 and not any(c.startswith("[") for c in last)
+          and rec.meta.get("guardrail") == "claims", str(cust.views))
+    note = res.state.messages[res.state.messages.index(
+        next(m for m in res.state.messages if m.hidden)) + 1]
+    r = g.review(rec.steps)
+    check("…the agent got a note naming the claim and the tool that would back it, made "
+          "the call, and the trace reads back that way",
+          note.role == "user" and note.content.startswith(g.NOTE_HEAD)
+          and "`escalate_to_human`" in note.content and r["outcomes"] == ["made the call"]
+          and not r["delivered"] and any(a.tool == "escalate_to_human" and a.ok
+                                         for a in db.action_log), str((note.content, r)))
+
+    _, cust, rec, _ = run([claim] * 4, "claims")
+    r = g.review(rec.steps)
+    check(f"an agent that insists is held back {g.MAX_NOTES} times and then let through, "
+          f"so it cannot loop -- and the trace says it claimed again",
+          len(r["held"]) == g.MAX_NOTES and r["outcomes"] == ["claimed again"]
+          and r["delivered"], str(r))
+
+    before = ("I can see a full refund of PHP 2,630.00 was already issued on 9 November, "
+              "so the money is on its way.")
+    _, cust, rec, _ = run([before], "claims")
+    check("a refund issued before the conversation is not taken for a claim -- held back, "
+          "it would have sent the agent towards a second refund",
+          not any(s.get("guardrail") for s in rec.steps) and before in cust.views[0])
+
+    from pasarbench.db import Action
+    refund = "I've processed your refund: MYR 189.00 is now in your account."
+    check("a refund claim after store credit is backed -- for a COD order that is the "
+          "policy's refund (P4.2) -- and with no remedy at all it is not",
+          not g.unbacked(refund, [Action("issue_store_credit", {}, ok=True)])
+          and [t for t, _ in g.unbacked(refund, [])] == ["issue_refund"]
+          and g.unbacked(refund, [Action("issue_refund", {}, ok=False)]))
+
+    m = Message("assistant", claim, hidden=True)
+    check("a held reply stays held through snapshot and resume, and never reaches a "
+          "provider's wire format", Message.from_dict(m.to_dict()).hidden
+          and "hidden" not in OpenAICompatBackend._msg(m)
+          and "hidden" not in Message("assistant", claim).to_dict())
+    try:
+        run_episode(task, Database.fresh(task.db_patch), ScriptedBackend([]), guardrail="on")
+        bad_mode = False
+    except ValueError:
+        bad_mode = True
+    check("an unknown guardrail mode is refused, not ignored", bad_mode)
+
+    with tempfile.TemporaryDirectory() as d:
+        r = subprocess.run([sys.executable, "-m", "pasarbench.sweep", "--backend", "scripted",
+                            "--suite", "core", "--tasks", "T14", "--strategies", "full",
+                            "--guardrail", "claims", "--run-id", "g", "--trace-root", d],
+                           capture_output=True, text=True,
+                           cwd=Path(__file__).resolve().parent.parent)
+        heads = [__import__("json").loads(f.read_text().splitlines()[0])
+                 for f in Path(d).glob("g/*/*.jsonl")]
+        check("the sweep's --guardrail reaches every episode's trace header",
+              r.returncode == 0 and heads and all(h.get("guardrail") == "claims" for h in heads),
+              r.stderr[-500:] or str(heads))
+
+
 def main() -> int:
     test_reference_through_loop()
     test_budgets_bite()
@@ -217,6 +360,7 @@ def main() -> int:
     test_context_never_orphans()
     test_traces()
     test_prompt_modes()
+    test_claim_guardrail()
     print(f"\n{len(PASS)} passed, {len(FAIL)} failed")
     for f in FAIL:
         print(f"  FAILED: {f}")
