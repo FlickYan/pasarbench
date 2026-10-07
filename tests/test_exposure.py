@@ -705,6 +705,99 @@ def test_tool_naming_experiment():
           "preload-named" in text and "pass^1" in text and "1.000" in text, text[:600])
 
 
+def test_naming_confirmation_tasks():
+    """docs/RUNBOOK.md 1h: the confirmation runs on tasks the hypothesis was
+    not found on. A task list that overlapped the first run, or included tasks
+    another tool can pass, would test something else."""
+    print("\n=== the naming confirmation runs on new tasks that need a named tool ===")
+    import importlib.util
+    import re
+    from pathlib import Path
+
+    from pasarbench.harness.prompts import NAMED_TOOLS
+    from pasarbench.rescore import all_tasks
+    tasks = all_tasks()
+    root = Path(__file__).resolve().parent.parent
+    spec = importlib.util.spec_from_file_location("nt", root / "scripts" / "naming_tasks.py")
+    nt = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(nt)
+    ids = nt.tasks()
+    runbook = (root / "docs" / "RUNBOOK.md").read_text(encoding="utf-8")
+    first = re.search(r"^TASKS=(ACAD-VN[^\s]*)", runbook, re.M)
+    check("the first run's 32 tasks are the ones the runbook ran in 1g",
+          first is not None and tuple(first.group(1).split(",")) == nt.FIRST_RUN
+          and len(nt.FIRST_RUN) == 32, first.group(1)[:80] if first else "no TASKS= line")
+    check("57 new tasks, none of them in the first run",
+          len(ids) == 57 and not set(ids) & set(nt.FIRST_RUN), str(len(ids)))
+    check("…and none can pass without one of the named tools: a task a get_order read "
+          "also passes is left out",
+          all(any(set(a.tools) <= set(NAMED_TOOLS) for a in tasks[t].checks.required_actions)
+              for t in ids) and "ACAD-SG" not in ids
+          and nt.needs_named(tasks["CHE-ID"]) and not nt.needs_named(tasks["ACAD-SG"]))
+
+
+def test_claim_guardrail_report():
+    """compare_cells must count, in both cells, the replies the customer got
+    that claim an action no call had done -- and list what the guardrail held
+    back, so the held replies can be read for false alarms."""
+    print("\n=== compare_cells reads the claim guardrail ===")
+    import contextlib
+    import io
+    import importlib.util
+    import re
+    import tempfile
+    from pathlib import Path
+
+    from pasarbench.harness.trace import TraceWriter
+    from pasarbench.verifier import verify
+
+    t, (ver, ship, esc) = BY_ID["T12"], SOLUTIONS["T12"]
+    claim = "I've escalated your case to a specialist, who will contact you."
+    tmp = Path(tempfile.mkdtemp())
+    found = [ver, ship, ("search_tools", {"query": "shipment tracking status"}), ship]
+    plans = {"off": [*found, claim],
+             "claims": [*found, claim, ("search_tools", {"query": "escalate to human"}),
+                        esc, claim]}
+    for run, (guard, plan) in zip(("C", "G"), plans.items()):
+        for i in range(2):
+            w = TraceWriter(root=str(tmp), run_id=f"{run}/full+search-300")
+            db = Database.fresh(t.db_patch)
+            res = run_episode(t, db, ScriptedBackend(list(plan)), trace=w, run_index=i,
+                              exposure=build_exposure("search-300", SOLUTIONS),
+                              guardrail=guard)
+            v = verify(t, db)
+            w.close_episode(res.stop_reason.value, v.passed, v.failures, res.budget)
+            w.close()
+    spec = importlib.util.spec_from_file_location(
+        "cc", Path(__file__).resolve().parent.parent / "scripts" / "compare_cells.py")
+    cc = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(cc)
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out):
+        cc.main([str(tmp / "C" / "full+search-300"), str(tmp / "G" / "full+search-300")])
+    text = out.getvalue()
+    line = next((l for l in text.splitlines() if l.strip().startswith("episodes with one")), "")
+    check("the claim reached the customer in every control episode and in no guarded one",
+          re.search(r"2/2\s+0/2", line) is not None, line)
+    check("…the guarded cell held back one reply per episode, and the agent made the call",
+          "held back 2 replies in 2 episodes" in text
+          and re.search(r"made the call\s+2", text) is not None
+          and "escalate_to_human: \"" in text and "claims" in text, text[-900:])
+    check("…and the guarded episodes pass where the control's fail",
+          re.search(r"pass\^1\s+0\.000\s+1\.000", text) is not None, text[:700])
+
+    spec = importlib.util.spec_from_file_location(
+        "dry", Path(__file__).resolve().parent.parent / "scripts" / "guardrail_dry_run.py")
+    dry = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(dry)
+    counts, hits = dry.scan([tmp])
+    check("the dry run over recorded traces fires where the guardrail would have: on "
+          "every unguarded claim, and on nothing a guarded run let through",
+          counts.get("C/full+search-300") == [2, 2, 2]
+          and counts.get("G/full+search-300") == [2, 2, 0]
+          and {h[3] for h in hits} == {"escalate_to_human"}, str((counts, hits)))
+
+
 def main() -> int:
     test_distractors()
     test_arms_are_comparable()
@@ -721,6 +814,8 @@ def main() -> int:
     test_lookups_are_read_only()
     test_search_is_confined_to_its_arm()
     test_tool_naming_experiment()
+    test_naming_confirmation_tasks()
+    test_claim_guardrail_report()
     print(f"\n{len(PASS)} passed, {len(FAIL)} failed")
     for f in FAIL:
         print(f"  FAILED: {f}")
