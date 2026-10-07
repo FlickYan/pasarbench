@@ -190,9 +190,11 @@ def replay(arm: Arm, recs: list[dict]) -> dict | None:
         return None
     steps = [r for r in recs if r.get("type") == "step"]
     foot = next((r for r in reversed(recs) if r.get("type") == "footer"), {})
-    said = next((st.get("model_content") for st in reversed(steps)
+    # A reply the claim guardrail held back never reached the customer.
+    sent = [st for st in steps if not st.get("guardrail")]
+    said = next((st.get("model_content") for st in reversed(sent)
                  if (st.get("model_content") or "").strip()), "")
-    texts = [st["model_content"] for st in steps if (st.get("model_content") or "").strip()]
+    texts = [st["model_content"] for st in sent if (st.get("model_content") or "").strip()]
 
     walks = {k: _walk(steps, base, uni, arm.kind == "search")
              for k, (base, uni) in arm.candidates(task).items()}
