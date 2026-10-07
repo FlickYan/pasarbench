@@ -44,7 +44,11 @@ are re-scored by replaying their tool calls (`scripts/rescore.py`).
   worse, p = 0.125), for 18% more tokens ([RUNBOOK 1g](docs/RUNBOOK.md)).
 - **The agent claimed actions it never took** — only when the tool was out of
   sight: 3 of 14 readable search-arm failures, 0 of 19 elsewhere. The same-day
-  control repeated it, 3 of 14; with the tools named, 0 of 6.
+  control repeated it, 3 of 14; with the tools named, 0 of 6. A guardrail that
+  holds such a reply back before the customer sees it is built and tested: read
+  over the 9,958 recorded episodes, it would have fired 25 times, each on a
+  claim no call had backed ([RUNBOOK 1i](docs/RUNBOOK.md)). It has not run live
+  yet, and nor has a confirmation of the naming result on 57 new tasks (1h).
 - **An LLM judge could not stand in for the database.** Its best configuration —
   with the tool results and the policy — reached κ = 0.72 and still accepted 6
   of 15 failed episodes. It caught one of three false claims and noticed another
@@ -69,13 +73,13 @@ mistake):
 ```bash
 python -m pasarbench.run          # null agent → 0.0, reference agent → 1.0
 python -m tests.test_traps        # 10 naive solutions, all must be rejected
-python -m tests.test_harness      # 28 harness invariants
+python -m tests.test_harness      # 38 harness invariants, the claim guardrail
 python -m tests.test_reward       # 30 reward + dataset invariants
 python -m tests.test_generated    # 108 checks over all 199 generated tasks: dates in causal order, the same world in every process, reads of the task's own order, simulator QA
 python -m tests.test_rescore      # 29 re-scoring invariants: the pre-v19 world, replay by digest and by length, the same tool errors on every Python, nothing re-scored on a guess
 python -m tests.test_context      # 39 context-strategy + analysis invariants
 python -m tests.test_judge        # 83 judge + agreement-statistics invariants, judged against today's checks
-python -m tests.test_exposure     # 114 tool-scaling + diagnosis invariants, the tool-naming experiment
+python -m tests.test_exposure     # 121 tool-scaling + diagnosis invariants, the tool-naming experiment and its confirmation tasks, the guardrail's report and dry run
 python -m tests.test_serving      # 54 metrics (SGLang and vLLM), cost and quality-guard invariants
 python -m tests.test_report       # 48 report invariants: paired verdicts, ties, replication, calibration, noise floor, post-training, both scorings in every section
 python -m tests.test_training     # 160 checks: split, customer family, collection and resume, examples (Qwen3 and Qwen3.8 formats) against an SGLang-like server, adapter routing, the LoRA probe, serve and Modal scripts, one-GPU memory plans, the notebook helper (progress in place, an interrupt-proof cleanup), the CUDA compiler, run settings, LoRA steps on Qwen3 and Qwen3.8's hybrid architecture, training data picked by today's checks, a push script that keeps runs and keys off GitHub (118 without transformers/torch)
@@ -321,7 +325,7 @@ of running it, for a first-time GPU user, in `docs/GPU_GUIDE.md`):
 pasarbench/
   db.py tools.py policy.md tasks.py verifier.py   the environment
   generate.py locales.py                          199 generated tasks, 3 orthogonal axes
-  harness/                                        the runtime
+  harness/                                        the runtime, and the claim guardrail
   rl/                                             reward, folds, per-turn SFT examples
   judge/                                          rubric, judges, agreement stats
   analyze.py diagnose.py simqa.py                 turning sweeps into findings
@@ -332,7 +336,7 @@ scripts/    gpu_pipeline.sh gpu_plan.py modal_pipeline.py pasar_notebook.py
             cuda_home.py setup_node.sh download_weights.sh
             serve_sglang.sh train_rft.py train_grpo.py make_report.py
             audit_tool_arms.py inspect_trace.py run_judges.py rescore.py
-            compare_cells.py
+            compare_cells.py naming_tasks.py guardrail_dry_run.py
             slurm_train.sh slurm_sweep.sh modal_vllm.py
 tests/      12 suites, 650+ assertions
 docs/       RUNBOOK.md  GPU_GUIDE.md  WHAT_FAILED.md  WRITEUP.md  BLOG.md  README_weekly.md
