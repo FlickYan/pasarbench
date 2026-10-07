@@ -309,6 +309,10 @@ def build(run_dir: str | Path, tasks: dict[str, Any], folds: dict[str, Any],
     if contexts != {"full"}:
         raise SystemExit(f"{run_dir} used context {sorted(map(str, contexts))}; "
                          f"collect with --strategies full")
+    if any(e["header"].get("guardrail", "off") != "off" for e in eps):
+        raise SystemExit(f"{run_dir} ran with the claim guardrail: its held-back "
+                         f"replies and the notes that answered them are not turns "
+                         f"to train on. Collect without --guardrail")
 
     by_task: dict[str, list[dict]] = defaultdict(list)
     for e in eps:
