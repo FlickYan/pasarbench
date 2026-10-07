@@ -349,9 +349,7 @@ python scripts/compare_cells.py traces/J-preload/full+search-300 traces/J-preloa
 python scripts/audit_tool_arms.py traces/J-preload-named
 ```
 
-192 episodes, the size of two tool arms. The sweep will warn that an `all-N`
-arm has no `random-N` pair; that warning is about tool scaling and does not
-apply here. Read `compare_cells.py`'s paired line first: at 32 tasks only a
+192 episodes, the size of two tool arms. Read `compare_cells.py`'s paired line first: at 32 tasks only a
 large effect resolves. Then the line for each named tool — how often an episode
 that needed it called it — and the audit's breakdown of why the remaining
 failures failed. If the named arm calls the tools and closes most of the gap to
@@ -379,6 +377,114 @@ tools and closes most of the gap, so naming is the mechanism, with the pass
 rate itself still to be confirmed on more tasks. Of its six failures, three
 are T14 never escalating a duplicate refund — no search at all, a decision
 rather than a missing tool. WRITEUP, Result 1 has the write-up.
+
+### 1h. Confirm the naming effect on new tasks (API only, no GPU)
+
+1g moved the pass rate the way the explanation predicts — 6 tasks better, 1
+worse — but at 32 tasks that is p = 0.125. This asks the same question of the
+57 tasks the first run did not include that cannot pass without one of the
+three named tools; `scripts/naming_tasks.py` lists them. A task a `get_order`
+read also passes (an address change after dispatch) is left out: naming
+predicts nothing there. The 32 stay out too: they produced the hypothesis and
+its first test, so they cannot also confirm it. In 1g every task that moved was
+one of this kind — 6 better and 1 worse of its 10.
+
+**The reading, fixed before the run:**
+
+- **Confirmed** if `compare_cells.py`'s paired line says BETTER: the named
+  policy wins the sign test over these 57 tasks at p < 0.05. INCONCLUSIVE or
+  WORSE is reported as it comes, and the blog's sentence on naming changes to
+  say so.
+- The mechanism is the tool lines: the named arm should call
+  `escalate_to_human` and `get_shipment` in more of the episodes that need
+  them. A pass-rate gain without that is not this effect.
+- Tokens are reported either way. The verdict is on the 57 alone; a number
+  pooled with the first run may sit beside it, labelled as pooled.
+
+```bash
+set -a; . ./.env; set +a
+TASKS=$(python scripts/naming_tasks.py)
+python scripts/naming_tasks.py --count          # 57
+for MODE in preload preload-named; do
+  python -m pasarbench.sweep \
+    --backend openai --model deepseek-v4-pro --base-url https://api.deepseek.com/v1 \
+    --extra-body '{"thinking":{"type":"disabled"}}' \
+    --simulator openai --sim-model qwen3.8-flash \
+    --sim-url https://dashscope-intl.aliyuncs.com/compatible-mode/v1 \
+    --sim-extra-body '{"reasoning_effort":"low"}' \
+    --suite all --tasks "$TASKS" --strategies full --exposure search-300 -k 3 \
+    --policy-mode $MODE --run-id K-$MODE --workers 8
+done
+python scripts/compare_cells.py traces/K-preload/full+search-300 traces/K-preload-named/full+search-300
+python scripts/audit_tool_arms.py traces/K-preload-named
+```
+
+342 episodes, under twice 1g, the two arms back to back.
+
+### 1i. Does a claim check stop the false claims? (API only, no GPU)
+
+Behind search the agent told customers "I've escalated your case" with no
+escalation in the database, and a judge believed it (WRITEUP, Results 1 and 2).
+`--guardrail claims` reads each reply before it reaches the customer. A reply
+that claims, in the first person, a write action that no successful call in
+the conversation has done is held back — the customer never sees it — and the
+agent gets a note naming the claim and the tool that would back it, asking it
+to make the call or reword the reply; at most two notes per episode, so an
+agent that insists cannot loop. The check reads only the reply and the
+conversation's own calls, never the task's answer, so a deployed agent could
+run it (`pasarbench/harness/guardrail.py`). It reads English only, and ignores
+"we" and passives, which can describe what happened before the conversation:
+"your refund was issued on 9 November", read as a claim, would send the agent
+towards a second refund.
+
+**Before the run**, read what it would have done to the runs already recorded:
+
+```bash
+python scripts/guardrail_dry_run.py traces
+```
+
+On the 9,958 finished episodes recorded up to 1g — 6,369 of them in English,
+the only ones it reads — it would have fired on 25. Fourteen are in I-tools'
+broken oracle arm, which hid both a lookup the task needed and the escalation
+tool (WHAT_FAILED #18); ten are behind search (I-tools 4, I-tools2 3,
+J-preload 3); one is an "I'll escalate it now" in P-base that the agent made
+good a turn later. Each is a claim no call had backed when the customer read
+it, and none is a false alarm. In the 9,478 episodes with the tools in view
+it fires once, on that promise.
+
+Run it on 1g's 32 tasks, with a control the same day:
+
+```bash
+set -a; . ./.env; set +a
+TASKS=$(python scripts/naming_tasks.py --first-run)
+for G in off claims; do
+  python -m pasarbench.sweep \
+    --backend openai --model deepseek-v4-pro --base-url https://api.deepseek.com/v1 \
+    --extra-body '{"thinking":{"type":"disabled"}}' \
+    --simulator openai --sim-model qwen3.8-flash \
+    --sim-url https://dashscope-intl.aliyuncs.com/compatible-mode/v1 \
+    --sim-extra-body '{"reasoning_effort":"low"}' \
+    --suite all --tasks "$TASKS" --strategies full --exposure search-300 -k 3 \
+    --guardrail $G --run-id L-$G --workers 8
+done
+python scripts/compare_cells.py traces/L-off/full+search-300 traces/L-claims/full+search-300
+python scripts/audit_tool_arms.py traces/L-claims
+```
+
+**The reading, fixed before the run:**
+
+- **Primary:** `compare_cells.py`'s line "replies the customer got that claim a
+  write no call had done". The guardrail works if the guarded arm has none, or
+  none but the ones it let through after two notes ("claimed again").
+- **Read every held reply** it lists. One that claims nothing, or claims what
+  happened before the conversation, is a false alarm; count them. A false alarm
+  that leads to a wrong action — a guarded episode failing where the control
+  passed, on a forbidden write — is the guardrail's cost, and is reported.
+- **Secondary:** the paired pass rate and tokens. The note names the tool, so
+  part of any pass-rate gain is naming (1g); the claim line is the guardrail's
+  own result.
+
+192 episodes, the size of 1g.
 
 ---
 
