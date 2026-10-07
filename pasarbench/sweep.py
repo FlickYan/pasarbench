@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import os
 from pathlib import Path
 from collections import Counter, defaultdict
@@ -294,7 +295,8 @@ def _resumed(task: Task, done: dict):
 def run_cell(strategy_name: str, backend_factory, simulator_factory, tasks: list[Task],
              k: int, budget: Budget, policy_mode: str, trace_root: str, run_id: str,
              summarizer=None, exposure_spec: str = "", workers: int = 1,
-             save_messages: bool = False, resume: bool = False) -> dict:
+             save_messages: bool = False, resume: bool = False,
+             guardrail: str = "off") -> dict:
     strategy = make_strategy(strategy_name, summarizer)
     exposure = build_exposure(exposure_spec, ALL_SOLUTIONS) if exposure_spec else None
     cell = strategy_name if not exposure_spec else f"{strategy_name}+{exposure_spec}"
@@ -315,7 +317,7 @@ def run_cell(strategy_name: str, backend_factory, simulator_factory, tasks: list
                           simulator=simulator_factory(task),
                           context=strategy, budget=budget, trace=w,
                           policy_mode=policy_mode, exposure=exposure,
-                          run_index=seed)
+                          run_index=seed, guardrail=guardrail)
         v = verify(task, db, n_turns=res.budget["steps"],
                    tokens=res.budget["tokens"])
         if save_messages:
@@ -354,11 +356,14 @@ def run_cell(strategy_name: str, backend_factory, simulator_factory, tasks: list
             want_sim = simulator_factory(task)
             if (head.get("requested_model") != getattr(want, "model", None)
                     or head.get("simulator") != getattr(want_sim, "name", "?")
-                    or head.get("context") != strategy.name):
+                    or head.get("context") != strategy.name
+                    or head.get("policy_mode", policy_mode) != policy_mode
+                    or head.get("guardrail", "off") != guardrail):
                 raise SystemExit(
                     f"--resume: {cell_dir} already holds episodes from a different "
                     f"setup (model {head.get('requested_model')!r}, simulator "
-                    f"{head.get('simulator')!r}). Use a new --run-id.")
+                    f"{head.get('simulator')!r}, policy {head.get('policy_mode')!r}, "
+                    f"guardrail {head.get('guardrail', 'off')!r}). Use a new --run-id.")
             if save_messages and not done["has_messages"]:
                 todo.append((task, seed))
                 continue
@@ -519,6 +524,10 @@ def main() -> None:
                     choices=["preload", "jit", "preload-named"],
                     help="preload-named: the policy with the tools it describes but "
                          "never names named (docs/RUNBOOK.md, 1g)")
+    ap.add_argument("--guardrail", default="off", choices=["off", "claims"],
+                    help="claims: hold back a reply that claims a write action no "
+                         "tool call has done, and tell the agent instead "
+                         "(pasarbench/harness/guardrail.py; docs/RUNBOOK.md, 1i)")
     ap.add_argument("-k", type=int, default=1)
     ap.add_argument("--suite", default="core", choices=["core", "generated", "all"])
     ap.add_argument("--sample", type=int, default=0,
@@ -601,7 +610,7 @@ def main() -> None:
                                  args.policy_mode, args.trace_root, run_id,
                                  summarizer, exp, args.workers,
                                  save_messages=args.save_messages,
-                                 resume=args.resume))
+                                 resume=args.resume, guardrail=args.guardrail))
 
     print("\n" + markdown_table(rows))
 
@@ -638,8 +647,12 @@ def main() -> None:
         print("\n" + tool_scaling_report(
             [{**r, "exposure": r["exposure"]} for r in rows],
             run_dir=Path(args.trace_root) / run_id))
-        if not ({"all-100", "random-100"} <= set(exposures) or
-                {"all-300", "random-300"} <= set(exposures)):
+        # Only a tool-scaling sweep needs the pair: one that runs search alone,
+        # as the naming and guardrail runs do, is not comparing registry sizes.
+        sizes = [re.fullmatch(r"(?:all|random)-(\d+)", e) for e in exposures]
+        scaling = any(m and int(m.group(1)) > 20 for m in sizes)
+        if scaling and not ({"all-100", "random-100"} <= set(exposures) or
+                            {"all-300", "random-300"} <= set(exposures)):
             print("\n!! no all-N / random-N pair in this sweep. Without both, a")
             print("   drop at N tools cannot be attributed to token cost rather")
             print("   than selection difficulty, and the result is not readable.")
