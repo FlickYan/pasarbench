@@ -38,11 +38,13 @@ class ScriptedBackend:
 
     Used to prove the loop, the tool dispatch, the message threading and the
     trace all work, without a model in the way. If the reference solutions
-    score 1.0 through this backend, the harness is correct.
+    score 1.0 through this backend, the harness is correct. A plain string in
+    the plan is a reply to the customer at that point, so a test can script
+    what the agent says between calls -- a claim the guardrail should catch.
     """
     reports_usage = False
 
-    def __init__(self, script: list[tuple[str, dict[str, Any]]],
+    def __init__(self, script: list[tuple[str, dict[str, Any]] | str],
                  closing: str = "All done. Is there anything else I can help with?"):
         self.name = "scripted"
         self.script = list(script)
@@ -51,6 +53,9 @@ class ScriptedBackend:
 
     def chat(self, messages: list[Message], tools: list[dict[str, Any]]) -> ModelResponse:
         prompt_tokens = sum(approx_tokens(m.content) for m in messages)
+        if self.i < len(self.script) and isinstance(self.script[self.i], str):
+            self.i += 1
+            return ModelResponse(content=self.script[self.i - 1], usage=Usage(prompt_tokens, 15))
         if self.i < len(self.script):
             name, args = self.script[self.i]
             self.i += 1
