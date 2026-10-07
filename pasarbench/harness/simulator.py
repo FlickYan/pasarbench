@@ -136,7 +136,7 @@ class LLMUser:
             return self.facts
         from ..simqa import _asked_for
         agent_text = "\n".join(m.content for m in transcript
-                               if m.role == "assistant" and m.content)
+                               if m.role == "assistant" and m.content and not m.hidden)
         turns = sum(1 for m in transcript if m.role == "user")
         out = {}
         for k, v in self.facts.items():
@@ -170,7 +170,7 @@ class LLMUser:
             Message(role="system",
                     content=self._system(self._visible_facts(transcript)))]
         for m in transcript:
-            if m.role == "assistant" and m.content and not m.tool_calls:
+            if m.role == "assistant" and m.content and not m.tool_calls and not m.hidden:
                 convo.append(Message(role="user", content=m.content))
             elif m.role == "user" and not m.content.startswith("["):
                 convo.append(Message(role="assistant", content=m.content))
