@@ -16,6 +16,12 @@ Read the paired line before anything else. 32 tasks see large effects only,
 and a gap the sign test does not resolve is not a result. Then read why the
 remaining failures failed: `python scripts/audit_tool_arms.py <run>` says, for
 each tool an episode needed and never used, whether it searched for it.
+
+For the claim guardrail (docs/RUNBOOK.md, 1i) it also counts the replies the
+customer got that claim a write no call had done, in both cells, and for the
+guarded cell lists every reply it held back and what the agent did next. Read
+the held replies: one that claims nothing, or claims what happened before the
+conversation, is a false alarm.
 """
 
 from __future__ import annotations
@@ -23,7 +29,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
-from collections import defaultdict
+from collections import Counter, defaultdict
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -49,6 +55,18 @@ def _head(cell: Path) -> dict:
         return {}
     return next((json.loads(l) for l in f.read_text(encoding="utf-8").splitlines()
                  if l.strip() and json.loads(l).get("type") == "header"), {})
+
+
+def _reviews(cell: Path, ids: set[str]) -> dict[str, dict]:
+    """transcript_id -> guardrail.review of its steps, for finished episodes."""
+    from pasarbench.harness.guardrail import review
+    out = {}
+    for f in sorted(cell.glob("*.jsonl")):
+        if f.stem not in ids:
+            continue
+        recs = [json.loads(l) for l in f.read_text(encoding="utf-8").splitlines() if l.strip()]
+        out[f.stem] = review([r for r in recs if r.get("type") == "step"])
+    return out
 
 
 def summary(eps: list[dict]) -> dict:
@@ -100,8 +118,10 @@ def main(argv: list[str] | None = None) -> int:
     names = [f"{c.parent.name}/{c.name}" for c in cells]
 
     print(f"{'':12s} {names[0]:>34s} {names[1]:>34s}")
-    for key in ("policy_mode", "exposure", "requested_model", "simulator"):
-        print(f"{key:12s} {str(heads[0].get(key)):>34s} {str(heads[1].get(key)):>34s}")
+    for key in ("policy_mode", "exposure", "guardrail", "requested_model", "simulator"):
+        default = "off" if key == "guardrail" else None
+        print(f"{key:12s} {str(heads[0].get(key, default)):>34s} "
+              f"{str(heads[1].get(key, default)):>34s}")
     sa, sb = summary(ea), summary(eb)
     for key, fmt in (("episodes", "{:d}"), ("tasks", "{:d}"), ("pass1", "{:.3f}"),
                      ("passk", "{:.3f}"), ("tokens", "{:,.0f}"), ("steps", "{:.1f}")):
@@ -130,6 +150,33 @@ def main(argv: list[str] | None = None) -> int:
         na, ua, ra = tool_use(ea, ca, tool, tasks)
         nb, ub, rb = tool_use(eb, cb, tool, tasks)
         print(f"  {tool:28s} {f'{ua}/{na} ({ra})':>18s} {f'{ub}/{nb} ({rb})':>18s}")
+
+    va, vb = (_reviews(c, {e["transcript_id"] for e in eps}) for c, eps in zip(cells, (ea, eb)))
+    told = [sum(bool(r["delivered"]) for r in rv.values()) for rv in (va, vb)]
+    print("\nreplies the customer got that claim a write no call had done "
+          "(English, first person):")
+    print(f"  {'episodes with one':28s} {f'{told[0]}/{len(va)}':>18s} "
+          f"{f'{told[1]}/{len(vb)}':>18s}")
+    for name, cell, rv in zip(names, cells, (va, vb)):
+        held = [(tid, t) for tid, r in rv.items() for t in r["held"]]
+        if not held:
+            continue
+        outs = Counter(o for r in rv.values() for o in r["outcomes"])
+        print(f"\nguardrail in {name}: held back {len(held)} replies in "
+              f"{len({tid for tid, _ in held})} episodes. After the note, for each "
+              f"action a held reply claimed:")
+        for o in ("made the call", "reworded", "claimed again", "ended"):
+            print(f"  {o:28s} {outs.get(o, 0):>6d}")
+        print("  the held replies -- read them; one that claims nothing, or what "
+              "happened before the conversation, is a false alarm:")
+        for tid in sorted({tid for tid, _ in held})[:40]:
+            recs = [json.loads(l) for l in (cell / f"{tid}.jsonl").read_text(
+                encoding="utf-8").splitlines() if l.strip()]
+            for st in recs:
+                if st.get("type") != "step":
+                    continue
+                for tool, quote in (st.get("guardrail") or {}).get("claims", []):
+                    print(f"    {tid:24s} {tool}: \"{quote[:110]}\"")
 
     def per_trap(eps):
         d: dict[str, list[bool]] = defaultdict(list)
