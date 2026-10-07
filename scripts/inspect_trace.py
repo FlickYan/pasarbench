@@ -90,6 +90,13 @@ def sequence(e: dict) -> None:
     print(f"  customer: {e.get('opening', '(opening message)')}")
     for st in e["steps"]:
         n = st["step"]
+        if st.get("guardrail"):
+            # Held back by the claim guardrail: the customer never saw it, and
+            # the agent got a note instead of a customer turn.
+            txt = " ".join((st.get("model_content") or "").split())[:110]
+            tools = ", ".join(c[0] for c in st["guardrail"].get("claims", []))
+            print(f"  [{n}] agent, HELD BACK (claims {tools}): {txt}")
+            continue
         if st.get("model_content"):
             txt = " ".join(st["model_content"].split())[:110]
             print(f"  [{n}] agent: {txt}")
@@ -212,6 +219,8 @@ def transcript(e: dict, task) -> list:
     events = {ev["turn"]: ev for ev in e["events"] if ev.get("kind") == "user_turn"}
     turn = 1
     for st in e["steps"]:
+        if st.get("guardrail"):
+            continue            # held back: the customer never saw it, no turn followed
         if st.get("model_content"):
             msgs.append(Message("assistant", st["model_content"]))
         if not st.get("tool_calls"):
