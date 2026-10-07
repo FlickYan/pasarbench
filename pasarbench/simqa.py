@@ -160,8 +160,9 @@ def leak_report(task, messages: list[Message], known_ids: set[str] | None = None
 
     for m in messages:
         if m.role == "assistant" and m.content:
-            agent_so_far += "\n" + m.content
-            last_agent = m.content
+            if not getattr(m, "hidden", False):    # held back: the customer never saw it
+                agent_so_far += "\n" + m.content
+                last_agent = m.content
             continue
         if m.role != "user":
             continue
@@ -208,8 +209,9 @@ def stall_report(task, messages: list[Message],
     asked = unanswered = 0
     for m in messages:
         if m.role == "assistant" and m.content:
-            pending |= {k for k, v in facts.items()
-                        if v.lower() not in given and _asked_for(k, m.content, patterns)}
+            if not getattr(m, "hidden", False):
+                pending |= {k for k, v in facts.items()
+                            if v.lower() not in given and _asked_for(k, m.content, patterns)}
             continue
         if m.role != "user":
             continue
