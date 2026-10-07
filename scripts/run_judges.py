@@ -78,6 +78,10 @@ def messages_from_trace(path: str, payloads: list[str | None] | None = None
     msgs: list[Message] = [Message("system", f"[{head.get('policy_mode', '?')} mode]")]
     turn, k = 1, 0
     for st in steps:
+        if st.get("guardrail"):
+            # Held back by the claim guardrail: the customer never saw it, and
+            # no customer turn followed it.
+            continue
         calls = [ToolCall(name=tc["name"], arguments=tc.get("arguments", {}),
                           id=tc.get("id", "")) for tc in st.get("tool_calls", [])]
         if st.get("model_content") or calls:
@@ -143,7 +147,7 @@ def judge_vs_verifier(cell: Path, mk, mode: str = "batched", workers: int = 8,
         nj = NaiveJudge(mk(), context=ctx).judge(f.stem, msgs)
         dj = DecomposedJudge(mk(), mode=mode, context=ctx).judge(f.stem, msgs)
         texts = [st["model_content"] for st in steps
-                 if (st.get("model_content") or "").strip()]
+                 if (st.get("model_content") or "").strip() and not st.get("guardrail")]
         calls = [(tc["name"], bool(tr.get("ok"))) for st in steps
                  for tc, tr in zip(st.get("tool_calls", []), st.get("tool_results", []))]
         read = task is not None and head.get("language") in ENGLISH
