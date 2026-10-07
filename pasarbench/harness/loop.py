@@ -35,6 +35,7 @@ from ..tools import call as tool_call
 from ..tools import schemas
 from .exposure import schema_tokens
 from .context import ContextStrategy, FullContext
+from . import guardrail as claim_guard
 from ..tasks import task_digest, world_digest
 from .prompts import system_prompt
 from .simulator import SilentUser, UserSimulator
@@ -58,7 +59,10 @@ def run_episode(
     interrupt_after_steps: int | None = None,
     exposure=None,
     run_index: int | None = None,
+    guardrail: str = "off",
 ) -> EpisodeResult:
+    if guardrail not in claim_guard.MODES:
+        raise ValueError(f"guardrail must be one of {claim_guard.MODES}, not {guardrail!r}")
     simulator = simulator or SilentUser()
     context = context or FullContext()
     budget = budget or Budget()
@@ -114,6 +118,8 @@ def run_episode(
         # Collection samples at temperature 1.0 and evaluation at 0.0; a report
         # that compares runs has to be able to tell which one it is reading.
         "agent_temperature": getattr(backend, "temperature", None),
+        # Only when on, so the headers of every run before it stay as they were.
+        **({"guardrail": guardrail} if guardrail != "off" else {}),
     })
 
     steps: list[StepRecord] = []
@@ -202,6 +208,18 @@ def run_episode(
                             "result_sha1": hashlib.sha1(
                                 payload.encode("utf-8")).hexdigest()[:12]})
 
+        # A reply to the customer that claims a write no call has done is held
+        # back: the customer never sees it, and the agent gets a note instead
+        # of a customer turn (harness/guardrail.py).
+        held = None
+        if guardrail == "claims" and not resp.tool_calls:
+            notes = sum(1 for m in state.messages if m.hidden)
+            claims = claim_guard.unbacked(resp.content or "", db.action_log)
+            if claims and notes < claim_guard.MAX_NOTES:
+                state.messages[-1].hidden = True
+                held = {"claims": [list(c) for c in claims],
+                        "note": claim_guard.note(claims)}
+
         steps.append(StepRecord(
             step=tracker.steps, turn=state.turn, context_messages=len(ctx),
             context_strategy=context.name, model_content=resp.content,
@@ -212,11 +230,14 @@ def run_episode(
                    "cached": usage.cached_tokens},
             latency_ms=latency_ms, budget=tracker.snapshot(),
             n_tools=len(names), schema_tokens=schema_tokens(names),
-            tool_names=list(names),
+            tool_names=list(names), guardrail=held,
         ))
         trace.step(steps[-1].to_dict())
 
         if resp.tool_calls:
+            continue
+        if held:
+            state.messages.append(Message(role="user", content=held["note"]))
             continue
 
         # No tool calls: the agent has spoken to the customer. Hand over.
