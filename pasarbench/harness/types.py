@@ -38,6 +38,10 @@ class Message:
     tool_calls: list[ToolCall] = field(default_factory=list)
     tool_call_id: str | None = None             # set on role="tool"
     name: str | None = None                     # tool name, on role="tool"
+    # An agent reply the claim guardrail held back (harness/guardrail.py): it
+    # stays in the agent's context, and the simulated customer never sees it.
+    # Ours only -- the backends build their wire messages field by field.
+    hidden: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         d: dict[str, Any] = {"role": self.role, "content": self.content}
@@ -47,6 +51,8 @@ class Message:
             d["tool_call_id"] = self.tool_call_id
         if self.name:
             d["name"] = self.name
+        if self.hidden:
+            d["hidden"] = True
         return d
 
     @classmethod
@@ -57,6 +63,7 @@ class Message:
             tool_calls=[ToolCall(**tc) for tc in d.get("tool_calls", [])],
             tool_call_id=d.get("tool_call_id"),
             name=d.get("name"),
+            hidden=bool(d.get("hidden", False)),
         )
 
 
@@ -189,9 +196,15 @@ class StepRecord:
     # same tool list the model was shown, and with progressive disclosure that
     # list changes from call to call.
     tool_names: list[str] = field(default_factory=list)
+    # Set when the claim guardrail held this reply back: {"claims": [[tool,
+    # quote], ...], "note": the note the agent got instead of a customer turn}.
+    guardrail: dict[str, Any] | None = None
 
     def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
+        d = asdict(self)
+        if d["guardrail"] is None:
+            del d["guardrail"]       # traces without the guardrail stay as they were
+        return d
 
 
 @dataclass
