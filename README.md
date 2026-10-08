@@ -38,17 +38,20 @@ are re-scored by replaying their tool calls (`scripts/rescore.py`).
   points below exposing all 20 tools (7 tasks worse, 1 better, p = 0.07 — it
   read p = 0.021 before the checker fix). Of 21 times a failed episode needed a
   hidden tool, the agent never searched for it 17 times — always a tool the
-  policy describes but never names. Naming those three tools in the policy, in
-  a re-run against a same-day control, took escalations from 12 to 21 of the 24
-  episodes that needed one and pass^1 from 0.844 to 0.938 (6 tasks better, 1
-  worse, p = 0.125), for 18% more tokens ([RUNBOOK 1g](docs/RUNBOOK.md)).
+  policy describes but never names. **Naming those three tools fixes it**:
+  confirmed under a rule written before the run, on 57 tasks the first test
+  hadn't used, pass^1 went from 0.44 to 0.80 (38 tasks better, 4 worse,
+  p < 10⁻⁶) in every language, for 13% more tokens ([RUNBOOK 1g, 1h](docs/RUNBOOK.md)).
 - **The agent claimed actions it never took** — only when the tool was out of
-  sight: 3 of 14 readable search-arm failures, 0 of 19 elsewhere. The same-day
-  control repeated it, 3 of 14; with the tools named, 0 of 6. A guardrail that
-  holds such a reply back before the customer sees it is built and tested: read
-  over the 9,958 recorded episodes, it would have fired 25 times, each on a
-  claim no call had backed ([RUNBOOK 1i](docs/RUNBOOK.md)). It has not run live
-  yet, and nor has a confirmation of the naming result on 57 new tasks (1h).
+  sight: 3 of 14 readable search-arm failures, 0 of 19 elsewhere, and 12 of 42
+  in the confirmation run's control; with the tools named, none (0 of 6, 0 of
+  13). A runtime guardrail that holds such a reply back caught the two it could
+  read, and both times the agent made the call and passed; three passives got
+  through, and it passed only by its own reading — the audit's counted three
+  false claims with it and three without ([WHAT_FAILED #34](docs/WHAT_FAILED.md)).
+  The second version reads those passives; read over all 10,492 recorded
+  episodes it fires on 46, every one a claim no call had backed (1i). It has
+  not run live yet.
 - **An LLM judge could not stand in for the database.** Its best configuration —
   with the tool results and the policy — reached κ = 0.72 and still accepted 6
   of 15 failed episodes. It caught one of three false claims and noticed another
