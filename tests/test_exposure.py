@@ -776,9 +776,12 @@ def test_claim_guardrail_report():
     with contextlib.redirect_stdout(out):
         cc.main([str(tmp / "C" / "full+search-300"), str(tmp / "G" / "full+search-300")])
     text = out.getvalue()
-    line = next((l for l in text.splitlines() if l.strip().startswith("episodes with one")), "")
-    check("the claim reached the customer in every control episode and in no guarded one",
-          re.search(r"2/2\s+0/2", line) is not None, line)
+    line = next((l for l in text.splitlines() if l.strip().startswith("guardrail reading")), "")
+    audit = next((l for l in text.splitlines() if l.strip().startswith("audit reading")), "")
+    check("the claim reached the customer in every control episode and in no guarded one -- "
+          "by the guardrail's reading, and by the audit's, which does not share its blind spots",
+          re.search(r"2/2\s+0/2", line) is not None and re.search(r"2/2\s+0/0", audit)
+          is not None, line + " | " + audit)
     check("…the guarded cell held back one reply per episode, and the agent made the call",
           "held back 2 replies in 2 episodes" in text
           and re.search(r"made the call\s+2", text) is not None
