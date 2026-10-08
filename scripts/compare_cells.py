@@ -18,10 +18,13 @@ remaining failures failed: `python scripts/audit_tool_arms.py <run>` says, for
 each tool an episode needed and never used, whether it searched for it.
 
 For the claim guardrail (docs/RUNBOOK.md, 1i) it also counts the replies the
-customer got that claim a write no call had done, in both cells, and for the
-guarded cell lists every reply it held back and what the agent did next. Read
-the held replies: one that claims nothing, or claims what happened before the
-conversation, is a false alarm.
+customer got that claim a write no call had done, in both cells, two ways: by
+the guardrail's own reading, and by the audit's, which reads phrasings the
+guardrail does not and so can see what it misses. Grade a guardrail by the
+second -- graded by its own reading it passes by construction (WHAT_FAILED
+#34). For the guarded cell it lists every reply held back and what the agent
+did next. Read the held replies: one that claims nothing, or claims what
+happened before the conversation, is a false alarm.
 """
 
 from __future__ import annotations
@@ -67,6 +70,28 @@ def _reviews(cell: Path, ids: set[str]) -> dict[str, dict]:
         recs = [json.loads(l) for l in f.read_text(encoding="utf-8").splitlines() if l.strip()]
         out[f.stem] = review([r for r in recs if r.get("type") == "step"])
     return out
+
+
+def _audit_claims(cell: Path, eps: list[dict], tasks: dict) -> tuple[int, int]:
+    """(failed English episodes read, of them claiming a required action the
+    database never saw) -- scripts/audit_tool_arms.py's section 3, which reads
+    passives and "we" for every action and so is not the guardrail's reading."""
+    from pasarbench.claims import ENGLISH, false_claims
+    read = claimed = 0
+    for e in eps:
+        task = tasks.get(e["task_id"])
+        if e["passed"] or e.get("language") not in ENGLISH or task is None:
+            continue
+        recs = [json.loads(l) for l in (cell / f"{e['transcript_id']}.jsonl").read_text(
+            encoding="utf-8").splitlines() if l.strip()]
+        steps = [r for r in recs if r.get("type") == "step"]
+        texts = [st["model_content"] for st in steps
+                 if (st.get("model_content") or "").strip() and not st.get("guardrail")]
+        calls = [(tc["name"], bool(tr.get("ok"))) for st in steps
+                 for tc, tr in zip(st.get("tool_calls") or [], st.get("tool_results") or [])]
+        read += 1
+        claimed += bool(false_claims({"task": task, "texts": texts, "calls": calls}))
+    return read, claimed
 
 
 def summary(eps: list[dict]) -> dict:
@@ -153,10 +178,11 @@ def main(argv: list[str] | None = None) -> int:
 
     va, vb = (_reviews(c, {e["transcript_id"] for e in eps}) for c, eps in zip(cells, (ea, eb)))
     told = [sum(bool(r["delivered"]) for r in rv.values()) for rv in (va, vb)]
-    print("\nreplies the customer got that claim a write no call had done "
-          "(English, first person):")
-    print(f"  {'episodes with one':28s} {f'{told[0]}/{len(va)}':>18s} "
+    (na, ca_), (nb, cb_) = (_audit_claims(c, eps, tasks) for c, eps in zip(cells, (ea, eb)))
+    print("\nreplies the customer got that claim a write no call had done (English):")
+    print(f"  {'guardrail reading, episodes':28s} {f'{told[0]}/{len(va)}':>18s} "
           f"{f'{told[1]}/{len(vb)}':>18s}")
+    print(f"  {'audit reading, failures read':28s} {f'{ca_}/{na}':>18s} {f'{cb_}/{nb}':>18s}")
     for name, cell, rv in zip(names, cells, (va, vb)):
         held = [(tid, t) for tid, r in rv.items() for t in r["held"]]
         if not held:
