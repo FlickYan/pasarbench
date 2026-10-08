@@ -285,6 +285,33 @@ version reads passives for vouchers and escalations, which no conversation in
 this world starts with, and is graded by the audit's reading, not its own.
 <!-- WHAT_FAILED #34; v24 reading 2/96 -> 0/96 (the rule written for v24); audit_tool_arms.py traces/L-off and traces/L-claims §3: claimed-not-done 3 of 15 read -> 3 of 18 (L-claims: OOWOV-TH__r1, OOWOV-TH__r2, OOWOV-VN__r1, all passive); v25 reading 3/96 and 3/96; pass^1 0.812 -> 0.802, 2 better 3 worse, p=1.0; scripts/guardrail_dry_run.py traces: v25 fires on 46 of 10,492, 44 in failed episodes -->
 
+Graded that way, the next version worked. Against a same-day control on the
+same 32 tasks, false claims reaching customers went from 5 of 15 readable
+failures to none of 13. It held back four replies, all real, and each time the
+agent found the tool, made the call and passed. Two were passives: in the
+control, one customer was told "Your goodwill voucher of VND 220,000 has been
+issued" over an empty vouchers table, and the case failed; in the guarded run
+the same claim was held back twice, and twice the voucher was issued. Five
+against none is p = 0.06 on the count alone; the held replies, each of which can
+be read, are the stronger evidence. The pass rate rose only within noise (0.823
+to 0.865, p = 0.69), and there was little more for it to do: ten of the
+thirteen guarded failures never escalated at all. A check on what the agent
+says can make its words match its actions. It cannot make it decide to act.
+
+Reading every failure by hand shows the boundary. Claims in the words my two
+readers know — "I've escalated", "I'm escalating this now", "has been issued" —
+are in six of the control's English failures and none of the guarded run's;
+two more in the control are in Vietnamese, which neither reads, and the
+guarded run had no failure outside English to test that. Other words got
+through in both, two in the control and three guarded: a voucher promised
+and never issued, "it will be reviewed by our team" with no escalation, and
+once a word I had no pattern for — "your case has been flagged with all the
+details confirmed". A list of phrasings will always be one step behind. Whether
+the customer was told something would happen is a question about language,
+which a model can answer; whether it happened is a question about state, which
+the tool log answers.
+<!-- RUNBOOK 1i, v25; traces/L2-off and traces/L2-claims, 2026-10-08 08:45-08:56 UTC; compare_cells.py: audit reading 5/15 -> 0/13, guardrail reading 6/96 -> 0/96; held 4 in 4 episodes (DRE-PH__r2, OOWDE-MY__r0, OOWOV-VN__r0, OOWOV-VN__r2), made the call 4, all 4 passed; L2-off OOWOV-VN__r2 failed after "Your goodwill voucher of **VND 220,000** has been issued."; Fisher's exact 5/96 vs 0/96, two-sided p=0.059; pass^1 0.823 -> 0.865, 4 better 2 worse, p=0.688; tokens -1,564/ep, p=0.597; guarded failures: CHE-MY x2, CHE-VN x3, DRE-PH x2, T14 x3 never escalated; hand reading of all failures (RUNBOOK 1i): claims in known words 6/15 English -> 0/13 (control: the audit's 5 + LCOW-MY__r2), plus control OOWDE-VN.vi__r1, __r2 in Vietnamese (no guarded failure outside English), other words 2 -> 3 (control LCOW-MY__r0 promise, T14__r1 implied review; guarded OOWOV-VN__r1 promise, DRE-PH__r1 implied review, HPRR-PH__r2 "has been flagged") -->
+
 ### Result 3: the language effect was my regex
 
 The multilingual comparison is the one the benchmark was built for. In two
@@ -428,12 +455,14 @@ fourth. The false-claim check reads English only, and only the phrasings I
 wrote — the same kind of instrument as the leak detector, so its counts are a
 floor: in the re-run, the one failure it couldn't read told the customer, in
 Vietnamese, that the case had gone to the complaints team. It hadn't. The
-guardrail shares that blind spot, and its second version has been checked
-against every recorded conversation but not yet run live. The Thai and
+guardrail shares that blind spot: three guarded failures told the customer
+something in words it doesn't read — a voucher promised and never issued, a
+review implied with no escalation, "your case has been flagged" — and its live
+test is one run of 192 conversations. The Thai and
 Vietnamese translations are not native-reviewed. The fine-tune is one run of one
 recipe; a second, with training data balanced across traps, is designed but not
 run. Serving cost is built but not measured.
-<!-- RESULTS.md §3 paired table (pairs 13–16); audit_tool_arms.py §3 header; traces/J-preload OOWDE-VN.vi__r2: "Trường hợp của bạn đã được chuyển lên bộ phận xử lý khiếu nại", escalate_to_human never searched for, never called -->
+<!-- RESULTS.md §3 paired table (pairs 13–16); audit_tool_arms.py §3 header; traces/J-preload OOWDE-VN.vi__r2: "Trường hợp của bạn đã được chuyển lên bộ phận xử lý khiếu nại", escalate_to_human never searched for, never called; traces/L2-claims OOWOV-VN__r1, DRE-PH__r1, HPRR-PH__r2 (RUNBOOK 1i, v25) -->
 
 The code, the trace generators, and all 34 failures are in the repo.
 
@@ -465,6 +494,14 @@ One line each, a number, and the mechanism. Pick three.
 > rule written before the run, lifted pass^1 from 0.44 to 0.80 (38 tasks
 > better, 4 worse, p < 10⁻⁶) and took false claims from 12 of 42 readable
 > failures to none.
+
+> **Built a runtime check against false action claims**: a reply claiming a
+> write no tool call had made is held back, and the agent is told which call
+> would make it true. The first version passed only by its own reading; graded
+> by an audit it doesn't share, under a rule written before the run, the second
+> took false claims reaching customers from 5 of 15 readable failures to none
+> against a same-day control, and all four replies it stopped ended in the real
+> call and a passed case.
 
 > **Traced a measured simulator bias to my own detector**: an 11–22% "leak"
 > rate concentrated in four languages, and three runs of fixes, came from
@@ -552,20 +589,27 @@ them in the policy: on the first 32 tasks that was the direction, not proof
 hadn't used. Pass^1 went from 0.44 to 0.80, 38 tasks better and 4 worse. It
 cost 13 to 18% more tokens; at twenty tools, just show them.
 
-**"Did the guardrail work?"** It did what it was built to do: it held back two
-false claims, and both times the agent made the call and passed. But three
-others got through as passives — "Your voucher has been issued" — which I had
-told it to ignore, and I only saw that because the audit reads more phrasings
-than the guardrail. By the rule I'd written, which read claims the way the
-guardrail did, it passed. That's the lesson I'd lead with: a fix graded by its
-own detector passes by construction. The second version reads those passives,
-and the rule for its run uses the audit's reading.
+**"Did the guardrail work?"** The second version did, by a rule written before
+its run: false claims reaching customers went from 5 of 15 readable failures to
+none of 13, and all four replies it held back were real — each time the agent
+made the call and the case passed. The first version is the better story. It
+held back two false claims, but three others got through as passives — "Your
+voucher has been issued" — which I had told it to ignore, and it passed its
+test anyway, because the test read claims the way the guardrail did. The audit,
+which reads more phrasings, counted three with it and three without. A fix
+graded by its own detector passes by construction. Two limits I'd say up front:
+what still gets through is in other words — "your case has been flagged", a
+promise never kept — about as often with the guardrail as without; and neither
+version moved the pass rate, because most failures are an agent that never
+acted. A guardrail can make words match actions, not cause the action.
 
 **"How do you know your false-claim detector isn't wrong the way the leak
 detector was?"** I don't, fully — it's the same kind of instrument. So it's
 scoped to English, the report says other languages are counted, not read, and
 I read each of the three against the tool log. What it can't tell me is how
-many claims it missed, so three is a floor.
+many claims it missed, so three is a floor. For the guardrail's run I read
+every failure by hand to find out: it had missed some, in words like "your case
+has been flagged", and the docs report them beside its counts.
 
 **"How do you know the language null isn't just low power?"** It is partly low
 power, and I'd say so: 13–16 twin pairs per language rule out large gaps, not
@@ -594,10 +638,12 @@ a run from before an ID format change. Then I read the conversations the fix
 had promoted — a replay proves the state, not that the state means what the
 check assumes.
 
-**"What would you do next?"** Run the second guardrail against a same-day
-control, graded by the audit's reading. Read why named search still fails on
-duplicate refunds — the agent explains the earlier refund and closes, where the
-policy says escalate anyway. A second fine-tune on trap-balanced data built
+**"What would you do next?"** Replace the guardrail's phrase list with a model
+that reads what the customer was told would happen, and keep the check against
+the tool log mechanical: what got past the list was wording — "flagged", "will
+be reviewed", a promise — and wording is a language question. Read why named
+search still fails on duplicate refunds — the agent explains the earlier refund
+and closes, where the policy says escalate anyway. A second fine-tune on trap-balanced data built
 with the corrected checks. Get the Thai and Vietnamese translations reviewed.
 Then serving cost.
 
