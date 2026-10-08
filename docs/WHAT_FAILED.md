@@ -1220,6 +1220,45 @@ that passes exception text to the agent inherits every change to it.
 
 ---
 
+## 34. The guardrail was graded by its own detector
+
+**What happened.** The claim guardrail (RUNBOOK 1i) holds back a reply that
+claims an action no tool call has done, and tells the agent instead. Version
+v24 read first-person claims only — "I've escalated", "I'll issue the voucher
+now" — and the rule written before its run graded it the same way: the
+replies the customer got that make a first-person claim no call backs. On the
+run (`L-off` against `L-claims`, 2026-10-07) that went from 2 of 96 to 0 of 96,
+a pass by the rule. It held back two replies, both real claims, and both times
+the agent made the call and the episode passed. But the audit, which reads more
+phrasings, found three false claims reaching customers in the guarded run —
+against three in the control. All three read "Your voucher has been issued".
+
+**Why.** Passives were left out on purpose: in the duplicate-refund trap "your
+refund was issued on 9 November" is true, and read as the agent's claim it
+would send the agent towards a second refund. The same exclusion let "your
+voucher has been issued" through, though no task starts with a voucher. And
+the measure of success read claims exactly as the guardrail did, so it could not
+see what the guardrail could not see: by construction, it could only pass.
+
+**Fix.** v25 reads "we" and passives for the two actions no record of can
+predate a conversation in this world — vouchers and escalations — and still
+reads refunds in the first person only. A passive needs a subject that points
+at something ("your voucher", "this"): a first draft without one fired three
+times on "No voucher has been issued", an agent saying what it had NOT done,
+which the dry run over recorded traces (`scripts/guardrail_dry_run.py`) caught
+before any run did. `compare_cells.py` now prints the audit's reading beside
+the guardrail's, and the runbook grades a guarded run by the audit's. Read by
+v25, each arm of the recorded run has three false claims: the two first-person
+claims the guardrail caught, it fixed; the three passives it never looked at
+got through.
+
+**Lesson.** A fix graded by the instrument that defines it passes by
+construction. Grade it with one it does not share, and write down which before
+the run. It is #26 again — a detector's blind spot read as the world's — in the
+other direction: there the detector invented a problem, here it hid one.
+
+---
+
 ## What this list is for
 
 Two things.
