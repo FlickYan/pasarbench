@@ -45,13 +45,15 @@ are re-scored by replaying their tool calls (`scripts/rescore.py`).
 - **The agent claimed actions it never took** — only when the tool was out of
   sight: 3 of 14 readable search-arm failures, 0 of 19 elsewhere, and 12 of 42
   in the confirmation run's control; with the tools named, none (0 of 6, 0 of
-  13). A runtime guardrail that holds such a reply back caught the two it could
-  read, and both times the agent made the call and passed; three passives got
-  through, and it passed only by its own reading — the audit's counted three
-  false claims with it and three without ([WHAT_FAILED #34](docs/WHAT_FAILED.md)).
-  The second version reads those passives; read over all 10,492 recorded
-  episodes it fires on 46, every one a claim no call had backed (1i). It has
-  not run live yet.
+  13). A runtime guardrail holds such a reply back and tells the agent which
+  call would make it true. Its first version passed only by its own reading —
+  the audit counted three false claims with it and three without
+  ([WHAT_FAILED #34](docs/WHAT_FAILED.md)). The second, graded by the audit
+  under a rule written before the run, took them from 5 of 15 readable failures
+  to 0 of 13 against a same-day control; all four replies it held back were
+  real, and each ended in the call and a passed case. Read by hand, softer
+  wording still got through about as often with it as without — "your case has
+  been flagged", a promise never kept ([RUNBOOK 1i](docs/RUNBOOK.md)).
 - **An LLM judge could not stand in for the database.** Its best configuration —
   with the tool results and the policy — reached κ = 0.72 and still accepted 6
   of 15 failed episodes. It caught one of three false claims and noticed another
