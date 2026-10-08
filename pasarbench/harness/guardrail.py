@@ -14,10 +14,14 @@ tool that would back it, and asking it to make the call or reword the reply.
 At most MAX_NOTES per episode, so a model that insists cannot loop; after
 that its reply goes through, and the trace says so.
 
-It reads English first-person claims only (claims.own_claims), so it is blind
-to the same things the audit is: other languages, and phrasings no pattern
-covers. What it holds back is recorded on the step (`guardrail`), and
-`review` below reads a trace back into what happened next.
+It reads English only (claims.own_claims): first-person claims for every write
+action, and also "we" and passives ("your voucher has been issued") for the
+two actions no record of can predate a conversation, vouchers and escalations.
+It is blind to the same things the audit is -- other languages, and phrasings
+no pattern covers -- so grade it with a reading it does not share (the audit's,
+in compare_cells), never only its own (WHAT_FAILED #34). What it holds back is
+recorded on the step (`guardrail`), and `review` below reads a trace back into
+what happened next.
 
 A refund claim is backed by store credit too. For a cash-on-delivery order the
 policy's refund IS store credit (P4.2), and the agents say "I've processed
