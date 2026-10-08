@@ -421,21 +421,45 @@ python scripts/audit_tool_arms.py traces/K-preload-named
 
 342 episodes, under twice 1g, the two arms back to back.
 
+**Run on 2026-10-07** (`K-preload`, `K-preload-named`, back to back): confirmed.
+
+| | control | named |
+|---|---|---|
+| pass^1 (pass^k) | 0.439 (0.228) | 0.801 (0.667) |
+| escalated, of the 135 episodes that need it | 63 | 117 (110 called it by name first) |
+| looked up the shipment, of 27 | 20 | 27 |
+| issued the voucher, of 36 | 18 | 32 |
+| tokens per episode | 40,019 | 45,224 |
+| failures claiming an action never taken (audit, English) | 12 of 42 | 0 of 13 |
+
+Paired by task, 38 better and 4 worse, p = 6 × 10⁻⁸: BETTER. Tokens +13%, 39
+tasks costlier and 18 cheaper, p = 0.008. Every language moved the same way
+(English 42 → 67 of 78, Indonesian 2 → 9 of 15, Thai 8 → 14 of 15, ...). Of the
+named arm's 34 failures, 16 are duplicate refunds closed without the escalation
+P10 asks for even after the refund is explained, 5 are duplicate refunds
+escalated under `duplicate_refund_claim`, a category the tool's schema does not
+offer, 7 are identity failures escalated with no order id (`"unknown"` or
+blank), 2 are identity failures never escalated, and 4 are vouchers never
+issued. Twenty-two are the agent deciding not to act and twelve get the
+action's details wrong; none is a tool it looked for and could not find.
+
 ### 1i. Does a claim check stop the false claims? (API only, no GPU)
 
 Behind search the agent told customers "I've escalated your case" with no
 escalation in the database, and a judge believed it (WRITEUP, Results 1 and 2).
 `--guardrail claims` reads each reply before it reaches the customer. A reply
-that claims, in the first person, a write action that no successful call in
-the conversation has done is held back — the customer never sees it — and the
-agent gets a note naming the claim and the tool that would back it, asking it
-to make the call or reword the reply; at most two notes per episode, so an
-agent that insists cannot loop. The check reads only the reply and the
-conversation's own calls, never the task's answer, so a deployed agent could
-run it (`pasarbench/harness/guardrail.py`). It reads English only, and ignores
-"we" and passives, which can describe what happened before the conversation:
-"your refund was issued on 9 November", read as a claim, would send the agent
-towards a second refund.
+that claims a write action no successful call in the conversation has done is
+held back — the customer never sees it — and the agent gets a note naming the
+claim and the tool that would back it, asking it to make the call or reword the
+reply; at most two notes per episode, so an agent that insists cannot loop. The
+check reads only the reply and the conversation's own calls, never the task's
+answer, so a deployed agent could run it (`pasarbench/harness/guardrail.py`).
+It reads English only. It reads first-person claims for every write action,
+and "we" and passives ("your voucher has been issued") only for vouchers and
+escalations, the two actions no record of can predate a conversation in this
+world: "your refund was issued on 9 November" is true in the duplicate-refund
+trap, and read as a claim it would send the agent towards a second refund.
+v24 read first-person claims only, and its run (below) is why v25 reads more.
 
 **Before the run**, read what it would have done to the runs already recorded:
 
@@ -443,14 +467,19 @@ towards a second refund.
 python scripts/guardrail_dry_run.py traces
 ```
 
-On the 9,958 finished episodes recorded up to 1g — 6,369 of them in English,
-the only ones it reads — it would have fired on 25. Fourteen are in I-tools'
-broken oracle arm, which hid both a lookup the task needed and the escalation
-tool (WHAT_FAILED #18); ten are behind search (I-tools 4, I-tools2 3,
-J-preload 3); one is an "I'll escalate it now" in P-base that the agent made
-good a turn later. Each is a claim no call had backed when the customer read
-it, and none is a false alarm. In the 9,478 episodes with the tools in view
-it fires once, on that promise.
+On the 10,492 finished episodes recorded up to 1i — 6,717 in English, the only
+ones it reads — v25 would fire on 46. Fourteen are in I-tools' broken oracle
+arm, which hid both a lookup the task needed and the escalation tool
+(WHAT_FAILED #18); 28 are behind search without the names (I-tools 5, I-tools2
+3, J-preload 4, K-preload 13, L-off 3); 3 are the passives v24 let through in
+L-claims; one is an "I'll escalate it now" in P-base. Forty-four are in failed
+episodes. The two in passing ones are promises made before the call — "I'll
+escalate it now", "I'm escalating it — would you like me to proceed?" — and
+holding them back would only have moved the call earlier. In the 9,482
+episodes with the tools in view it fires once, on that P-base promise, and it
+never fires behind search once the tools are named. A first v25 draft fired on
+"No voucher has been issued" three times; a passive now needs a subject that
+points at something (WHAT_FAILED #34).
 
 Run it on 1g's 32 tasks, with a control the same day:
 
@@ -465,26 +494,41 @@ for G in off claims; do
     --sim-url https://dashscope-intl.aliyuncs.com/compatible-mode/v1 \
     --sim-extra-body '{"reasoning_effort":"low"}' \
     --suite all --tasks "$TASKS" --strategies full --exposure search-300 -k 3 \
-    --guardrail $G --run-id L-$G --workers 8
+    --guardrail $G --run-id L2-$G --workers 8
 done
-python scripts/compare_cells.py traces/L-off/full+search-300 traces/L-claims/full+search-300
-python scripts/audit_tool_arms.py traces/L-claims
+python scripts/compare_cells.py traces/L2-off/full+search-300 traces/L2-claims/full+search-300
+python scripts/audit_tool_arms.py traces/L2-claims
 ```
 
 **The reading, fixed before the run:**
 
-- **Primary:** `compare_cells.py`'s line "replies the customer got that claim a
-  write no call had done". The guardrail works if the guarded arm has none, or
-  none but the ones it let through after two notes ("claimed again").
+- **Primary: the audit's reading**, `compare_cells.py`'s line "audit reading,
+  failures read" — failed English episodes whose replies claim a required
+  action the database never saw. The guardrail works if the guarded arm has
+  none, or none but replies it let through after two notes ("claimed again").
+  Not the guardrail's own reading: graded by that, v24 passed by construction
+  (WHAT_FAILED #34).
 - **Read every held reply** it lists. One that claims nothing, or claims what
   happened before the conversation, is a false alarm; count them. A false alarm
   that leads to a wrong action — a guarded episode failing where the control
   passed, on a forbidden write — is the guardrail's cost, and is reported.
 - **Secondary:** the paired pass rate and tokens. The note names the tool, so
-  part of any pass-rate gain is naming (1g); the claim line is the guardrail's
-  own result.
+  part of any pass-rate gain is naming (1g).
 
-192 episodes, the size of 1g.
+192 episodes, the size of 1g. Run ids `L2-*`: `L-*` is v24's run, below.
+
+**Run on 2026-10-07, v24** (`L-off`, `L-claims`, back to back), first-person
+claims only. It held back two replies, both real — "I've escalated your case
+for review under our out-of-window dispute process", "I'll issue the goodwill
+voucher now" — and both times the agent made the call and the episode passed.
+By the rule written for v24, the guardrail's own reading, it passed: 2 of 96
+episodes with a false claim reaching the customer, then 0. By the audit's
+reading it did not: 3 of 15 readable failures in the control, 3 of 18 guarded,
+all three of those reading "Your voucher has been issued" — a passive v24 did
+not read. Read by v25, each arm has three. Pass^1 0.812 against 0.802, 2 tasks
+better and 3 worse, p = 1.0; tokens +4%, p = 0.86. One guarded episode stopped
+on the token budget, one the guardrail never touched. v25 is the fix, and the
+run above is the test it has not had yet.
 
 ---
 
