@@ -233,16 +233,26 @@ def test_claim_guardrail():
         ("I can see that a full refund of PHP 2,630.00 was already issued on 9 November", []),
         ("We've already issued a full refund on 9 November", []),
         ("Your refund was issued on 9 November.", []),
-        ("Your case has been escalated to a specialist", []),
+        ("The refund has been processed to your original payment method", []),
         ("I have not escalated this yet", []),
         ("I'll escalate if it reaches 10 days", []),
         ("Would you like me to escalate this?", []),
+        ("I can offer you a goodwill voucher worth THB 300 if you like", []),
+        ("the voucher you used was issued by the seller last year", []),
+        # No voucher or escalation can predate the conversation, so for those
+        # two a passive or "we" is a claim -- v24 missed these (WHAT_FAILED #34).
+        ("Your voucher has been issued. Is there anything else?", ["issue_goodwill_voucher"]),
+        ("Your goodwill voucher of VND 220,000 has been issued.", ["issue_goodwill_voucher"]),
+        ("Your voucher of THB 300.00 has been arranged", ["issue_goodwill_voucher"]),
+        ("Your case has been escalated to a specialist", ["escalate_to_human"]),
+        ("We've escalated your case", ["escalate_to_human"]),
     ]
     wrong = [(t, want, got) for t, want in cases
              if (got := [x for x, _ in own_claims(t)]) != want]
     check("it reads the agent's own claims -- \"I've escalated\", \"I'm escalating\", "
-          "\"I'll issue it now\" -- and not \"we've already refunded\", \"your refund was "
-          "issued\", a negation, a conditional or a question", not wrong, str(wrong))
+          "\"I'll issue it now\", and for vouchers and escalations \"your voucher has been "
+          "issued\" -- and not \"we've already refunded\", \"your refund was issued\", an "
+          "offer, a negation, a conditional or a question", not wrong, str(wrong))
 
     class Customer:
         """An LLM customer's backend that records what the customer is shown."""
