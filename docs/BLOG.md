@@ -115,14 +115,25 @@ the harness refused, and the agent searched for the tool and used it — the
 pattern it had always shown with tools the policy named. Escalations went from
 12 of 24 to 21, shipment lookups from 3 of 18 to 12. Accuracy rose from 0.844 to
 0.938, most of the way to the 0.958 of showing all 20 tools: 6 tasks better,
-1 worse, p = 0.125 — the direction the explanation predicts, though 32 tasks
-can't confirm it. And none of the six failures left claimed an action that
-hadn't happened.
+1 worse, p = 0.125 — the direction the explanation predicts, but 32 tasks can't
+confirm it. None of the six failures left claimed an action that hadn't
+happened.
 
-Naming didn't make search cheap: the extra calls cost 18% more tokens per
-episode (p = 0.002), and showing all 20 tools had been cheaper still. If an
-agent has to search for its tools, name them where its instructions describe
-the action. If there are only twenty, show them.
+So I wrote down beforehand what would count as confirmation, and asked again,
+of 57 tasks the first run hadn't used: every task that can't pass without one
+of the three tools. Without the names the agent passed 44% of those
+conversations; with them, 80%. Thirty-eight tasks got better and four worse,
+p < 0.000001, and every language moved the same way. Escalations went from 63
+of the 135 conversations that needed one to 117, and the false claims went with
+them: 12 of the 42 failures I could read claimed an action never taken without
+the names, none of 13 with them. What still failed was mostly judgment, not
+search — duplicate refunds explained and closed without the escalation the
+policy asks for.
+
+Naming didn't make search cheap: the extra calls cost 13 to 18% more tokens per
+conversation, and showing all 20 tools had been cheaper still. If an agent has
+to search for its tools, name them where its instructions describe the action.
+If there are only twenty, show them.
 
 ## Result 2: an LLM judge takes the agent's word for it
 
@@ -183,6 +194,24 @@ The lesson is not that LLM judges are useless. It is that whether an action
 happened is a question about state, and state can be checked. Check outcomes
 against the database and claimed actions against the tool log — mechanically —
 and keep the LLM judge for what can't be checked: tone, clarity, language.
+
+So I built that check into the agent. A guardrail reads each reply before the
+customer does; if it claims an action no tool call in the conversation has
+done, the reply is held back and the agent is told which call would make it
+true. It reads the reply and the calls, never the task's answer, so a deployed
+agent could run it. Behind search it held back two replies, "I've escalated
+your case" and "I'll issue the goodwill voucher now", and both times the agent
+made the call and the case passed.
+
+It still let three false claims through, all like "Your voucher has been
+issued". I had told it to ignore passives, because in the duplicate-refund
+trap "your refund was issued on 9 November" is true, and read as a claim it
+would push the agent towards a second refund. And it passed the test I had
+written for it, because the test read claims the way the guardrail did: from
+two false claims reaching customers to none. The audit, which reads more
+phrasings, counted three with the guardrail and three without. The next
+version reads passives for vouchers and escalations, which no conversation in
+this world starts with, and is graded by the audit's reading, not its own.
 
 ## Result 3: the language effect was my regex
 
@@ -300,7 +329,10 @@ ranked above the one it trails.
   hash, and later on an error message Python 3.13 rephrased.
 - **Treat an LLM judge's numbers as a sample.** Run it more than once before
   you quote it, and never let it decide whether an action happened.
-- **Write down what failed.** The project's failure log has 33 entries; most
+- **Don't grade a fix with the instrument that defines it.** My guardrail
+  passed the test I wrote for it because the test read claims the way the
+  guardrail did. Graded by the audit, the count of false claims had not moved.
+- **Write down what failed.** The project's failure log has 34 entries; most
   were found by refusing a number that couldn't be right.
 
 ## Limits
@@ -313,8 +345,10 @@ first three results, and one base model for the fourth. The false-claim check
 reads English only, and only the phrasings I wrote — the same kind of
 instrument as the leak detector — so its counts are a floor: in the re-run, the
 one failure it couldn't read told the customer, in Vietnamese, that the case
-had gone to the complaints team. It hadn't. The Thai and Vietnamese
-translations are not native-reviewed. The fine-tune is one run of one recipe.
+had gone to the complaints team. It hadn't. The guardrail shares that blind
+spot, and its second version has been checked against every recorded
+conversation but not yet run live. The Thai and Vietnamese translations are not
+native-reviewed. The fine-tune is one run of one recipe.
 
-The code, the trace generators, and all 33 failures are in the repo:
+The code, the trace generators, and all 34 failures are in the repo:
 [github.com/FlickYan/pasarbench](https://github.com/FlickYan/pasarbench).
