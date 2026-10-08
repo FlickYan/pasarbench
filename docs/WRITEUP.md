@@ -175,16 +175,28 @@ the harness refused, and the agent searched for the tool and used it — the
 pattern it had always shown with tools the policy named. Escalations went from
 12 of 24 to 21, shipment lookups from 3 of 18 to 12. Accuracy rose from 0.844 to
 0.938, most of the way to the 0.958 of showing all 20 tools: 6 tasks better,
-1 worse, p = 0.125 — the direction the explanation predicts, though 32 tasks
-can't confirm it. And none of the six failures left claimed an action that
-hadn't happened.
+1 worse, p = 0.125 — the direction the explanation predicts, but 32 tasks can't
+confirm it. None of the six failures left claimed an action that hadn't
+happened.
 <!-- python scripts/compare_cells.py traces/J-preload/full+search-300 traces/J-preload-named/full+search-300: escalate_to_human 12/24 (0) -> 21/24 (21); get_shipment 3/18 -> 12/18; pass^1 0.844 -> 0.938; paired +0.094, 6 better 1 worse, p=0.125 INCONCLUSIVE. audit_tool_arms.py traces/J-preload-named §1: 88 hidden calls refused, 87 found & used; §3: read 6, claimed-not-done 0 -->
 
-Naming didn't make search cheap: the extra calls cost 18% more tokens per
-episode (p = 0.002), and showing all 20 tools had been cheaper still. If an
-agent has to search for its tools, name them where its instructions describe
-the action. If there are only twenty, show them.
-<!-- compare_cells.py: tokens 44,187 -> 52,354 (+18%), paired +8,167, 25 costlier 7 cheaper, p=0.002; RESULTS.md §2 all-20: 38,041 tokens, 0.958 (I-tools2, 2026-09-25) -->
+So I wrote down beforehand what would count as confirmation, and asked again,
+of 57 tasks the first run hadn't used: every task that can't pass without one
+of the three tools. Without the names the agent passed 44% of those
+conversations; with them, 80%. Thirty-eight tasks got better and four worse,
+p < 0.000001, and every language moved the same way. Escalations went from 63
+of the 135 conversations that needed one to 117, and the false claims went with
+them: 12 of the 42 failures I could read claimed an action never taken without
+the names, none of 13 with them. What still failed was mostly judgment, not
+search — duplicate refunds explained and closed without the escalation the
+policy asks for.
+<!-- RUNBOOK 1h (rule fixed before the run); python scripts/naming_tasks.py (57 tasks); traces/K-preload and traces/K-preload-named, 2026-10-07 17:57-18:13 UTC; compare_cells.py: pass^1 0.439 -> 0.801, paired +0.363, 38 better 4 worse, sign test p = 5.7e-8 BETTER; escalate_to_human 63/135 -> 117/135 (110), get_shipment 20/27 -> 27/27, voucher 18/36 -> 32/36; audit reading 12/42 -> 0/13; per language en 42->67/78, id 2->9/15, ms 7->13/15, sg-en 3->7/9, th 8->14/15, vi 3->9/12, zh-MY 5->9/15, zh-SG 5->9/12; audit_tool_arms.py traces/K-preload-named §2: 34 failed, 16 DRE never escalated, 5 DRE category duplicate_refund_claim, 7 IVF order_id unknown/blank, 2 IVF never escalated, 4 vouchers never searched -->
+
+Naming didn't make search cheap: the extra calls cost 13 to 18% more tokens per
+conversation, and showing all 20 tools had been cheaper still. If an agent has
+to search for its tools, name them where its instructions describe the action.
+If there are only twenty, show them.
+<!-- compare_cells.py: J tokens 44,187 -> 52,354 (+18%), p=0.002; K tokens 40,019 -> 45,224 (+13%), 39 costlier 18 cheaper, p=0.008; RESULTS.md §2 all-20: 38,041 tokens, 0.958 (I-tools2, 2026-09-25) -->
 
 ### Result 2: an LLM judge takes the agent's word for it
 
@@ -252,6 +264,26 @@ happened is a question about state, and state can be checked. Check outcomes
 against the database, check claimed actions against the tool log —
 mechanically — and keep the LLM judge for what can't be checked: tone,
 clarity, language.
+
+So I built that check into the agent. A guardrail reads each reply before the
+customer does; if it claims an action no tool call in the conversation has
+done, the reply is held back and the agent is told which call would make it
+true. It reads the reply and the calls, never the task's answer, so a deployed
+agent could run it. Behind search it held back two replies, "I've escalated
+your case" and "I'll issue the goodwill voucher now", and both times the agent
+made the call and the case passed.
+<!-- RUNBOOK 1i; pasarbench/harness/guardrail.py (v24, first-person only); traces/L-off and traces/L-claims, 2026-10-07 18:13-18:22 UTC; compare_cells.py: held back 2 replies in 2 episodes (OOWDE-MY__r0, OOWOV-TH__r0), made the call 2; both episodes passed -->
+
+It still let three false claims through, all like "Your voucher has been
+issued". I had told it to ignore passives, because in the duplicate-refund
+trap "your refund was issued on 9 November" is true, and read as a claim it
+would push the agent towards a second refund. And it passed the test I had
+written for it, because the test read claims the way the guardrail did: from
+two false claims reaching customers to none. The audit, which reads more
+phrasings, counted three with the guardrail and three without. The next
+version reads passives for vouchers and escalations, which no conversation in
+this world starts with, and is graded by the audit's reading, not its own.
+<!-- WHAT_FAILED #34; v24 reading 2/96 -> 0/96 (the rule written for v24); audit_tool_arms.py traces/L-off and traces/L-claims §3: claimed-not-done 3 of 15 read -> 3 of 18 (L-claims: OOWOV-TH__r1, OOWOV-TH__r2, OOWOV-VN__r1, all passive); v25 reading 3/96 and 3/96; pass^1 0.812 -> 0.802, 2 better 3 worse, p=1.0; scripts/guardrail_dry_run.py traces: v25 fires on 46 of 10,492, 44 in failed episodes -->
 
 ### Result 3: the language effect was my regex
 
@@ -364,7 +396,7 @@ ranked above the one it trails.
 
 ### What failed
 
-`docs/WHAT_FAILED.md` has 33 entries. Most were found by running experiments
+`docs/WHAT_FAILED.md` has 34 entries. Most were found by running experiments
 and refusing a number that couldn't be right. Two more:
 
 **The ceiling was below the floor.** The oracle arm — by design the best case —
@@ -395,12 +427,15 @@ and one judge model for the first three results, one base model for the
 fourth. The false-claim check reads English only, and only the phrasings I
 wrote — the same kind of instrument as the leak detector, so its counts are a
 floor: in the re-run, the one failure it couldn't read told the customer, in
-Vietnamese, that the case had gone to the complaints team. It hadn't. The Thai and Vietnamese translations are not native-reviewed. The
-fine-tune is one run of one recipe; a second, with training data balanced
-across traps, is designed but not run. Serving cost is built but not measured.
+Vietnamese, that the case had gone to the complaints team. It hadn't. The
+guardrail shares that blind spot, and its second version has been checked
+against every recorded conversation but not yet run live. The Thai and
+Vietnamese translations are not native-reviewed. The fine-tune is one run of one
+recipe; a second, with training data balanced across traps, is designed but not
+run. Serving cost is built but not measured.
 <!-- RESULTS.md §3 paired table (pairs 13–16); audit_tool_arms.py §3 header; traces/J-preload OOWDE-VN.vi__r2: "Trường hợp của bạn đã được chuyển lên bộ phận xử lý khiếu nại", escalate_to_human never searched for, never called -->
 
-The code, the trace generators, and all 33 failures are in the repo.
+The code, the trace generators, and all 34 failures are in the repo.
 
 ---
 
@@ -426,9 +461,10 @@ One line each, a number, and the mechanism. Pick three.
 
 > **Diagnosed search-based tool exposure**: replayed every query to show
 > the agent never searched for tools its policy described but didn't name (17
-> of 21 missing-tool cases); naming them, in a controlled re-run, raised
-> escalations from 12 to 21 of 24 and accuracy from 0.844 to 0.938 (p = 0.125),
-> at 18% more tokens.
+> of 21 missing-tool cases); naming them, confirmed on 57 new tasks under a
+> rule written before the run, lifted pass^1 from 0.44 to 0.80 (38 tasks
+> better, 4 worse, p < 10⁻⁶) and took false claims from 12 of 42 readable
+> failures to none.
 
 > **Traced a measured simulator bias to my own detector**: an 11–22% "leak"
 > rate concentrated in four languages, and three runs of fixes, came from
@@ -436,10 +472,10 @@ One line each, a number, and the mechanism. Pick three.
 > episodes are flagged, all English. The same blind spot had produced the
 > project's only significant language gaps.
 
-> **Documented 33 defects**, most caught by refusing implausible results —
+> **Documented 34 defects**, most caught by refusing implausible results —
 > including a "ceiling" arm that scored below baseline, a judge evaluated
-> without the evidence it was judging, and a fine-tune rewarded for a checker's
-> quirk.
+> without the evidence it was judging, a fine-tune rewarded for a checker's
+> quirk, and a guardrail graded by its own detector.
 
 ---
 
@@ -511,10 +547,19 @@ evidence. A claim about an action is checkable, so check it.
 tasks it isn't measurably less accurate (p = 0.07); it is 22% more expensive.
 Retrieval fixes finding a tool you're looking for. The failures here were tools
 the agent never looked for, because nothing told it they existed. So I named
-them in the policy and re-ran search against a same-day control: escalations
-went from 12 to 21 of the 24 conversations that needed one, accuracy from 0.844
-to 0.938 — 6 tasks better, 1 worse, p = 0.125, so the direction, not proof. It
-cost 18% more tokens again; at twenty tools, just show them.
+them in the policy: on the first 32 tasks that was the direction, not proof
+(p = 0.125), so I wrote down what would count and ran 57 tasks the first run
+hadn't used. Pass^1 went from 0.44 to 0.80, 38 tasks better and 4 worse. It
+cost 13 to 18% more tokens; at twenty tools, just show them.
+
+**"Did the guardrail work?"** It did what it was built to do: it held back two
+false claims, and both times the agent made the call and passed. But three
+others got through as passives — "Your voucher has been issued" — which I had
+told it to ignore, and I only saw that because the audit reads more phrasings
+than the guardrail. By the rule I'd written, which read claims the way the
+guardrail did, it passed. That's the lesson I'd lead with: a fix graded by its
+own detector passes by construction. The second version reads those passives,
+and the rule for its run uses the audit's reading.
 
 **"How do you know your false-claim detector isn't wrong the way the leak
 detector was?"** I don't, fully — it's the same kind of instrument. So it's
@@ -549,11 +594,12 @@ a run from before an ID format change. Then I read the conversations the fix
 had promoted — a replay proves the state, not that the state means what the
 check assumes.
 
-**"What would you do next?"** Confirm the naming effect on more tasks: 32 can't
-resolve 6 better against 1 worse. Add the claim check as a guardrail and
-measure how many false claims it stops. A second fine-tune on trap-balanced
-data built with the corrected checks. Get the Thai and Vietnamese translations
-reviewed. Then serving cost.
+**"What would you do next?"** Run the second guardrail against a same-day
+control, graded by the audit's reading. Read why named search still fails on
+duplicate refunds — the agent explains the earlier refund and closes, where the
+policy says escalate anyway. A second fine-tune on trap-balanced data built
+with the corrected checks. Get the Thai and Vietnamese translations reviewed.
+Then serving cost.
 
 ### One thing not to do
 
