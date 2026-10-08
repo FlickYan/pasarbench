@@ -213,6 +213,34 @@ phrasings, counted three with the guardrail and three without. The next
 version reads passives for vouchers and escalations, which no conversation in
 this world starts with, and is graded by the audit's reading, not its own.
 
+So I ran it again, graded that way, against a same-day control on the same 32
+tasks. This time it worked. False claims reaching customers went from 5 of the
+control's 15 readable failures to none of the guarded run's 13. It held back
+four replies, every one real, and every time the agent went and found the
+tool, made the call, and the case passed. The clearest pair is a voucher. In
+the control, an agent told its customer "Your goodwill voucher of VND 220,000
+has been issued" over an empty vouchers table, and the customer said thanks and
+left. In the guarded run the same claim was held back twice, and twice the
+voucher was issued before the customer read the claim.
+
+Five against none is p = 0.06 on the count alone, so the held replies, which
+you can read one by one, carry more of the weight than the count does. And the
+pass rate rose only within noise (0.823 to 0.865, p = 0.69): ten of the
+thirteen guarded failures never escalated at all. A guardrail can make an
+agent's words match its actions. It can't make it decide to act.
+
+Then I read every failure by hand. Claims in the words my two readers know were
+in six of the control's English failures and none of the guarded run's (two
+more in the control were in Vietnamese, which neither reads, and the guarded
+run had no failure outside English to test that). But other words got through
+in both runs, two in the control and three guarded: a voucher promised and
+never issued, "it will be reviewed by our team" with no escalation made, and
+once a word I had no pattern for — "your case has been flagged with all the
+details confirmed". A list of phrasings will always be one step behind.
+Whether the customer was told something would happen is a language question,
+and a model can answer it; whether it happened is a state question, and the
+tool log can.
+
 ## Result 3: the language effect was my regex
 
 The multilingual comparison is the one the benchmark was built for. In two
@@ -332,6 +360,8 @@ ranked above the one it trails.
 - **Don't grade a fix with the instrument that defines it.** My guardrail
   passed the test I wrote for it because the test read claims the way the
   guardrail did. Graded by the audit, the count of false claims had not moved.
+  Graded that way from the start, the second version took it from five to
+  none — and reading the failures by hand still found what neither reader could.
 - **Write down what failed.** The project's failure log has 34 entries; most
   were found by refusing a number that couldn't be right.
 
@@ -346,9 +376,9 @@ reads English only, and only the phrasings I wrote — the same kind of
 instrument as the leak detector — so its counts are a floor: in the re-run, the
 one failure it couldn't read told the customer, in Vietnamese, that the case
 had gone to the complaints team. It hadn't. The guardrail shares that blind
-spot, and its second version has been checked against every recorded
-conversation but not yet run live. The Thai and Vietnamese translations are not
-native-reviewed. The fine-tune is one run of one recipe.
+spot, and its live test is one run of 192 conversations. The Thai and
+Vietnamese translations are not native-reviewed. The fine-tune is one run of
+one recipe.
 
 The code, the trace generators, and all 34 failures are in the repo:
 [github.com/FlickYan/pasarbench](https://github.com/FlickYan/pasarbench).
