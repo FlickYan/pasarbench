@@ -1250,7 +1250,11 @@ before any run did. `compare_cells.py` now prints the audit's reading beside
 the guardrail's, and the runbook grades a guarded run by the audit's. Read by
 v25, each arm of the recorded run has three false claims: the two first-person
 claims the guardrail caught, it fixed; the three passives it never looked at
-got through.
+got through. Graded the new way, v25's own run (`L2-off` against `L2-claims`,
+2026-10-08) took the audit's count from 5 of 15 readable failures to 0 of 13.
+Reading every failure by hand then found what both readers miss — "your case
+has been flagged", a promise never kept — about as often in each arm
+(RUNBOOK 1i).
 
 **Lesson.** A fix graded by the instrument that defines it passes by
 construction. Grade it with one it does not share, and write down which before
