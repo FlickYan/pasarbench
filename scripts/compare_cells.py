@@ -30,7 +30,9 @@ For the closing check (docs/RUNBOOK.md, 1j) it says what the agent did after
 the customer left: the required actions first made then -- the mechanism --
 and the forbidden calls first made then -- the cost -- read off the database's
 action log as the verifier reads it, and how many closing phases were cut
-short. Read both before the pass rate.
+short. Since 1j it also counts the two costs that run found and its rule had
+not: a write made a second time, and a verification tried with digits the
+customer never gave. Read all of them before the pass rate.
 """
 
 from __future__ import annotations
@@ -94,8 +96,9 @@ def _closings(cell: Path, eps: list[dict], tasks: dict) -> dict[str, dict]:
 def _print_closing(name: str, cv: dict[str, dict], show: int = 40) -> None:
     """What the closing check did, read before the pass rate: the mechanism is
     a required call first made after the customer left, and the cost is a
-    forbidden call first made then. Every episode with a cost is listed; the
-    others up to `show`."""
+    forbidden call first made then -- and, since 1j, a write made a second
+    time and a verification tried with digits nobody gave. Every episode with
+    a cost is listed; the others up to `show`."""
     noted = [t for t, r in cv.items() if r["noted"]]
     if not noted:
         return
@@ -103,6 +106,8 @@ def _print_closing(name: str, cv: dict[str, dict], show: int = 40) -> None:
     calls = Counter(tool for t in noted for tool, ok in cv[t]["writes"] if ok)
     first = [t for t in noted if cv[t]["first"]]
     cost = [t for t in noted if cv[t]["forbidden"]]
+    again = [t for t in noted if cv[t]["repeated"]]
+    guess = [t for t in noted if cv[t]["guessed"]]
     cut = Counter(why for t in noted for why in cv[t]["cut"])
     print(f"\nclosing check in {name}: the customer left and the agent got the note in "
           f"{len(noted)} episodes; it made a write after that in {len(wrote)}.")
@@ -115,12 +120,20 @@ def _print_closing(name: str, cv: dict[str, dict], show: int = 40) -> None:
           f"{sum(cv[t]['passed'] for t in first)} of them passed -- the mechanism")
     print(f"  {'a forbidden call first made then':42s} {len(cost):>4d} episodes"
           f"{' -- its cost; read them' if cost else ''}")
-    rest = sorted(set(first) - set(cost))
-    for t in sorted(cost) + rest[:show]:
+    print(f"  {'a write repeating one already made':42s} {len(again):>4d} episodes"
+          f"{' -- one case done twice; read them' if again else ''}")
+    print(f"  {'a verification with digits never given':42s} {len(guess):>4d} episodes"
+          f"{' -- read them' if guess else ''}")
+    paid = sorted(set(cost) | set(again) | set(guess))
+    rest = sorted(set(first) - set(paid))
+    for t in paid + rest[:show]:
         r = cv[t]
         what = ([f"first: {', '.join(r['first'])}"] if r["first"] else []) + \
                ([f"FORBIDDEN: {', '.join(tool for tool, _ in r['forbidden'])}"]
-                if r["forbidden"] else [])
+                if r["forbidden"] else []) + \
+               ([f"REPEATED: {', '.join(tool for tool, _ in r['repeated'])}"]
+                if r["repeated"] else []) + \
+               ([f"GUESSED: verify_identity {', '.join(r['guessed'])}"] if r["guessed"] else [])
         print(f"    {t:24s} {r['trap']:34s} {'pass' if r['passed'] else 'FAIL'}  "
               f"{'; '.join(what)}")
     if len(rest) > show:
@@ -277,12 +290,23 @@ def main(argv: list[str] | None = None) -> int:
         return {k: sum(v) / len(v) for k, v in d.items()}
     pa, pb = per_trap(ea), per_trap(eb)
     moved = sorted((pb[k] - pa[k], k) for k in pa if k in pb and abs(pb[k] - pa[k]) > 1e-9)
+    def by_language(eps, trap):
+        d: dict[str, list[int]] = defaultdict(lambda: [0, 0])
+        for e in eps:
+            if e["trap"] == trap:
+                d[e.get("language", "?")][0] += e["passed"]
+                d[e.get("language", "?")][1] += 1
+        return d
     print("\ntraps that moved (leads to read in the traces, not results):")
     for d, k in moved or [(0.0, "(none)")]:
         if k == "(none)":
             print("  none")
             break
         print(f"  {k:40s} {pa[k]:.2f} -> {pb[k]:.2f}  ({d:+.2f})")
+        la, lb = by_language(ea, k), by_language(eb, k)
+        print("      by language, passed: " + ", ".join(
+            f"{lang} {la[lang][0]}/{la[lang][1]} -> {lb[lang][0]}/{lb[lang][1]}"
+            for lang in sorted(set(la) | set(lb))))
     print(f"\nwhy each remaining failure failed: python scripts/audit_tool_arms.py "
           f"{cells[1].parent}")
     return 0
