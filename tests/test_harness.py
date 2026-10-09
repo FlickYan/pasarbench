@@ -541,6 +541,269 @@ def test_tool_input_checks():
               (again.stdout + again.stderr)[-400:])
 
 
+def test_closing_check():
+    """docs/RUNBOOK.md 1j. When the customer leaves, the agent gets one note to
+    go over the case against the policy. The customer never sees it; the calls
+    the agent makes then are real, the text it writes is a case note no one
+    reads; the phase is capped, survives interrupt and resume, and the trace
+    says what it did -- including any forbidden call, which is its cost."""
+    print("\n=== the closing check: one look at the case after the customer leaves ===")
+    import json
+    import subprocess
+    import sys
+
+    from pasarbench.harness import closing as cl
+    from pasarbench.harness import guardrail as g
+    from pasarbench.harness.simulator import LLMUser
+    from pasarbench.harness.trace import customer_saw
+    from pasarbench.harness.types import ModelResponse, Usage
+    from pasarbench.tools import DEFAULT_TOOLS
+
+    bye = "Oh, I didn't notice that. Thanks, bye"
+
+    class Customer:
+        """Accepts the first explanation and leaves, as the duplicate-refund
+        customer does."""
+        name = "leaves"
+        model = "c"
+        reports_usage = False
+
+        def __init__(self):
+            self.views: list[list[str]] = []
+
+        def chat(self, messages, tools):
+            self.views.append([m.content for m in messages[1:]])
+            return ModelResponse(content=f"{bye} ###END###", usage=Usage(1, 1))
+
+    class Rec:
+        """The trace, as the records a reader gets from the file."""
+        def __init__(self):
+            self.meta, self.steps, self.events, self.recs = {}, [], [], []
+
+        def open_episode(self, task_id, run_index=None, meta=None):
+            self.meta = meta or {}
+            self.recs.append({"type": "header", "task_id": task_id, **self.meta})
+
+        def step(self, record):
+            self.steps.append(record)
+            self.recs.append({"type": "step", **json.loads(json.dumps(record, default=str))})
+
+        def event(self, kind, **kw):
+            self.events.append(kind)
+            self.recs.append({"type": "event", "kind": kind, **kw})
+
+    class Seeing(ScriptedBackend):
+        """Remembers every context it was sent."""
+        def __init__(self, plan):
+            super().__init__(plan)
+            self.seen: list[list[tuple[str, str]]] = []
+
+        def chat(self, messages, tools):
+            self.seen.append([(m.role, m.content) for m in messages])
+            return super().chat(messages, tools)
+
+    task = BY_ID["T14"]
+    look = ("get_order", {"order_id": "O1009"})
+    explain = "I can see a full refund of SGD 47.00 was already issued on 8 November."
+    esc = ("escalate_to_human", {"order_id": "O1009", "category": "duplicate_refund",
+                                 "reason": "refund already issued for this order"})
+    note = "Escalated: duplicate refund request; the refund had already been issued."
+    plan = [look, explain, esc, note]
+
+    def run(plan, mode, task=task, **kw):
+        cust, rec = Customer(), Rec()
+        db = Database.fresh(task.db_patch)
+        backend = Seeing(list(plan))
+        res = run_episode(task, db, backend, trace=rec, closing=mode,
+                          simulator=LLMUser(cust, persona="a customer", facts={}), **kw)
+        return res, cust, rec, db, backend
+
+    res, cust, rec, db, _ = run(plan, "off")
+    check("off: the episode ends when the customer leaves, the escalation P10 asks for is "
+          "never made, and the trace is as it always was",
+          res.stop_reason == StopReason.DONE and not verify(task, db).passed
+          and "closing" not in rec.meta and not any("closing" in s for s in rec.steps))
+
+    res, cust, rec, db, seen = run(plan, "check")
+    r = cl.review(rec.recs, task)
+    done_db = db
+    check("check: after the customer leaves the agent gets the note, makes the call the "
+          "policy requires, and the case passes -- and the trace says so",
+          res.stop_reason == StopReason.DONE and verify(task, db).passed
+          and rec.meta.get("closing") == "check"
+          and [s["step"] for s in rec.steps if s.get("closing")] == [3, 4]
+          and r["noted"] and r["ran"] and not r["cut"]
+          and r["first"] == ["escalate_to_human"] and r["writes"] == [("escalate_to_human", True)]
+          and not r["forbidden"] and "closing_check" in rec.events, str((r, rec.events)))
+    check("…the agent reads the customer's last words, then the note",
+          seen.seen[2][-2:] == [("user", bye), ("user", cl.NOTE)], str(seen.seen[2][-3:]))
+    check("…the customer is asked for nothing after leaving and never sees the note; the "
+          "agent's last words are a case note, hidden from any customer view",
+          len(cust.views) == 1 and not any(cl.NOTE in v for vs in cust.views for v in vs)
+          and res.state.messages[-1].hidden and res.state.messages[-1].content == note
+          and not customer_saw(rec.steps[-1]))
+
+    claim = "I've escalated your case to a specialist."
+    res, _, rec, _, _ = run([look, explain, claim], "check", guardrail="claims")
+    check("a case note is not a reply the customer got: the claim guardrail lets it be, "
+          "and its readers do not count it",
+          res.stop_reason == StopReason.DONE and not any(s.get("guardrail") for s in rec.steps)
+          and rec.steps[-1].get("closing") and rec.steps[-1]["model_content"] == claim
+          and not g.review(rec.steps)["delivered"], str(g.review(rec.steps)))
+
+    ver = ("verify_identity", {"user_id": task.user_id,
+                               "phone_last4": task.hidden_facts["phone_last4"]})
+    refund = ("issue_refund", {"order_id": "O1009", "amount_minor": 4700, "method": "card",
+                               "reason": "customer asked"})
+    _, _, rec, db, _ = run([look, explain, ver, refund, "Refunded again."], "check")
+    r = cl.review(rec.recs, task)
+    check("a forbidden call made after the customer left is the check's cost: the case "
+          "fails and the review names the call",
+          [t for t, _ in r["forbidden"]] == ["issue_refund"] and not verify(task, db).passed,
+          str(r))
+
+    _, _, rec, _, _ = run([look, esc, explain, esc, "Escalated again."], "check")
+    r = cl.review(rec.recs, task)
+    check("an action the conversation had already made is not one the phase rescued",
+          r["first"] == [] and r["writes"] == [("escalate_to_human", True)], str(r))
+
+    # T06 forbids even an attempt at a refund (must_succeed=False), as 24 of
+    # 1j's 57 tasks do -- the place a call that never reached the tools, or one
+    # the conversation had already made, would be miscounted as the cost.
+    t06 = BY_ID["T06"]
+    ver6 = ("verify_identity", {"user_id": t06.user_id,
+                                "phone_last4": t06.hidden_facts["phone_last4"]})
+    look6 = ("get_order", {"order_id": "O1004"})
+    esc6 = ("escalate_to_human", {"order_id": "O1004", "category": "out_of_window_dispute",
+                                  "reason": "customer disputes the window"})
+    refund6 = ("issue_refund", {"order_id": "O1004", "amount_minor": 34000,
+                                "method": "card", "reason": "asked"})
+    hidden = [n for n in DEFAULT_TOOLS if n != "issue_refund"]
+    _, _, rec, db, _ = run([ver6, look6, "It is out of the window.", esc6, refund6, "Done."],
+                           "check", task=t06, tool_names=hidden)
+    r = cl.review(rec.recs, t06)
+    check("a call to a tool the arm did not show never reached the database: no write, "
+          "no cost -- the verifier passes it, and so does the review",
+          verify(t06, db).passed and r["first"] == ["escalate_to_human"]
+          and not r["forbidden"] and r["writes"] == [("escalate_to_human", True)], str(r))
+    _, _, rec, db, _ = run([ver6, look6, refund6, "It is out of the window.", refund6, "Done."],
+                           "check", task=t06)
+    r = cl.review(rec.recs, t06)
+    check("a forbidden call the conversation had already made is its failure, not the "
+          "phase's cost", not verify(t06, db).passed and not r["forbidden"], str(r))
+    _, _, rec, _, _ = run([ver6, look6, "It is out of the window.", refund6, "Done."],
+                          "check", task=t06)
+    r = cl.review(rec.recs, t06)
+    check("…while one first made after the customer left is",
+          [t for t, _ in r["forbidden"]] == ["issue_refund"], str(r))
+
+    t03 = BY_ID["T03"]
+    wrong = ("verify_identity", {"user_id": t03.user_id, "phone_last4": "0000"})
+    _, _, rec, db, _ = run([("get_order", {"order_id": "O1002"}), "Let me check.", wrong,
+                            "Could not verify."], "check", task=t03)
+    r = cl.review(rec.recs, t03)
+    check("a verification the tool denied is not a verification the phase made",
+          r["ran"] and "verify_identity" not in r["first"]
+          and any("denied" in f for f in verify(t03, db).failures), str(r))
+
+    res, _, rec, _, _ = run([look, explain] + [look] * 10, "check")
+    r = cl.review(rec.recs, task)
+    check(f"the closing phase is capped at {cl.MAX_STEPS} model calls, the episode ends "
+          "as the conversation did, and the review says it was cut short",
+          res.stop_reason == StopReason.DONE and "closing_cut_short" in rec.events
+          and sum(1 for s in rec.steps if s.get("closing")) == cl.MAX_STEPS
+          and r["cut"] == ["closing.MAX_STEPS"], str(r))
+    res, _, rec, _, _ = run(plan, "check", budget=Budget(max_steps=2))
+    r = cl.review(rec.recs, task)
+    check("…when the episode's budget runs out inside it, that is not a budget stop: the "
+          "conversation had ended, and the review counts the note given, nothing done",
+          res.stop_reason == StopReason.DONE and r["noted"] and not r["ran"]
+          and r["cut"] == ["max_steps"], str(r))
+    res, _, rec, db, _ = run(plan, "check", budget=Budget(max_user_turns=1))
+    check("…and the cap on customer turns does not end it: no customer is left to take one",
+          res.stop_reason == StopReason.DONE and "closing_cut_short" not in rec.events
+          and verify(task, db).passed, str(rec.events))
+
+    backend, cust = ScriptedBackend(list(plan)), Customer()
+    sim = LLMUser(cust, persona="a customer", facts={})
+    db = Database.fresh(task.db_patch)
+    first = run_episode(task, db, backend, simulator=sim, closing="check",
+                        interrupt_after_steps=3)
+    state2, db2 = restore(snapshot(first.state, db))
+    second = run_episode(task, db2, backend, simulator=sim, closing="check", state=state2)
+    check("an episode interrupted in its closing phase resumes in it, and ends with the "
+          "database an uninterrupted one ends with",
+          first.stop_reason == StopReason.INTERRUPTED and second.stop_reason == StopReason.DONE
+          and db2.t("escalations") == done_db.t("escalations") and verify(task, db2).passed)
+
+    try:
+        run_episode(task, Database.fresh(task.db_patch), ScriptedBackend([]), closing="on")
+        bad_mode = False
+    except ValueError:
+        bad_mode = True
+    check("an unknown closing mode is refused, not ignored", bad_mode)
+
+    with tempfile.TemporaryDirectory() as d:
+        sweep = [sys.executable, "-m", "pasarbench.sweep", "--backend", "scripted",
+                 "--suite", "core", "--tasks", "T14", "--strategies", "full",
+                 "--run-id", "z", "--trace-root", d]
+        cwd = Path(__file__).resolve().parent.parent
+        r = subprocess.run(sweep + ["--closing", "check"], capture_output=True, text=True, cwd=cwd)
+        heads = [json.loads(f.read_text().splitlines()[0]) for f in Path(d).glob("z/*/*.jsonl")]
+        check("the sweep's --closing reaches every episode's trace header",
+              r.returncode == 0 and heads and all(h.get("closing") == "check" for h in heads),
+              r.stderr[-500:] or str(heads))
+        again = subprocess.run(sweep + ["--resume"], capture_output=True, text=True, cwd=cwd)
+        check("--resume will not add episodes without the closing check to a cell run with it",
+              again.returncode != 0 and "closing 'check'" in again.stdout + again.stderr,
+              (again.stdout + again.stderr)[-400:])
+
+
+def test_context_keeps_the_closing_note():
+    """The note is the agent's whole instruction once the customer has left,
+    and the phase can outlast a short window: window4 dropped it after four
+    tool calls, summarize4 folded it away, notes4 too once notes existed."""
+    print("\n=== every context strategy keeps the closing note ===")
+    from pasarbench.harness import closing as cl
+    from pasarbench.harness.context import NoteTaking, Summarize
+    from pasarbench.harness.types import EpisodeState, ModelResponse, Usage
+
+    def cycle(i, name="get_order"):
+        args = {"content": f"fact {i}"} if name == "write_note" else {"order_id": "O1009"}
+        return [Message("assistant", "", tool_calls=[ToolCall(name=name, arguments=args,
+                                                              id=f"c{i}")]),
+                Message("tool", '{"ok": true}', name=name, tool_call_id=f"c{i}")]
+
+    class Summary:
+        def chat(self, messages, tools):
+            return ModelResponse(content='{"customer_goal": "a refund"}', usage=Usage(1, 1))
+
+    msgs = [Message("system", "policy"), Message("user", "I want a refund for O1009")]
+    msgs += cycle(0, "write_note") + cycle(1)
+    msgs += [Message("assistant", "A refund was already issued."), Message("user", "Bye"),
+             Message("user", cl.NOTE)]
+    for i in range(2, 8):
+        msgs += cycle(i)
+    strategies = [FullContext(), SlidingWindow(4), SlidingWindow(8), ToolResultTrim(3),
+                  Summarize(Summary(), keep_recent=4, trigger_units=8), NoteTaking(4)]
+    built = {}
+    for strat in strategies:
+        state = EpisodeState(task_id="T14")
+        state.messages = list(msgs)
+        built[strat.name] = strat.build(state)
+    kept = {n: sum(m.content == cl.NOTE for m in b) for n, b in built.items()}
+    check("after six calls in the closing phase, every strategy still sends the note, once",
+          all(v == 1 for v in kept.values()), str(kept))
+    whole = {n: all(any(p.role == "assistant" and any(tc.id == m.tool_call_id
+                                                      for tc in p.tool_calls)
+                        for p in b[:i]) for i, m in enumerate(b) if m.role == "tool")
+             for n, b in built.items()}
+    check("…without orphaning a tool result", all(whole.values()), str(whole))
+    order = {n: [m.content for m in b].index(cl.NOTE) < max(
+        i for i, m in enumerate(b) if m.role == "tool") for n, b in built.items()}
+    check("…and before the calls that answered it", all(order.values()), str(order))
+
+
 def main() -> int:
     test_reference_through_loop()
     test_budgets_bite()
@@ -551,6 +814,8 @@ def main() -> int:
     test_prompt_modes()
     test_claim_guardrail()
     test_tool_input_checks()
+    test_closing_check()
+    test_context_keeps_the_closing_note()
     print(f"\n{len(PASS)} passed, {len(FAIL)} failed")
     for f in FAIL:
         print(f"  FAILED: {f}")
