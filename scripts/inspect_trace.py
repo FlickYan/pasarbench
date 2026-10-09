@@ -88,8 +88,14 @@ def sequence(e: dict) -> None:
     events = {ev["turn"]: ev for ev in e["events"] if ev.get("kind") == "user_turn"}
     turn = 1
     print(f"  customer: {e.get('opening', '(opening message)')}")
+    closing_shown = False
     for st in e["steps"]:
         n = st["step"]
+        if st.get("closing") and not closing_shown:
+            # The closing check (harness/closing.py): what follows ran after the
+            # customer had gone, and no one read its text.
+            print("  --- the customer has left: closing check ---")
+            closing_shown = True
         if st.get("guardrail"):
             # Held back by the claim guardrail: the customer never saw it, and
             # the agent got a note instead of a customer turn.
@@ -219,8 +225,8 @@ def transcript(e: dict, task) -> list:
     events = {ev["turn"]: ev for ev in e["events"] if ev.get("kind") == "user_turn"}
     turn = 1
     for st in e["steps"]:
-        if st.get("guardrail"):
-            continue            # held back: the customer never saw it, no turn followed
+        if st.get("guardrail") or st.get("closing"):
+            continue            # held back, or after the customer left: never seen, no turn followed
         if st.get("model_content"):
             msgs.append(Message("assistant", st["model_content"]))
         if not st.get("tool_calls"):
