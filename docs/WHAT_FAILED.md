@@ -1318,6 +1318,38 @@ takes what its own interface forbids turns "the API would have told you" into
 "you failed", silently, because the one agent guaranteed to send valid values
 is the reference solution.
 
+## 36. The closing check's cost was counted in what the checks forbid
+
+**What happened.** The closing check's rule, written before its run (RUNBOOK
+1j), set the episodes it rescued against the forbidden calls it caused after
+the customer left: 21 against none. Reading the traces found two costs no check
+forbids. In 15 of 171 episodes the agent escalated, after the customer had
+gone, a case the conversation had already escalated — the same order under the
+same category, a second ticket for a person to handle; it never happened in
+either control (none in 342 episodes). And twice it tried identity verification
+with "0000", digits the customer never gave, because she was no longer there to
+give them. That is 17 episodes with a cost, not none. A review before the run
+had already caught the rule counting too much: calls that never reached the
+tools — to a tool the arm had hidden — were counted as forbidden, and an
+episode that had failed in the conversation was charged to the closing phase.
+
+**Why.** A task's checks say what fails it, not what an action costs. A second
+escalation passes every check — the task asks for at least one, and forbids a
+refund — so a cost rule that borrowed the checks' idea of harm could see only
+the harm the checks were written for, as the guardrail's first test could see
+only the claims the guardrail read (#34).
+
+**Fix.** v29: `closing.review` also reports writes that repeat one already
+made — the same tool on the same order, item or customer and, for an
+escalation, the same category — and verifications with digits the customer
+never gave, and `compare_cells.py` counts both and lists every episode. The
+rule for the next run (RUNBOOK 1k) counts them from the start, beside
+forbidden calls.
+
+**Lesson.** Count an intervention's cost in what it does, not in what the
+checks forbid. The checks were written for the agent's mistakes before the
+intervention existed; the mistakes a new mechanism makes are new.
+
 ---
 
 ## What this list is for
