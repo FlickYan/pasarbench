@@ -1,0 +1,81 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="436" height="786" viewBox="0 0 436 786" role="img" aria-labelledby="t d" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif">
+<title id="t">PasarBench: four results</title>
+<desc id="d">Naming the tools: 44% to 80% of conversations passed (38 tasks better, 4 worse). Claim guardrail: 5 to 0 conversations of 96 told the customer an action happened that never did (p = 0.06). Fine-tune: +2.3 to +0.3 points over the base model once the checker was fixed (p = 0.84); API reference +4.0 to −6.6 (p = 0.004), at best −4.7. Languages: Indonesian −1.3; Malay +3.8; Singlish +4.6; Thai +7.5; Vietnamese −1.2; Chinese (MY) +2.5; Chinese (SG) +1.5 points against English, every p ≥ 0.12.</desc>
+<rect width="436" height="786" rx="8" fill="#fcfcfb"/>
+<text x="24.0" y="30.0" font-size="15" font-weight="600" fill="#0b0b0b" text-anchor="start">Naming the tools the policy describes</text>
+<text x="24.0" y="49.0" font-size="12.5" font-weight="400" fill="#52514e" text-anchor="start">Conversations passed, 57 new tasks, 171 per arm</text>
+<text x="24.0" y="65.0" font-size="12.5" font-weight="400" fill="#52514e" text-anchor="start">38 tasks better, 4 worse · p = 6 × 10⁻⁸</text>
+<text x="150.0" y="99.0" font-size="13" font-weight="400" fill="#52514e" text-anchor="end">Tools described</text>
+<path d="M160.0,84.0 H242.0 Q246.0,84.0 246.0,88.0 V100.0 Q246.0,104.0 242.0,104.0 H160.0 Z" fill="#898781"><title>Policy describes the tools: 44%</title></path>
+<text x="254.0" y="99.0" font-size="13" font-weight="600" fill="#0b0b0b" text-anchor="start">44%</text>
+<text x="150.0" y="133.0" font-size="13" font-weight="400" fill="#52514e" text-anchor="end">Tools named</text>
+<path d="M160.0,118.0 H313.0 Q317.0,118.0 317.0,122.0 V134.0 Q317.0,138.0 313.0,138.0 H160.0 Z" fill="#2a78d6"><title>Policy names them: 80%</title></path>
+<text x="325.0" y="133.0" font-size="13" font-weight="600" fill="#0b0b0b" text-anchor="start">80%</text>
+<line x1="160.0" y1="78.0" x2="160.0" y2="144.0" stroke="#c3c2b7" stroke-width="1"/>
+<text x="24.0" y="192.0" font-size="15" font-weight="600" fill="#0b0b0b" text-anchor="start">Checking what the agent says it did</text>
+<text x="24.0" y="211.0" font-size="12.5" font-weight="400" fill="#52514e" text-anchor="start">Conversations that told the customer an action</text>
+<text x="24.0" y="227.0" font-size="12.5" font-weight="400" fill="#52514e" text-anchor="start">happened that never did, of 96 per arm · p = 0.06</text>
+<text x="150.0" y="261.0" font-size="13" font-weight="400" fill="#52514e" text-anchor="end">No check</text>
+<path d="M160.0,246.0 H319.3 Q323.3,246.0 323.3,250.0 V262.0 Q323.3,266.0 319.3,266.0 H160.0 Z" fill="#898781"><title>Without the guardrail: 5 of 96</title></path>
+<text x="331.3" y="261.0" font-size="13" font-weight="600" fill="#0b0b0b" text-anchor="start">5</text>
+<text x="150.0" y="295.0" font-size="13" font-weight="400" fill="#52514e" text-anchor="end">Claim guardrail</text>
+<text x="168.0" y="295.0" font-size="13" font-weight="600" fill="#0b0b0b" text-anchor="start">0</text>
+<line x1="160.0" y1="240.0" x2="160.0" y2="306.0" stroke="#c3c2b7" stroke-width="1"/>
+<text x="24.0" y="354.0" font-size="15" font-weight="600" fill="#0b0b0b" text-anchor="start">A checker quirk the fine-tune learned</text>
+<text x="24.0" y="373.0" font-size="12.5" font-weight="400" fill="#52514e" text-anchor="start">Pass rate minus the base model&#x27;s, points, 1,075 per arm</text>
+<text x="24.0" y="389.0" font-size="12.5" font-weight="400" fill="#52514e" text-anchor="start">Checker fixed: fine-tuned p = 0.84, reference p = 0.004</text>
+<line x1="160.0" y1="408.0" x2="160.0" y2="482.0" stroke="#e1e0d9" stroke-width="1"/>
+<text x="160.0" y="496.0" font-size="11" font-weight="400" fill="#898781" text-anchor="middle">−8</text>
+<line x1="222.9" y1="408.0" x2="222.9" y2="482.0" stroke="#e1e0d9" stroke-width="1"/>
+<text x="222.9" y="496.0" font-size="11" font-weight="400" fill="#898781" text-anchor="middle">−4</text>
+<line x1="285.7" y1="408.0" x2="285.7" y2="482.0" stroke="#c3c2b7" stroke-width="1"/>
+<text x="285.7" y="496.0" font-size="11" font-weight="400" fill="#898781" text-anchor="middle">0</text>
+<line x1="348.6" y1="408.0" x2="348.6" y2="482.0" stroke="#e1e0d9" stroke-width="1"/>
+<text x="348.6" y="496.0" font-size="11" font-weight="400" fill="#898781" text-anchor="middle">+4</text>
+<text x="150.0" y="430.5" font-size="13" font-weight="400" fill="#52514e" text-anchor="end">Fine-tuned</text>
+<line x1="322.3" y1="426.0" x2="290.1" y2="426.0" stroke="#c3c2b7" stroke-width="2"/>
+<circle cx="322.3" cy="426.0" r="5" fill="#898781" stroke="#fcfcfb" stroke-width="2"><title>Fine-tuned, as first scored: +2.3 points, p = 0.18</title></circle>
+<circle cx="290.1" cy="426.0" r="5" fill="#2a78d6" stroke="#fcfcfb" stroke-width="2"><title>Fine-tuned, checker fixed: +0.3 points, p = 0.84</title></circle>
+<text x="280.1" y="417.0" font-size="12" font-weight="600" fill="#0b0b0b" text-anchor="end">+0.3</text>
+<text x="150.0" y="464.5" font-size="13" font-weight="400" fill="#52514e" text-anchor="end">API reference</text>
+<line x1="348.6" y1="460.0" x2="181.9" y2="460.0" stroke="#c3c2b7" stroke-width="2"/>
+<circle cx="348.6" cy="460.0" r="5" fill="#898781" stroke="#fcfcfb" stroke-width="2"><title>API reference, as first scored: +4.0 points, p = 0.48</title></circle>
+<circle cx="181.9" cy="460.0" r="5" fill="#2a78d6" stroke="#fcfcfb" stroke-width="2"><title>API reference, checker fixed: −6.6 points, p = 0.004</title></circle>
+<text x="171.9" y="451.0" font-size="12" font-weight="600" fill="#0b0b0b" text-anchor="end">−6.6</text>
+<circle cx="212.6" cy="460.0" r="5" fill="#fcfcfb" stroke="#2a78d6" stroke-width="2"><title>At best, had the escalation tool refused invalid inputs (#35): −4.7</title></circle>
+<circle cx="30.0" cy="512.0" r="5" fill="#898781" stroke="#fcfcfb" stroke-width="2"><title>as first scored</title></circle>
+<text x="40.0" y="516.0" font-size="12" font-weight="400" fill="#52514e" text-anchor="start">as first scored</text>
+<circle cx="150.0" cy="512.0" r="5" fill="#2a78d6" stroke="#fcfcfb" stroke-width="2"><title>checker fixed</title></circle>
+<text x="160.0" y="516.0" font-size="12" font-weight="400" fill="#52514e" text-anchor="start">checker fixed</text>
+<circle cx="262.0" cy="512.0" r="5" fill="#fcfcfb" stroke="#2a78d6" stroke-width="2"><title>at best (#35)</title></circle>
+<text x="272.0" y="516.0" font-size="12" font-weight="400" fill="#52514e" text-anchor="start">at best (#35)</text>
+<text x="24.0" y="558.0" font-size="15" font-weight="600" fill="#0b0b0b" text-anchor="start">No language differed from English</text>
+<text x="24.0" y="577.0" font-size="12.5" font-weight="400" fill="#52514e" text-anchor="start">Pass rate minus English&#x27;s on twin tasks, points,</text>
+<text x="24.0" y="593.0" font-size="12.5" font-weight="400" fill="#52514e" text-anchor="start">every p ≥ 0.12, in two independent runs</text>
+<line x1="167.7" y1="612.0" x2="167.7" y2="728.0" stroke="#e1e0d9" stroke-width="1"/>
+<text x="167.7" y="742.0" font-size="11" font-weight="400" fill="#898781" text-anchor="middle">−10</text>
+<line x1="216.8" y1="612.0" x2="216.8" y2="728.0" stroke="#e1e0d9" stroke-width="1"/>
+<text x="216.8" y="742.0" font-size="11" font-weight="400" fill="#898781" text-anchor="middle">−5</text>
+<line x1="266.0" y1="612.0" x2="266.0" y2="728.0" stroke="#c3c2b7" stroke-width="1"/>
+<text x="266.0" y="742.0" font-size="11" font-weight="400" fill="#898781" text-anchor="middle">0</text>
+<line x1="315.2" y1="612.0" x2="315.2" y2="728.0" stroke="#e1e0d9" stroke-width="1"/>
+<text x="315.2" y="742.0" font-size="11" font-weight="400" fill="#898781" text-anchor="middle">+5</text>
+<line x1="364.3" y1="612.0" x2="364.3" y2="728.0" stroke="#e1e0d9" stroke-width="1"/>
+<text x="364.3" y="742.0" font-size="11" font-weight="400" fill="#898781" text-anchor="middle">+10</text>
+<text x="138.0" y="628.5" font-size="12.5" font-weight="400" fill="#52514e" text-anchor="end">Indonesian</text>
+<circle cx="253.2" cy="624.0" r="5" fill="#2a78d6" stroke="#fcfcfb" stroke-width="2"><title>Indonesian: −1.3 points over 16 pairs, p = 1.00</title></circle>
+<text x="138.0" y="644.5" font-size="12.5" font-weight="400" fill="#52514e" text-anchor="end">Malay</text>
+<circle cx="303.4" cy="640.0" r="5" fill="#2a78d6" stroke="#fcfcfb" stroke-width="2"><title>Malay: +3.8 points over 16 pairs, p = 0.50</title></circle>
+<text x="138.0" y="660.5" font-size="12.5" font-weight="400" fill="#52514e" text-anchor="end">Singlish</text>
+<circle cx="311.2" cy="656.0" r="5" fill="#2a78d6" stroke="#fcfcfb" stroke-width="2"><title>Singlish: +4.6 points over 13 pairs, p = 1.00</title></circle>
+<text x="138.0" y="676.5" font-size="12.5" font-weight="400" fill="#52514e" text-anchor="end">Thai</text>
+<circle cx="339.8" cy="672.0" r="5" fill="#2a78d6" stroke="#fcfcfb" stroke-width="2"><title>Thai: +7.5 points over 16 pairs, p = 0.12</title></circle>
+<text x="349.8" y="676.5" font-size="12" font-weight="600" fill="#0b0b0b" text-anchor="start">+7.5</text>
+<text x="138.0" y="692.5" font-size="12.5" font-weight="400" fill="#52514e" text-anchor="end">Vietnamese</text>
+<circle cx="254.2" cy="688.0" r="5" fill="#2a78d6" stroke="#fcfcfb" stroke-width="2"><title>Vietnamese: −1.2 points over 16 pairs, p = 0.62</title></circle>
+<text x="138.0" y="708.5" font-size="12.5" font-weight="400" fill="#52514e" text-anchor="end">Chinese (MY)</text>
+<circle cx="290.6" cy="704.0" r="5" fill="#2a78d6" stroke="#fcfcfb" stroke-width="2"><title>Chinese (MY): +2.5 points over 16 pairs, p = 1.00</title></circle>
+<text x="138.0" y="724.5" font-size="12.5" font-weight="400" fill="#52514e" text-anchor="end">Chinese (SG)</text>
+<circle cx="280.8" cy="720.0" r="5" fill="#2a78d6" stroke="#fcfcfb" stroke-width="2"><title>Chinese (SG): +1.5 points over 13 pairs, p = 1.00</title></circle>
+<text x="24.0" y="770.0" font-size="11" font-weight="400" fill="#898781" text-anchor="start">Every number is read from the recorded runs by scripts/make_figure.py</text>
+</svg>

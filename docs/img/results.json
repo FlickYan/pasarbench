@@ -1,0 +1,126 @@
+{
+ "source": "scripts/make_figure.py --traces",
+ "cells": {
+  "naming": [
+   "K-preload/full+search-300",
+   "K-preload-named/full+search-300"
+  ],
+  "guardrail": [
+   "L2-off/full+search-300",
+   "L2-claims/full+search-300"
+  ],
+  "finetune": [
+   "P-base/full",
+   "P-rft/full",
+   "P-ref/full"
+  ],
+  "language": [
+   "C-clean/full",
+   "D-nozh/full"
+  ]
+ },
+ "naming": {
+  "control": 0.43859649122807015,
+  "named": 0.8011695906432749,
+  "episodes": 171,
+  "tasks": 57,
+  "better": 38,
+  "worse": 4,
+  "p": 5.65314621780999e-08
+ },
+ "guardrail": {
+  "control": 5,
+  "guarded": 0,
+  "episodes": [
+   96,
+   96
+  ],
+  "failures_read": [
+   15,
+   13
+  ],
+  "p": 0.05925371893958281
+ },
+ "finetune": {
+  "episodes": 1075,
+  "first": {
+   "rft": 2.3255813953488302,
+   "ref": 3.9999999999999925,
+   "p_rft": 0.17546524899080396,
+   "p_ref": 0.4766877934342755
+  },
+  "fixed": {
+   "rft": 0.27906976744185297,
+   "ref": -6.604651162790698,
+   "p_rft": 0.8388197422027588,
+   "p_ref": 0.003657766827927844
+  },
+  "ref_best_case": -4.651162790697675
+ },
+ "language": {
+  "C-clean/full": {
+   "id": {
+    "gap": -1.3,
+    "pairs": 16,
+    "p": 1.0
+   },
+   "ms": {
+    "gap": 3.8,
+    "pairs": 16,
+    "p": 0.5
+   },
+   "sg-en": {
+    "gap": 4.6,
+    "pairs": 13,
+    "p": 1.0
+   },
+   "th": {
+    "gap": 7.5,
+    "pairs": 16,
+    "p": 0.125
+   },
+   "vi": {
+    "gap": -1.2,
+    "pairs": 16,
+    "p": 0.625
+   },
+   "zh-MY": {
+    "gap": 2.5,
+    "pairs": 16,
+    "p": 1.0
+   },
+   "zh-SG": {
+    "gap": 1.5,
+    "pairs": 13,
+    "p": 1.0
+   }
+  },
+  "D-nozh/full": {
+   "id": {
+    "gap": -0.0,
+    "pairs": 16,
+    "p": 1.0
+   },
+   "ms": {
+    "gap": -3.6999999999999997,
+    "pairs": 16,
+    "p": 1.0
+   },
+   "sg-en": {
+    "gap": 6.2,
+    "pairs": 13,
+    "p": 1.0
+   },
+   "th": {
+    "gap": -3.6999999999999997,
+    "pairs": 16,
+    "p": 1.0
+   },
+   "vi": {
+    "gap": 1.3,
+    "pairs": 16,
+    "p": 1.0
+   }
+  }
+ }
+}
