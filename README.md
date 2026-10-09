@@ -24,8 +24,16 @@ rollouts ──▶ verifier ──▶ group advantage ──▶ policy update �
 Agent `deepseek-v4-pro`, simulated customer and judges `qwen3.8-flash`; for
 post-training, agent `Qwen3.8-27B` against a `gemma-4-31B-it` customer. Every
 number is regenerated from traces by `scripts/make_report.py` and
-`scripts/audit_tool_arms.py`, on today's checks — the runs' recorded verdicts
-are re-scored by replaying their tool calls (`scripts/rescore.py`).
+`scripts/audit_tool_arms.py`, and the figure by `scripts/make_figure.py`, on
+today's checks — the runs' recorded verdicts are re-scored by replaying their
+tool calls (`scripts/rescore.py`).
+
+<picture>
+  <source media="(max-width: 600px) and (prefers-color-scheme: dark)" srcset="docs/img/results-narrow-dark.svg">
+  <source media="(max-width: 600px)" srcset="docs/img/results-narrow.svg">
+  <source media="(prefers-color-scheme: dark)" srcset="docs/img/results-dark.svg">
+  <img src="docs/img/results.svg" alt="Four results. Naming the three tools the policy describes raised conversations passed from 44% to 80% on 57 new tasks (38 better, 4 worse). A claim guardrail took conversations that told the customer about an action that never happened from 5 of 96 to 0 (p = 0.06). The fine-tune's gain over the base model fell from +2.3 to +0.3 points once the checker was fixed, and the API reference's from +4.0 to −6.6. No language differed from English beyond noise in two runs.">
+</picture>
 
 - **The fine-tune learned the verifier, not the policy.** RFT gained 2.3 points
   (p = 0.18) because two checks demanded one lookup tool where the policy only
@@ -81,20 +89,21 @@ mistake):
 ```bash
 python -m pasarbench.run          # null agent → 0.0, reference agent → 1.0
 python -m tests.test_traps        # 10 naive solutions, all must be rejected
-python -m tests.test_harness      # 57 harness invariants, the claim guardrail, tools that refuse what their schemas don't allow while old runs replay under the checks they ran under
+python -m tests.test_harness      # 78 harness invariants, the claim guardrail, the closing check and every context strategy keeping its note, tools that refuse what their schemas don't allow while old runs replay under the checks they ran under
 python -m tests.test_reward       # 30 reward + dataset invariants
 python -m tests.test_generated    # 108 checks over all 199 generated tasks: dates in causal order, the same world in every process, reads of the task's own order, simulator QA
 python -m tests.test_rescore      # 29 re-scoring invariants: the pre-v19 world, replay by digest and by length, the same tool errors on every Python, nothing re-scored on a guess
 python -m tests.test_context      # 39 context-strategy + analysis invariants
 python -m tests.test_judge        # 83 judge + agreement-statistics invariants, judged against today's checks
-python -m tests.test_exposure     # 123 tool-scaling + diagnosis invariants, the tool-naming experiment and its confirmation tasks, the guardrail's report and dry run, cells compared across tool-check versions flagged
+python -m tests.test_exposure     # 136 tool-scaling + diagnosis invariants, the tool-naming experiment and its confirmation tasks, the guardrail's report and dry run, the closing check's report and readers that skip its case note, cells compared across tool-check versions flagged
 python -m tests.test_serving      # 54 metrics (SGLang and vLLM), cost and quality-guard invariants
-python -m tests.test_report       # 48 report invariants: paired verdicts, ties, replication, calibration, noise floor, post-training, both scorings in every section
-python -m tests.test_training     # 160 checks: split, customer family, collection and resume, examples (Qwen3 and Qwen3.8 formats) against an SGLang-like server, adapter routing, the LoRA probe, serve and Modal scripts, one-GPU memory plans, the notebook helper (progress in place, an interrupt-proof cleanup), the CUDA compiler, run settings, LoRA steps on Qwen3 and Qwen3.8's hybrid architecture, training data picked by today's checks, a push script that keeps runs and keys off GitHub (118 without transformers/torch)
+python -m tests.test_report       # 59 report invariants: paired verdicts, ties, replication, calibration, noise floor, post-training, both scorings in every section, a figure that matches its numbers and drops a title they stop bearing out
+python -m tests.test_training     # 161 checks: split, customer family, collection and resume, examples (Qwen3 and Qwen3.8 formats) against an SGLang-like server, adapter routing, the LoRA probe, serve and Modal scripts, one-GPU memory plans, the notebook helper (progress in place, an interrupt-proof cleanup), the CUDA compiler, run settings, LoRA steps on Qwen3 and Qwen3.8's hybrid architecture, training data picked by today's checks, a push script that keeps runs and keys off GitHub, closing-check runs refused as training data (119 without transformers/torch)
 
 python -m pasarbench.sweep --backend scripted --suite all
 python scripts/make_report.py     # regenerates RESULTS.md; never hand-fill it
 python scripts/rescore.py         # what today's checks change in every recorded run
+python scripts/make_figure.py --traces traces   # redraws the figure above from the runs
 ```
 
 The benchmark, harness, reward and judge layers have **zero dependencies**
@@ -166,7 +175,7 @@ pattern-match on "14 days" fail it, and the trace shows exactly why.
 
 ## The harness
 
-No framework. `harness/loop.py` is ~130 lines of control flow and every branch
+No framework. `harness/loop.py` is ~200 lines of control flow and every branch
 exists because something breaks without it.
 
 ```
@@ -176,7 +185,10 @@ harness/context.py     5 pluggable context strategies — the ablation seam
 harness/exposure.py    tool-exposure arms + 300 distractors + progressive disclosure
 harness/simulator.py   scripted + persona-driven user simulators
 harness/prompts.py     preload vs JIT policy modes
+harness/guardrail.py   holds back a reply that claims an action no call made
+harness/closing.py     one hidden look at the policy after the customer leaves
 harness/trace.py       JSONL traces, one file per episode
+harness/replay.py      rebuilds what a recorded episode saw, by replaying its calls
 harness/loop.py        the loop
 ```
 
@@ -335,7 +347,7 @@ of running it, for a first-time GPU user, in `docs/GPU_GUIDE.md`):
 pasarbench/
   db.py tools.py policy.md tasks.py verifier.py   the environment
   generate.py locales.py                          199 generated tasks, 3 orthogonal axes
-  harness/                                        the runtime, and the claim guardrail
+  harness/                                        the runtime, the claim guardrail, the closing check
   rl/                                             reward, folds, per-turn SFT examples
   judge/                                          rubric, judges, agreement stats
   analyze.py diagnose.py simqa.py                 turning sweeps into findings
@@ -346,10 +358,11 @@ scripts/    gpu_pipeline.sh gpu_plan.py modal_pipeline.py pasar_notebook.py
             cuda_home.py setup_node.sh download_weights.sh
             serve_sglang.sh train_rft.py train_grpo.py make_report.py
             audit_tool_arms.py inspect_trace.py run_judges.py rescore.py
-            compare_cells.py naming_tasks.py guardrail_dry_run.py
+            compare_cells.py naming_tasks.py guardrail_dry_run.py make_figure.py
             slurm_train.sh slurm_sweep.sh modal_vllm.py
-tests/      12 suites, 650+ assertions
+tests/      12 suites, 750+ assertions
 docs/       RUNBOOK.md  GPU_GUIDE.md  WHAT_FAILED.md  WRITEUP.md  BLOG.md  README_weekly.md
+            img/  the results figure, light and dark, wide and narrow, and its numbers
 ```
 
 ---
