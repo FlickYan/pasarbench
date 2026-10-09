@@ -388,8 +388,12 @@ extra passes were my checker. The API model I used as a reference calls `get_ord
 in 95% of its conversations, and the quirk had flattered it too: it goes from
 4 points above the base model to 6.6 points below it, p = 0.004. On pass^k —
 every seed of a task passing — it had never been ahead (0.800 against 0.805),
-and now trails by 9.7 points.
-<!-- RESULTS.md §6 (both tables) and §7; get_order in 1,024 of 1,075 reference episodes; pass^k 0.800/0.805 recorded, 0.833/0.930 now -->
+and now trails by 9.7 points. Up to 1.9 of those 6.6 points are a habit the
+environment should have stopped: the reference escalated unverified callers
+under order "unknown", and the escalation tool took it (WHAT_FAILED #35). Had
+every one been refused and then fixed, it would still trail, by 4.7 points
+(p = 0.012).
+<!-- RESULTS.md §6 (both tables) and §7; get_order in 1,024 of 1,075 reference episodes; pass^k 0.800/0.805 recorded, 0.833/0.930 now; #35 bound: 21 reference failures, all identity-trap escalations naming no order, none in base or RFT; best case 0.932 against 0.979, 12 better 29 worse, p=0.0115; pass^k 179 -> at most 182 of 215 tasks -->
 
 It reached back to Result 1. Search keeps `get_order` in view and hides the
 eligibility check, so two of search's failures were this quirk, and its
@@ -423,8 +427,8 @@ ranked above the one it trails.
 
 ### What failed
 
-`docs/WHAT_FAILED.md` has 34 entries. Most were found by running experiments
-and refusing a number that couldn't be right. Two more:
+`docs/WHAT_FAILED.md` has 35 entries. Most were found by running experiments
+and refusing a number that couldn't be right. Three more:
 
 **The ceiling was below the floor.** The oracle arm — by design the best case —
 scored below the full registry. I had defined what a task needs as "what the
@@ -445,6 +449,18 @@ those two results (627 of 629 shown), and traces now carry a digest of each
 result.
 <!-- RESULTS.md §4 (27/81 → 69/81); run_judges.py --payloads output: 627/629; WHAT_FAILED #33 -->
 
+**The tool took what its own schema refused.** The escalation tool lists
+eight categories and takes an order id, and it checked neither:
+`duplicate_refund_claim` and order "unknown" went into the database, the agent
+was told it had escalated, and the check failed it. The same escalation passed
+the one hand-written identity task, whose check doesn't ask which order, all 30
+times, and failed the generated ones, whose check does, 147 times in 148.
+Bounded, it moves no conclusion: the naming effect can only grow, and the API
+reference's deficit to the base model shrinks from 6.6 points to at least 4.7.
+The tools now check their inputs, and every run replays under the checks it
+ran under — re-scored, all 10,684 recorded episodes come out as before.
+<!-- WHAT_FAILED #35; bounds: K named 0.801 -> at most 0.871, control 0.439 -> at most 0.474; P-ref 0.913 -> at most 0.932 against 0.979, p=0.0115; I-tools2 and the fine-tune unchanged; C-clean/D-nozh largest paired gap 6.2 points, every p >= 0.25; rescore v25 vs v27 over 10,684 episodes: 0 differences -->
+
 ### Limits
 
 Each tool arm is 32 tasks, so these tests see large effects only; several
@@ -464,7 +480,7 @@ recipe; a second, with training data balanced across traps, is designed but not
 run. Serving cost is built but not measured.
 <!-- RESULTS.md §3 paired table (pairs 13–16); audit_tool_arms.py §3 header; traces/J-preload OOWDE-VN.vi__r2: "Trường hợp của bạn đã được chuyển lên bộ phận xử lý khiếu nại", escalate_to_human never searched for, never called; traces/L2-claims OOWOV-VN__r1, DRE-PH__r1, HPRR-PH__r2 (RUNBOOK 1i, v25) -->
 
-The code, the trace generators, and all 34 failures are in the repo.
+The code, the trace generators, and all 35 failures are in the repo.
 
 ---
 
@@ -480,8 +496,8 @@ One line each, a number, and the mechanism. Pick three.
 > Qwen3.8-27B gained 2.3 points (p = 0.18) only because two checks demanded one
 > lookup tool the policy didn't require; re-scoring 9,766 recorded episodes by
 > deterministic replay — no GPU — cut the gain to 0.3 (p = 0.84) and put the
-> API reference 6.6 points below the base model (p = 0.004), where the quirk
-> had put it 4 points above.
+> API reference at least 4.7 points below the base model (6.6 as measured,
+> p = 0.004), where the quirk had put it 4 points above.
 
 > **Showed an LLM judge cannot stand in for state verification**: its best
 > configuration reached κ = 0.72 against the database and still accepted 6 of 15
@@ -509,10 +525,11 @@ One line each, a number, and the mechanism. Pick three.
 > episodes are flagged, all English. The same blind spot had produced the
 > project's only significant language gaps.
 
-> **Documented 34 defects**, most caught by refusing implausible results —
+> **Documented 35 defects**, most caught by refusing implausible results —
 > including a "ceiling" arm that scored below baseline, a judge evaluated
 > without the evidence it was judging, a fine-tune rewarded for a checker's
-> quirk, and a guardrail graded by its own detector.
+> quirk, a guardrail graded by its own detector, and a tool that took what its
+> own schema refused.
 
 ---
 
