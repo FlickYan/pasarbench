@@ -818,6 +818,178 @@ def test_claim_guardrail_report():
           and "different tool checks" in out.getvalue(), out.getvalue()[:800])
 
 
+def _closing_cell(root, run, mode, plans, task_id="T14"):
+    """Episodes of one task through the real loop, the customer leaving after
+    the agent's first reply, written as a sweep writes them."""
+    from pasarbench.harness.simulator import LLMUser
+    from pasarbench.harness.trace import TraceWriter
+    from pasarbench.harness.types import ModelResponse, Usage
+    from pasarbench.verifier import verify
+
+    class Customer:
+        name, model, reports_usage = "leaves", "c", False
+
+        def chat(self, messages, tools):
+            return ModelResponse(content="Oh, I didn't notice. Thanks, bye ###END###",
+                                 usage=Usage(1, 1))
+
+    t = BY_ID[task_id]
+    for i, plan in enumerate(plans):
+        w = TraceWriter(root=str(root), run_id=f"{run}/full")
+        db = Database.fresh(t.db_patch)
+        res = run_episode(t, db, ScriptedBackend(list(plan)), trace=w, run_index=i,
+                          simulator=LLMUser(Customer(), persona="a customer", facts={}),
+                          closing=mode)
+        v = verify(t, db)
+        w.close_episode(res.stop_reason.value, v.passed, v.failures, res.budget)
+        w.close()
+    return root / run / "full"
+
+
+def _load_script(name):
+    import importlib.util
+    from pathlib import Path
+    spec = importlib.util.spec_from_file_location(
+        name, Path(__file__).resolve().parent.parent / "scripts" / f"{name}.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+T14_LOOK = ("get_order", {"order_id": "O1009"})
+T14_EXPLAIN = "A full refund of SGD 47.00 was already issued on 8 November."
+T14_ESC = ("escalate_to_human", {"order_id": "O1009", "category": "duplicate_refund",
+                                 "reason": "refund already issued"})
+T14_REFUND = ("issue_refund", {"order_id": "O1009", "amount_minor": 4700, "method": "card",
+                               "reason": "asked again"})
+
+
+def test_closing_report():
+    """compare_cells must say what the closing check did -- the required calls
+    first made after the customer left, and any forbidden call first made then
+    -- so its mechanism and its cost are read before its pass rate, with every
+    episode that paid the cost listed and every phase cut short counted."""
+    print("\n=== compare_cells reads the closing check ===")
+    import contextlib
+    import io
+    import re
+    import tempfile
+    from pathlib import Path
+
+    from pasarbench.diagnose import load_episodes
+    from pasarbench.rescore import all_tasks
+
+    t = BY_ID["T14"]
+    ver = ("verify_identity", {"user_id": t.user_id, "phone_last4": t.hidden_facts["phone_last4"]})
+    look, explain, esc, refund = T14_LOOK, T14_EXPLAIN, T14_ESC, T14_REFUND
+    tmp = Path(tempfile.mkdtemp())
+    # Control: the customer leaves and nothing more happens. Check: one episode
+    # makes the escalation after the customer left, one refunds again, and one
+    # runs into the closing phase's cap.
+    a = _closing_cell(tmp, "A", "off", [[look, explain, esc, "Escalated."]] * 3)
+    b = _closing_cell(tmp, "B", "check", [[look, explain, esc, "Escalated."],
+                                          [look, explain, ver, refund, "Done."],
+                                          [look, explain] + [look] * 8])
+    cc = _load_script("compare_cells")
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out):
+        cc.main([str(a), str(b)])
+    text = out.getvalue()
+    check("the header shows which cell ran the closing check",
+          re.search(r"closing\s+off\s+check", text) is not None, text[:900])
+    check("…its section counts the required call first made after the customer left, "
+          "and that the episode passed -- the mechanism",
+          re.search(r"a required action first made then\s+1 episodes, 1 of them passed", text)
+          is not None and "first: escalate_to_human" in text, text[-1200:])
+    check("…and the forbidden call first made then, by episode -- the cost",
+          re.search(r"a forbidden call first made then\s+1 episodes", text) is not None
+          and "FORBIDDEN: issue_refund" in text, text[-1200:])
+    check("…and the phase that was cut short, and by what",
+          "cut short before the agent was done: 1 episodes (1 by closing.MAX_STEPS)" in text,
+          text[-1200:])
+    check("…while the control cell, which never got the note, has no such section",
+          text.count("closing check in") == 1, text[-1200:])
+
+    cv = cc._closings(b, load_episodes(b, checker="current"), all_tasks())
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out):
+        cc._print_closing("B/full", cv, show=0)
+    text = out.getvalue()
+    check("every episode that paid the cost is listed, however many are; the rest are "
+          "capped, and the cap says so",
+          "FORBIDDEN: issue_refund" in text and "first: escalate_to_human" not in text
+          and "... and 1 more with a required action first made then" in text, text)
+
+
+def test_closing_readers():
+    """A case note is written after the customer left: no reader of what the
+    customer was told may count it, and a judge must be told the customer had
+    gone -- while still seeing the calls the closing phase made."""
+    print("\n=== the readers skip the case note ===")
+    import json
+    import tempfile
+    from pathlib import Path
+
+    from pasarbench.diagnose import load_episodes
+    from pasarbench.judge.judges import render_transcript
+    from pasarbench.judge.label import _render
+    from pasarbench.rescore import all_tasks
+
+    claim = "I've escalated your case to a specialist."
+    tmp = Path(tempfile.mkdtemp())
+    cell = _closing_cell(tmp, "R", "check", [
+        [T14_LOOK, T14_EXPLAIN, claim],               # the claim is the case note only
+        [T14_LOOK, claim, "Nothing more to do."],     # the claim reached the customer
+        [T14_LOOK, T14_EXPLAIN, T14_ESC, "Escalated."]])
+    recs = {f.stem: [json.loads(l) for l in f.read_text().splitlines() if l.strip()]
+            for f in sorted(cell.glob("*.jsonl"))}
+    note_only, told, rescued = (recs[f"T14__r{i}"] for i in range(3))
+    tasks = all_tasks()
+
+    cc = _load_script("compare_cells")
+    read, claimed = cc._audit_claims(cell, load_episodes(cell, checker="current"), tasks)
+    check("compare_cells' audit reads both failures and counts the claim the customer "
+          "got, not the one in the case note", (read, claimed) == (2, 1), str((read, claimed)))
+
+    atm = _load_script("audit_tool_arms")
+    arm = atm.Arm("default")
+    ta, tb = atm.replay(arm, note_only)["texts"], atm.replay(arm, told)["texts"]
+    check("audit_tool_arms leaves the case note out of what the agent told the customer",
+          claim not in ta and claim in tb, str((ta, tb)))
+
+    rj = _load_script("run_judges")
+    path = str(cell / "T14__r0.jsonl")
+    msgs = rj.messages_from_trace(path)
+    shown = render_transcript(msgs)
+    check("the judge is told the customer left, and is not shown the case note as a reply",
+          not any(m.role == "assistant" and claim in (m.content or "") for m in msgs)
+          and "[The customer has left the conversation." in shown
+          and shown.index("Thanks, bye") < shown.index("[The customer has left"), shown[-600:])
+    later = render_transcript(rj.messages_from_trace(str(cell / "T14__r2.jsonl")))
+    check("…and still sees the calls made after the customer left, after that line",
+          later.index("[The customer has left") < later.index("calls escalate_to_human")
+          and "AGENT: Escalated." not in later, later[-600:])
+    plain = rj.messages_from_trace(str(_closing_cell(tmp, "S", "off", [[T14_LOOK, T14_EXPLAIN]])
+                                       / "T14__r0.jsonl"))
+    check("…while a conversation without the closing check gets no such line",
+          [m.role for m in plain].count("system") == 1
+          and not any(line.startswith("      [") for line in
+                      render_transcript(plain).splitlines()), render_transcript(plain))
+
+    it = _load_script("inspect_trace")
+    e = {"steps": [r for r in note_only if r["type"] == "step"],
+         "events": [r for r in note_only if r["type"] == "event"]}
+    convo = [m.content for m in it.transcript(e, BY_ID["T14"])]
+    check("inspect_trace's transcript ends with the customer leaving, not the case note",
+          claim not in convo and convo[-1] == "Oh, I didn't notice. Thanks, bye", str(convo))
+
+    labelled = _render(path)
+    check("the labelling view marks where the customer left and the case note as never sent",
+          "--- the customer has left" in labelled
+          and f"AGENT (case note, never sent): {claim}" in labelled
+          and f"AGENT: {claim}" not in labelled, labelled[-500:])
+
+
 def main() -> int:
     test_distractors()
     test_arms_are_comparable()
@@ -836,6 +1008,8 @@ def main() -> int:
     test_tool_naming_experiment()
     test_naming_confirmation_tasks()
     test_claim_guardrail_report()
+    test_closing_report()
+    test_closing_readers()
     print(f"\n{len(PASS)} passed, {len(FAIL)} failed")
     for f in FAIL:
         print(f"  FAILED: {f}")
