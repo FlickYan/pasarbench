@@ -11,6 +11,7 @@ python scripts/make_report.py --out RESULTS.md --tools-run I-tools2 \
   --noise-pair H-context/full,I-tools2/full+all-20
 python scripts/rescore.py                                                          # what the checker fix moved
 python scripts/audit_tool_arms.py traces/I-tools2
+python scripts/make_figure.py --traces traces                                      # the figure in README and the blog
 python scripts/inspect_trace.py traces/D-nozh/full --leaks-only                    # leaks now
 python scripts/inspect_trace.py traces/D-nozh/full --leaks-only --ask-patterns v1  # leaks as first reported
 ```
@@ -658,11 +659,14 @@ check assumes.
 **"What would you do next?"** Replace the guardrail's phrase list with a model
 that reads what the customer was told would happen, and keep the check against
 the tool log mechanical: what got past the list was wording — "flagged", "will
-be reviewed", a promise — and wording is a language question. Read why named
-search still fails on duplicate refunds — the agent explains the earlier refund
-and closes, where the policy says escalate anyway. A second fine-tune on trap-balanced data built
-with the corrected checks. Get the Thai and Vietnamese translations reviewed.
-Then serving cost.
+be reviewed", a promise — and wording is a language question. Run the closing
+check I built for the largest failure left with the tools named: the agent
+explains the earlier refund, the customer says thanks, and it closes, though
+the policy says escalate anyway. When the customer leaves, the agent gets one
+look at the case against the policy; the reading, and its cost — any forbidden
+call it prompts — are written down before the run (RUNBOOK 1j). A second
+fine-tune on trap-balanced data built with the corrected checks. Get the Thai
+and Vietnamese translations reviewed. Then serving cost.
 
 ### One thing not to do
 
