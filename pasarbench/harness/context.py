@@ -68,6 +68,18 @@ def flatten(units: list[Unit]) -> list[Message]:
     return [m for u in units for m in u.messages]
 
 
+def closing_note(rest: list[Unit], kept_from: int) -> list[Unit]:
+    """The closing check's note (closing.py), if a strategy is about to drop it.
+
+    `rest` is the history without the system prompt, and the strategy keeps
+    rest[kept_from:]. The note is the agent's whole instruction once the
+    customer has left, and the phase can run past a short window: window4
+    lost it after four tool calls. So it stays, like the opening."""
+    from .closing import NOTE
+    return [u for u in rest[:max(kept_from, 0)]
+            if u.kind == "user" and u.messages[0].content == NOTE][:1]
+
+
 class ContextStrategy(Protocol):
     name: str
     extra_tools: list[str]      # tools this strategy needs exposed, e.g. notes
@@ -114,14 +126,15 @@ class SlidingWindow:
         tail = rest[-self.keep_units:] if self.keep_units > 0 else []
         if pinned and pinned[0] in tail:
             pinned = []
+        note = closing_note(rest, len(rest) - len(tail))
 
-        dropped = len(rest) - len(tail)
+        dropped = len(rest) - len(tail) - len(note)
         out = system + pinned
         if dropped > 0:
             out.append(Unit([Message(role="user",
                                      content=f"[{dropped} earlier exchanges omitted]")],
                             "user"))
-        out += tail
+        out += note + tail
         return flatten(out)
 
 
@@ -236,7 +249,8 @@ class Summarize:
 
         head = Message(role="user",
                        content=f"[summary of the conversation so far]\n{state.summary}")
-        return flatten(system) + [head] + flatten(rest[state.summarized_upto:])
+        note = closing_note(rest, state.summarized_upto)
+        return flatten(system) + [head] + flatten(note) + flatten(rest[state.summarized_upto:])
 
     def _fold(self, previous: str, new_units: list[Unit]) -> str:
         transcript = []
@@ -305,9 +319,10 @@ class NoteTaking:
 
         pinned = [rest[0]] if rest and rest[0].kind == "user" else []
         tail = rest[-self.keep_recent:]
+        note = closing_note(rest, len(rest) - len(tail))
         board = Message(role="user",
                         content="[your notes]\n" + "\n".join(f"- {n}" for n in notes))
-        return flatten(system + pinned) + [board] + flatten(tail)
+        return flatten(system + pinned) + [board] + flatten(note + tail)
 
     @staticmethod
     def _notes_from(messages: list[Message]) -> list[str]:
