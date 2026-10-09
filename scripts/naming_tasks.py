@@ -13,6 +13,7 @@ The rule for reading the run is written in the runbook before the run.
     TASKS=$(python scripts/naming_tasks.py)          # 57 ids, comma-separated
     python scripts/naming_tasks.py --count           # 57
     TASKS=$(python scripts/naming_tasks.py --first-run)   # the 32, for 1i
+    TASKS=$(python scripts/naming_tasks.py --rest)        # the other 158, for 1k
 """
 
 from __future__ import annotations
@@ -50,8 +51,15 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--count", action="store_true", help="print how many, not which")
     ap.add_argument("--first-run", action="store_true",
                     help="the 32 tasks of the first run instead (the guardrail run, 1i)")
+    ap.add_argument("--rest", action="store_true",
+                    help="every task but the 57 (the closing check's second run, 1k)")
     a = ap.parse_args(argv)
-    ids = list(FIRST_RUN) if a.first_run else tasks()
+    if a.rest:
+        from pasarbench.rescore import all_tasks
+        named = set(tasks())
+        ids = [tid for tid in sorted(all_tasks()) if tid not in named]
+    else:
+        ids = list(FIRST_RUN) if a.first_run else tasks()
     print(len(ids) if a.count else ",".join(ids))
     return 0
 
