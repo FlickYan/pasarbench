@@ -33,7 +33,10 @@ are re-scored by replaying their tool calls (`scripts/rescore.py`).
   points (p = 0.84), and the API reference the quirk had put 4 points above the
   base model is 6.6 below it (p = 0.004; on pass^k it was never ahead, and now
   trails by 9.7). A review found the first fix too loose; tightened, it moved no
-  verdict ([WHAT_FAILED #30](docs/WHAT_FAILED.md)).
+  verdict ([WHAT_FAILED #30](docs/WHAT_FAILED.md)). Up to 1.9 of those 6.6
+  points are the reference escalating under order "unknown", which the tool
+  should have refused; refused and fixed, it would still trail by 4.7
+  (p = 0.012; [#35](docs/WHAT_FAILED.md)).
 - **Search-based tool exposure cost 22% more tokens and bought nothing**: 11.5
   points below exposing all 20 tools (7 tasks worse, 1 better, p = 0.07 — it
   read p = 0.021 before the checker fix). Of 21 times a failed episode needed a
@@ -78,13 +81,13 @@ mistake):
 ```bash
 python -m pasarbench.run          # null agent → 0.0, reference agent → 1.0
 python -m tests.test_traps        # 10 naive solutions, all must be rejected
-python -m tests.test_harness      # 38 harness invariants, the claim guardrail
+python -m tests.test_harness      # 57 harness invariants, the claim guardrail, tools that refuse what their schemas don't allow while old runs replay under the checks they ran under
 python -m tests.test_reward       # 30 reward + dataset invariants
 python -m tests.test_generated    # 108 checks over all 199 generated tasks: dates in causal order, the same world in every process, reads of the task's own order, simulator QA
 python -m tests.test_rescore      # 29 re-scoring invariants: the pre-v19 world, replay by digest and by length, the same tool errors on every Python, nothing re-scored on a guess
 python -m tests.test_context      # 39 context-strategy + analysis invariants
 python -m tests.test_judge        # 83 judge + agreement-statistics invariants, judged against today's checks
-python -m tests.test_exposure     # 121 tool-scaling + diagnosis invariants, the tool-naming experiment and its confirmation tasks, the guardrail's report and dry run
+python -m tests.test_exposure     # 123 tool-scaling + diagnosis invariants, the tool-naming experiment and its confirmation tasks, the guardrail's report and dry run, cells compared across tool-check versions flagged
 python -m tests.test_serving      # 54 metrics (SGLang and vLLM), cost and quality-guard invariants
 python -m tests.test_report       # 48 report invariants: paired verdicts, ties, replication, calibration, noise floor, post-training, both scorings in every section
 python -m tests.test_training     # 160 checks: split, customer family, collection and resume, examples (Qwen3 and Qwen3.8 formats) against an SGLang-like server, adapter routing, the LoRA probe, serve and Modal scripts, one-GPU memory plans, the notebook helper (progress in place, an interrupt-proof cleanup), the CUDA compiler, run settings, LoRA steps on Qwen3 and Qwen3.8's hybrid architecture, training data picked by today's checks, a push script that keeps runs and keys off GitHub (118 without transformers/torch)
@@ -195,7 +198,9 @@ Four decisions worth defending:
 - **Malformed tool arguments are data, not exceptions** — returned to the model
   as a recoverable error. Small models emit broken JSON constantly, and
   disproportionately on non-Latin scripts, which is exactly the signal the
-  multilingual diagnosis is looking for.
+  multilingual diagnosis is looking for. Since v27 so are well-formed arguments
+  the schema does not allow — a category it does not list, an order that does
+  not exist — which the tools once took silently ([WHAT_FAILED #35](docs/WHAT_FAILED.md)).
 
 Interrupt and resume are real: `snapshot()` serialises episode state plus the
 database, `restore()` continues, and the test asserts an identical final DB.
