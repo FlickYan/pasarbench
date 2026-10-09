@@ -1,7 +1,7 @@
 """
 The agent loop.
 
-No framework. ~120 lines of actual control flow, and every branch here exists
+No framework. ~200 lines of actual control flow, and every branch here exists
 because something breaks without it:
 
   * A tool_call with no matching tool_result is a 400 from every major API.
@@ -36,6 +36,7 @@ from ..tools import call as tool_call
 from ..tools import schemas
 from .exposure import schema_tokens
 from .context import ContextStrategy, FullContext
+from . import closing as closing_check
 from . import guardrail as claim_guard
 from ..tasks import task_digest, world_digest
 from .prompts import system_prompt
@@ -61,9 +62,12 @@ def run_episode(
     exposure=None,
     run_index: int | None = None,
     guardrail: str = "off",
+    closing: str = "off",
 ) -> EpisodeResult:
     if guardrail not in claim_guard.MODES:
         raise ValueError(f"guardrail must be one of {claim_guard.MODES}, not {guardrail!r}")
+    if closing not in closing_check.MODES:
+        raise ValueError(f"closing must be one of {closing_check.MODES}, not {closing!r}")
     simulator = simulator or SilentUser()
     context = context or FullContext()
     budget = budget or Budget()
@@ -121,6 +125,7 @@ def run_episode(
         "agent_temperature": getattr(backend, "temperature", None),
         # Only when on, so the headers of every run before it stay as they were.
         **({"guardrail": guardrail} if guardrail != "off" else {}),
+        **({"closing": closing} if closing != "off" else {}),
         # How strictly the tools checked their arguments (tools.CHECKS). A
         # replay runs the calls under the same checks; a header without this
         # ran before v27, under version 1.
@@ -132,8 +137,25 @@ def run_episode(
     error: str | None = None
 
     while True:
-        if (hit := tracker.exceeded()) is not None:
-            stop = hit
+        # In the closing phase once the note is in the conversation (closing.py):
+        # read from the messages, so an interrupted episode resumes in it.
+        closed_at = closing_check.started(state.messages) if closing != "off" else None
+        hit = tracker.exceeded()
+        if hit is StopReason.MAX_TURNS and closed_at is not None:
+            hit = None          # no customer is left to take a turn
+        if hit is not None:
+            if closed_at is not None:
+                # The conversation had already ended; only its closing phase
+                # ran out, and the episode stands as the conversation left it.
+                trace.event("closing_cut_short", reason=hit.value, step=tracker.steps)
+                stop = StopReason.DONE
+            else:
+                stop = hit
+            break
+        if (closed_at is not None and closing_check.steps_since(state.messages, closed_at)
+                >= closing_check.MAX_STEPS):
+            trace.event("closing_cut_short", reason="closing.MAX_STEPS", step=tracker.steps)
+            stop = StopReason.DONE
             break
         if interrupt_after_steps is not None and tracker.steps >= interrupt_after_steps:
             stop = StopReason.INTERRUPTED
@@ -219,7 +241,7 @@ def run_episode(
         # back: the customer never sees it, and the agent gets a note instead
         # of a customer turn (harness/guardrail.py).
         held = None
-        if guardrail == "claims" and not resp.tool_calls:
+        if guardrail == "claims" and not resp.tool_calls and closed_at is None:
             notes = sum(1 for m in state.messages if m.hidden)
             claims = claim_guard.unbacked(resp.content or "", db.action_log)
             if claims and notes < claim_guard.MAX_NOTES:
@@ -237,7 +259,7 @@ def run_episode(
                    "cached": usage.cached_tokens},
             latency_ms=latency_ms, budget=tracker.snapshot(),
             n_tools=len(names), schema_tokens=schema_tokens(names),
-            tool_names=list(names), guardrail=held,
+            tool_names=list(names), guardrail=held, closing=closed_at is not None,
         ))
         trace.step(steps[-1].to_dict())
 
@@ -246,6 +268,11 @@ def run_episode(
         if held:
             state.messages.append(Message(role="user", content=held["note"]))
             continue
+        if closed_at is not None:
+            # The note for the case file. No one is there to read it.
+            state.messages[-1].hidden = True
+            stop = StopReason.DONE
+            break
 
         # No tool calls: the agent has spoken to the customer. Hand over.
         reply, ended = simulator.respond(state.messages, state.simulator_cursor)
@@ -258,6 +285,14 @@ def run_episode(
                                 "completion": su.completion_tokens,
                                 "cached": su.cached_tokens} if su else None))
         if ended:
+            if closing != "off":
+                # The customer's last words, then the note (closing.py): the
+                # agent gets one look at the case before it closes.
+                if (reply or "").strip():
+                    state.messages.append(Message(role="user", content=reply))
+                state.messages.append(Message(role="user", content=closing_check.NOTE))
+                trace.event("closing_check", turn=state.turn, step=tracker.steps)
+                continue
             stop = StopReason.DONE
             break
         state.messages.append(Message(role="user", content=reply))
