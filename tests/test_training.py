@@ -193,6 +193,20 @@ def test_sweep_collection():
     check("without fold models, everything goes to --model",
           fold_router(SimpleNamespace(model="base", folds="", fold_models=""))(ALL[0]) == "base")
 
+    # The closing check's note is the harness's, not a turn the model took:
+    # a run made with it is no training data. Refused before any tokenizer.
+    from pasarbench.rl.sft import build
+    r = _sweep(root, "CL", "T01", 1, "--save-messages", "--closing", "check")
+    try:
+        build(root / "CL" / "full", BY_ID, folds, None)
+        ok, why = False, "built"
+    except SystemExit as e:
+        ok, why = "Collect without --closing" in str(e), str(e)
+    except Exception as e:      # went on past the check that should have stopped it
+        ok, why = False, f"{type(e).__name__}: {e}"
+    check("a run made with the closing check is refused as training data, with the fix",
+          r.returncode == 0 and ok, r.stderr[-300:] or why)
+
 
 # --------------------------------------------------------------------------
 
