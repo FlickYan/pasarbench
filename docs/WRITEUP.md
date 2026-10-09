@@ -428,7 +428,7 @@ ranked above the one it trails.
 
 ### What failed
 
-`docs/WHAT_FAILED.md` has 35 entries. Most were found by running experiments
+`docs/WHAT_FAILED.md` has 36 entries. Most were found by running experiments
 and refusing a number that couldn't be right. Three more:
 
 **The ceiling was below the floor.** The oracle arm — by design the best case —
@@ -481,7 +481,7 @@ recipe; a second, with training data balanced across traps, is designed but not
 run. Serving cost is built but not measured.
 <!-- RESULTS.md §3 paired table (pairs 13–16); audit_tool_arms.py §3 header; traces/J-preload OOWDE-VN.vi__r2: "Trường hợp của bạn đã được chuyển lên bộ phận xử lý khiếu nại", escalate_to_human never searched for, never called; traces/L2-claims OOWOV-VN__r1, DRE-PH__r1, HPRR-PH__r2 (RUNBOOK 1i, v25) -->
 
-The code, the trace generators, and all 35 failures are in the repo.
+The code, the trace generators, and all 36 failures are in the repo.
 
 ---
 
@@ -526,7 +526,7 @@ One line each, a number, and the mechanism. Pick three.
 > episodes are flagged, all English. The same blind spot had produced the
 > project's only significant language gaps.
 
-> **Documented 35 defects**, most caught by refusing implausible results —
+> **Documented 36 defects**, most caught by refusing implausible results —
 > including a "ceiling" arm that scored below baseline, a judge evaluated
 > without the evidence it was judging, a fine-tune rewarded for a checker's
 > quirk, a guardrail graded by its own detector, and a tool that took what its
@@ -621,6 +621,22 @@ promise never kept — about as often with the guardrail as without; and neither
 version moved the pass rate, because most failures are an agent that never
 acted. A guardrail can make words match actions, not cause the action.
 
+**"So what about the agent that never acted?"** I gave it a second look. When
+the customer ends the conversation, the agent gets one note she never sees:
+check the case against the policy, and make any call it requires that no call
+has made. On the tasks that suggested it — the agent explains the earlier
+refund, the customer says thanks, and it closes, though the policy says to
+escalate anyway — pass^1 went from 0.85 to 0.96, 11 tasks better and 2 worse,
+under a rule I wrote before the run. Every gained episode was an escalation
+first made after the customer left, and it caused no forbidden call. But the
+rule counted only forbidden calls, and reading the traces found two other
+costs: in 15 of 171 episodes it escalated a case a second time, which never
+happened without the note, and twice it tried identity digits it had made up.
+Seventeen episodes with a cost against 21 rescued is a much closer call than
+21 against none. And it can't do what needs the customer: a voucher she
+accepted before she verified who she was can't be issued once she's gone.
+<!-- RUNBOOK 1j; traces/M-off and traces/M-check, 2026-10-09; compare_cells.py (v29): pass^1 0.848 -> 0.959, 11 better 2 worse, p=0.022; required action first made then 21, all passed (18 DRE, 3 IVF); forbidden first made then 0; repeated 15; guessed 2 (OOWOV-MY.ms__r0, __r2: "0000"); tokens 44,375 -> 55,201 -->
+
 **"How do you know your false-claim detector isn't wrong the way the leak
 detector was?"** I don't, fully — it's the same kind of instrument. So it's
 scoped to English, the report says other languages are counted, not read, and
@@ -660,13 +676,13 @@ check assumes.
 that reads what the customer was told would happen, and keep the check against
 the tool log mechanical: what got past the list was wording — "flagged", "will
 be reviewed", a promise — and wording is a language question. Run the closing
-check I built for the largest failure left with the tools named: the agent
-explains the earlier refund, the customer says thanks, and it closes, though
-the policy says escalate anyway. When the customer leaves, the agent gets one
-look at the case against the policy; the reading, and its cost — any forbidden
-call it prompts — are written down before the run (RUNBOOK 1j). A second
-fine-tune on trap-balanced data built with the corrected checks. Get the Thai
-and Vietnamese translations reviewed. Then serving cost.
+check on the rest of the suite: its first test rescued the escalations the
+agent let go, but on traps where the right move is restraint a second look can
+do harm, and the rule for that run counts the repeats and the guessed digits
+from the start (RUNBOOK 1k). Then test the language lead it turned up — the
+duplicate-refund case failing far more often outside English — on a run built
+for it. A second fine-tune on trap-balanced data built with the corrected
+checks. Get the Thai and Vietnamese translations reviewed. Then serving cost.
 
 ### One thing not to do
 
