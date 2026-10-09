@@ -28,6 +28,12 @@ world as it was (`pre_v19_patch`); later traces record a `world_digest`, and one
 whose world is not today's is replayed anyway, its digests saying call by call
 what still matches. Anything that does not reproduce is reported, never
 silently substituted.
+
+WHICH CHECKS. v27 made the tools check each argument against its schema
+(tools.CHECKS, WHAT_FAILED #35). A run records the version it ran under, and a
+trace without one ran before it: replayed under today's checks, an escalation
+it recorded with category "duplicate_refund_claim" or order "unknown" would be
+refused, and the state rebuilt would not be the one the episode ended in.
 """
 
 from __future__ import annotations
@@ -152,6 +158,7 @@ def replay(recs: list[dict[str, Any]], task) -> Replayed:
         universe = set(DEFAULT_TOOLS) | set(distractor_names(n, 0))
 
     patch, world = _world(head, task)
+    checks = int(head.get("tool_checks") or 1)
     db = Database.fresh(patch)
     digests = any("result_sha1" in tr for st in steps for tr in st.get("tool_results", []))
     # A generated shipment's tracking number is unrecoverable in a trace
@@ -169,7 +176,12 @@ def replay(recs: list[dict[str, Any]], task) -> Replayed:
     for st in steps:
         for tc, tr in zip(st.get("tool_calls", []), st.get("tool_results", [])):
             out.total += 1
-            name, args = tc["name"], tc.get("arguments") or {}
+            # As recorded. Version 1 read any empty value as no arguments; a
+            # version-2 run refuses a non-object, so a recorded [] or "" must
+            # reach the tools as itself to be refused again.
+            name, args = tc["name"], tc.get("arguments")
+            if args is None or (checks < 2 and not args):
+                args = {}
             err = tr.get("error") or ""
             where = f"step {st.get('step')} {name}"
             if any(err.startswith(p) for p in NO_DISPATCH):
@@ -179,15 +191,15 @@ def replay(recs: list[dict[str, Any]], task) -> Replayed:
                 for uni in (None, universe):
                     trial = copy.deepcopy(db)
                     trial.search_universe = uni
-                    if matches(_payload(call(trial, name, args)), tr):
+                    if matches(_payload(call(trial, name, args, checks=checks)), tr):
                         db.search_universe = uni
-                        res = call(db, name, args)
+                        res = call(db, name, args, checks=checks)
                         break
                 if res is None:                # neither reproduced: still keep the
                     db.search_universe = None  # action log in step with the run
-                    res = call(db, name, args)
+                    res = call(db, name, args, checks=checks)
             else:
-                res = call(db, name, args)
+                res = call(db, name, args, checks=checks)
             p = _payload(res)
             # Success is what decides the state: a call that failed changed
             # nothing but its line in the action log, and no check reads an
