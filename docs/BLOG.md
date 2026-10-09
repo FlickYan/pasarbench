@@ -306,6 +306,10 @@ checks and replayed the tool calls of every conversation I had recorded —
 extra passes were my checker. The API model I used as a reference calls
 `get_order` in 95% of its conversations, and the quirk had flattered it too: it
 goes from 4 points above the base model to 6.6 points below it, p = 0.004.
+(Later I found up to 1.9 of those points were my environment again: the
+escalation tool took "unknown" for an order id, which the reference often sent
+for callers it couldn't verify. Had the tool refused it every time and the
+model fixed it every time, the reference would still trail, by 4.7 points.)
 
 It reached back to Result 1: search keeps `get_order` in view and hides the
 eligibility check, so two of search's failures were this quirk, and its loss
@@ -355,6 +359,11 @@ ranked above the one it trails.
   recorded episodes without a single model call when a check changed. Test the
   determinism across processes and Python versions: mine broke on a salted
   hash, and later on an error message Python 3.13 rephrased.
+- **Make the tools as strict as their schemas.** My escalation tool listed
+  eight categories and took any string, and took "unknown" for an order. The
+  agent was told it had escalated, then failed for it; a real API would have
+  said no, and the agent could have fixed it. The reference solution never
+  sends a bad value, so it can't catch this.
 - **Treat an LLM judge's numbers as a sample.** Run it more than once before
   you quote it, and never let it decide whether an action happened.
 - **Don't grade a fix with the instrument that defines it.** My guardrail
@@ -362,7 +371,7 @@ ranked above the one it trails.
   guardrail did. Graded by the audit, the count of false claims had not moved.
   Graded that way from the start, the second version took it from five to
   none — and reading the failures by hand still found what neither reader could.
-- **Write down what failed.** The project's failure log has 34 entries; most
+- **Write down what failed.** The project's failure log has 35 entries; most
   were found by refusing a number that couldn't be right.
 
 ## Limits
@@ -380,5 +389,5 @@ spot, and its live test is one run of 192 conversations. The Thai and
 Vietnamese translations are not native-reviewed. The fine-tune is one run of
 one recipe.
 
-The code, the trace generators, and all 34 failures are in the repo:
+The code, the trace generators, and all 35 failures are in the repo:
 [github.com/FlickYan/pasarbench](https://github.com/FlickYan/pasarbench).
