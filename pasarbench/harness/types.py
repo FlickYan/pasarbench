@@ -199,11 +199,16 @@ class StepRecord:
     # Set when the claim guardrail held this reply back: {"claims": [[tool,
     # quote], ...], "note": the note the agent got instead of a customer turn}.
     guardrail: dict[str, Any] | None = None
+    # True for a step after the customer left (the closing check): its calls
+    # are real, its text is a case note no customer saw.
+    closing: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         d = asdict(self)
         if d["guardrail"] is None:
             del d["guardrail"]       # traces without the guardrail stay as they were
+        if not d["closing"]:
+            del d["closing"]         # ...and without the closing check
         return d
 
 
