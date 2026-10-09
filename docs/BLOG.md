@@ -29,6 +29,15 @@ to search for its tools; whether an LLM judge can tell a solved case from an
 unsolved one; a language effect that turned out to be my own regex; and a
 fine-tune that learned my verifier instead of my policy.
 
+<picture>
+  <source media="(max-width: 600px) and (prefers-color-scheme: dark)" srcset="img/results-narrow-dark.svg">
+  <source media="(max-width: 600px)" srcset="img/results-narrow.svg">
+  <source media="(prefers-color-scheme: dark)" srcset="img/results-dark.svg">
+  <img src="img/results.svg" alt="Four results. Naming the three tools the policy describes raised conversations passed from 44% to 80% on 57 new tasks (38 better, 4 worse). A claim guardrail took conversations that told the customer about an action that never happened from 5 of 96 to 0 (p = 0.06). The fine-tune's gain over the base model fell from +2.3 to +0.3 points once the checker was fixed, and the API reference's from +4.0 to −6.6. No language differed from English beyond noise in two runs.">
+</picture>
+
+*Where this post ends up. Each panel's subtitle carries its test.*
+
 ## The benchmark
 
 PasarBench (*pasar* is Malay and Indonesian for market) is a customer-service
