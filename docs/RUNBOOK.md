@@ -673,6 +673,112 @@ control is not 1h's named arm: an unlisted category or an order called
   only on tasks that did not. And the note is fixed: reworded after this run,
   it is a new intervention, and is tested on tasks it has not seen.
 
+**Run on 2026-10-09, v28** (`M-off`, `M-check`, back to back): it works, by the
+reading fixed before the run — and it costs something that reading did not
+count.
+
+| | control | closing check |
+|---|---|---|
+| pass^1 (pass^k) | 0.848 (0.772) | 0.959 (0.912) |
+| paired by task | | 11 tasks better, 2 worse, p = 0.022: BETTER |
+| a required action first made after the customer left | | 21 episodes, all 21 passed |
+| a forbidden call first made then | | none |
+| an escalation made a second time (same order, same category) | none | 15 episodes |
+| a verification with digits the customer never gave | | 2 episodes |
+| failures claiming a required action never taken (audit, English) | 4 of 8 | 0 of 4 |
+| tokens per episode | 44,375 | 55,201 (+24%) |
+
+The mechanism is the whole gain. All 21 are escalations — 18 duplicate
+refunds, 3 failed identity checks — and without them the closing arm passed
+143 of 171, the control 145: the conversations went the same way in both arms,
+as they should, since the note comes after the customer's last turn. The two
+worse tasks, DRE-MY and OOWOV-MY.ms, are conversations that missed the action
+in the closing arm and made it in the control — a difference before the note,
+which the closing phase did not repair. It also kept
+a promise: in T13__r1 the agent had told the customer "escalated" before making
+the call, and made it after she left. No phase was cut short.
+
+The cost the rule did not count. Fifteen episodes escalated, after the customer
+left, a case the conversation had already escalated — the same order under the
+same category: a second ticket, one case handled twice. It never happened
+without the note, in this control or in 1h's (none in 342 episodes). And twice,
+in voucher cases where the customer had left before giving her digits, the
+agent tried verification with "0000"; the tool denied both. Neither breaks a
+check, and neither is something to deploy. Weighed as the rule weighed a
+forbidden call — one episode with a cost against one rescued pass — that is 17
+against 21, not none against 21. Since v29 `compare_cells.py` counts both and
+lists every episode (WHAT_FAILED #36).
+
+What it could not do. The three voucher failures are customers who accepted a
+voucher and left before verifying who they were: once she has gone, no voucher
+can be issued properly, and the closing phase guessed digits twice and
+escalated twice. An action that needs the customer cannot be made after she
+leaves. The four other failures, all in English — three duplicate refunds, one
+identity check — are reviews that concluded nothing was required: "the refund
+was already completed." P10 read, and let go a second time.
+
+A language lead, found after the run. In the control the duplicate-refund trap
+failed in 16 of the 18 conversations in the six languages other than English
+and Singlish, and in 4 of the 15 in English (`compare_cells.py`'s by-language
+line); in 1h's named arm, 13 of 18 and 6 of 15. The traces say how: in English
+the agent escalates right after looking the order up; in the other languages it
+explains the earlier refund and stops. With the note all 18 passed. One trap,
+found by looking at the one that moved, and the identity trap leans the other
+way (4 of its 18 English conversations failed, 1 of the 18 others): a lead for
+a run built to test it, not a finding.
+
+First test, not confirmation: these tasks produced the hypothesis. Only 10 of
+the other 158 tasks are of these five traps — too few to confirm it; that needs
+new tasks of these traps. What the other 158 can show is what the note does
+where it was not built for, and that is 1k.
+
+### 1k. What does the closing check do where it was not built for? (API only, no GPU)
+
+1j ran on five traps, each about an action the agent lets go. The other 158
+tasks of the suite are eleven more traps — a return to refund, a cash-on-
+delivery order, a peak-sale delay that is not compensable, an address that can
+no longer change — and 10 tasks of 1j's five, from the first naming run. On a
+trap about restraint, a closing phase that acts where the policy does not ask
+fails the case; on any trap it can write twice. Same note, same flags, the rest
+of the suite:
+
+```bash
+set -a; . ./.env; set +a
+TASKS=$(python scripts/naming_tasks.py --rest)
+for C in off check; do
+  python -m pasarbench.sweep \
+    --backend openai --model deepseek-v4-pro --base-url https://api.deepseek.com/v1 \
+    --extra-body '{"thinking":{"type":"disabled"}}' \
+    --simulator openai --sim-model qwen3.8-flash \
+    --sim-url https://dashscope-intl.aliyuncs.com/compatible-mode/v1 \
+    --sim-extra-body '{"reasoning_effort":"low"}' \
+    --suite all --tasks "$TASKS" --strategies full --exposure search-300 -k 3 \
+    --policy-mode preload-named --closing $C --run-id N-$C --workers 8
+done
+python scripts/compare_cells.py traces/N-off/full+search-300 traces/N-check/full+search-300 > N.txt
+python scripts/audit_tool_arms.py traces/N-check >> N.txt
+```
+
+474 episodes an arm, 948 in all: about three times 1j.
+
+**The reading, fixed before the run:**
+
+- **Harm:** `compare_cells.py`'s paired line over the 158 tasks must not say
+  WORSE (p < 0.05).
+- **Cost, as 1j left it:** an episode with a forbidden call first made after
+  the customer left, a write repeating one already made, or a verification
+  with digits the customer never gave — each episode counted once, every one
+  listed. Read them.
+- **Worth keeping** as an option to recommend if, over 1j and 1k together —
+  every task in the suite once — the episodes it rescued (a required action
+  first made after the customer left, in an episode that passed) outnumber the
+  episodes with a cost. After 1j: 21 against 17.
+- **Secondary:** tokens, phases cut short, and what the 10 tasks of 1j's traps
+  do — too few to test anything.
+- **Not a confirmation of the mechanism,** which needs new tasks of 1j's traps.
+  And the note stays as it is: one that told the agent to read its own calls
+  before repeating one is a new intervention, for a run of its own.
+
 ---
 
 # Phase 2 — judge calibration (no GPU, ~6 hours of your time)
