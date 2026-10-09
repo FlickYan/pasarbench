@@ -568,12 +568,13 @@ def test_closing_check():
         model = "c"
         reports_usage = False
 
-        def __init__(self):
+        def __init__(self, last_words=bye):
             self.views: list[list[str]] = []
+            self.last_words = last_words
 
         def chat(self, messages, tools):
             self.views.append([m.content for m in messages[1:]])
-            return ModelResponse(content=f"{bye} ###END###", usage=Usage(1, 1))
+            return ModelResponse(content=f"{self.last_words} ###END###", usage=Usage(1, 1))
 
     class Rec:
         """The trace, as the records a reader gets from the file."""
@@ -610,8 +611,8 @@ def test_closing_check():
     note = "Escalated: duplicate refund request; the refund had already been issued."
     plan = [look, explain, esc, note]
 
-    def run(plan, mode, task=task, **kw):
-        cust, rec = Customer(), Rec()
+    def run(plan, mode, task=task, last_words=bye, **kw):
+        cust, rec = Customer(last_words), Rec()
         db = Database.fresh(task.db_patch)
         backend = Seeing(list(plan))
         res = run_episode(task, db, backend, trace=rec, closing=mode,
@@ -664,8 +665,17 @@ def test_closing_check():
 
     _, _, rec, _, _ = run([look, esc, explain, esc, "Escalated again."], "check")
     r = cl.review(rec.recs, task)
-    check("an action the conversation had already made is not one the phase rescued",
-          r["first"] == [] and r["writes"] == [("escalate_to_human", True)], str(r))
+    check("an action the conversation had already made is not one the phase rescued -- "
+          "made again, it is a second ticket for one case, and the review says so",
+          r["first"] == [] and r["writes"] == [("escalate_to_human", True)]
+          and [t for t, _ in r["repeated"]] == ["escalate_to_human"], str(r))
+    other = ("escalate_to_human", {"order_id": "O1009", "category": "other",
+                                   "reason": "customer asks about a refund"})
+    _, _, rec, _, _ = run([look, other, explain, esc, "Escalated as a duplicate refund."],
+                          "check")
+    r = cl.review(rec.recs, task)
+    check("…while one under the category the policy names, after one under another, is the "
+          "rescue, not a copy", r["first"] == ["escalate_to_human"] and not r["repeated"], str(r))
 
     # T06 forbids even an attempt at a refund (must_succeed=False), as 24 of
     # 1j's 57 tasks do -- the place a call that never reached the tools, or one
@@ -702,9 +712,26 @@ def test_closing_check():
     _, _, rec, db, _ = run([("get_order", {"order_id": "O1002"}), "Let me check.", wrong,
                             "Could not verify."], "check", task=t03)
     r = cl.review(rec.recs, t03)
-    check("a verification the tool denied is not a verification the phase made",
-          r["ran"] and "verify_identity" not in r["first"]
+    check("a verification the tool denied is not a verification the phase made -- and one "
+          "with digits the customer never gave is a guess, named as one",
+          r["ran"] and "verify_identity" not in r["first"] and r["guessed"] == ["0000"]
           and any("denied" in f for f in verify(t03, db).failures), str(r))
+    right = ("verify_identity", {"user_id": t03.user_id,
+                                 "phone_last4": t03.hidden_facts["phone_last4"]})
+    gave = f"My number ends in {' '.join(t03.hidden_facts['phone_last4'])}. Thanks, bye"
+    _, _, rec, _, _ = run([("get_order", {"order_id": "O1002"}), "Let me check.", right,
+                           "Verified; cancellation still to do."], "check", task=t03,
+                          last_words=gave)
+    r = cl.review(rec.recs, t03)
+    check("…while digits the customer did give, spaced out in her last message, are not",
+          r["ran"] and r["guessed"] == [], str(r))
+    import dataclasses
+    t03b = dataclasses.replace(t03, opening=t03.opening + " My number ends "
+                               + t03.hidden_facts["phone_last4"] + ".")
+    _, _, rec, _, _ = run([("get_order", {"order_id": "O1002"}), "Let me check.", right,
+                           "Verified; cancellation still to do."], "check", task=t03b)
+    r = cl.review(rec.recs, t03b)
+    check("…nor are digits she gave in her first message", r["ran"] and r["guessed"] == [], str(r))
 
     res, _, rec, _, _ = run([look, explain] + [look] * 10, "check")
     r = cl.review(rec.recs, task)
