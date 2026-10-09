@@ -143,10 +143,17 @@ def main(argv: list[str] | None = None) -> int:
     names = [f"{c.parent.name}/{c.name}" for c in cells]
 
     print(f"{'':12s} {names[0]:>34s} {names[1]:>34s}")
-    for key in ("policy_mode", "exposure", "guardrail", "requested_model", "simulator"):
-        default = "off" if key == "guardrail" else None
+    # tool_checks: absent before v27, when the tools took any argument value
+    # (WHAT_FAILED #35) -- two cells that differ here are not one experiment.
+    defaults = {"guardrail": "off", "tool_checks": 1}
+    for key in ("policy_mode", "exposure", "guardrail", "tool_checks", "requested_model",
+                "simulator"):
+        default = defaults.get(key)
         print(f"{key:12s} {str(heads[0].get(key, default)):>34s} "
               f"{str(heads[1].get(key, default)):>34s}")
+    if heads[0].get("tool_checks", 1) != heads[1].get("tool_checks", 1):
+        print("!! the two cells ran under different tool checks (WHAT_FAILED #35): a "
+              "difference between them is partly the tools'. Re-run the older one.")
     sa, sb = summary(ea), summary(eb)
     for key, fmt in (("episodes", "{:d}"), ("tasks", "{:d}"), ("pass1", "{:.3f}"),
                      ("passk", "{:.3f}"), ("tokens", "{:,.0f}"), ("steps", "{:.1f}")):
