@@ -44,6 +44,7 @@ from .generate import generate, stratified_sample
 from .run import SOLUTIONS
 from .tasks import TASKS as CORE_TASKS
 from .tasks import Task
+from .tools import CHECKS as TOOL_CHECKS
 from .verifier import pass_hat_k, verify
 from .models import check_agent_simulator
 from types import SimpleNamespace
@@ -354,16 +355,20 @@ def run_cell(strategy_name: str, backend_factory, simulator_factory, tasks: list
             head = done["header"]
             want = backend_factory(task)
             want_sim = simulator_factory(task)
+            # tool_checks: an episode run before v27, when the tools took any
+            # argument value, is not the same experiment (WHAT_FAILED #35).
             if (head.get("requested_model") != getattr(want, "model", None)
                     or head.get("simulator") != getattr(want_sim, "name", "?")
                     or head.get("context") != strategy.name
                     or head.get("policy_mode", policy_mode) != policy_mode
-                    or head.get("guardrail", "off") != guardrail):
+                    or head.get("guardrail", "off") != guardrail
+                    or head.get("tool_checks", 1) != TOOL_CHECKS):
                 raise SystemExit(
                     f"--resume: {cell_dir} already holds episodes from a different "
                     f"setup (model {head.get('requested_model')!r}, simulator "
                     f"{head.get('simulator')!r}, policy {head.get('policy_mode')!r}, "
-                    f"guardrail {head.get('guardrail', 'off')!r}). Use a new --run-id.")
+                    f"guardrail {head.get('guardrail', 'off')!r}, tool checks "
+                    f"v{head.get('tool_checks', 1)}). Use a new --run-id.")
             if save_messages and not done["has_messages"]:
                 todo.append((task, seed))
                 continue
