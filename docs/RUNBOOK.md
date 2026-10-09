@@ -441,7 +441,13 @@ escalated under `duplicate_refund_claim`, a category the tool's schema does not
 offer, 7 are identity failures escalated with no order id (`"unknown"` or
 blank), 2 are identity failures never escalated, and 4 are vouchers never
 issued. Twenty-two are the agent deciding not to act and twelve get the
-action's details wrong; none is a tool it looked for and could not find.
+action's details wrong; none is a tool it looked for and could not find. All
+twelve are inputs the tool should have refused — a category its schema does
+not list, an order called "unknown" — and since v27 it does (WHAT_FAILED #35).
+Counted as fixed once refused, the named arm would be at most 0.871 and the
+control, with 6 of its own, 0.474: the effect can only be larger. Runs before
+v27 replay under the checks they ran under, so these numbers stand as
+measured.
 
 ### 1i. Does a claim check stop the false claims? (API only, no GPU)
 
