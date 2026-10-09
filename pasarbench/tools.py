@@ -540,28 +540,137 @@ def _parameters(fn: Callable) -> tuple[frozenset[str], bool]:
     return frozenset(p.name for p in ps), any(p.kind is p.VAR_KEYWORD for p in ps)
 
 
-def call(db: Database, name: str, args: dict[str, Any]) -> dict:
-    """Dispatch with schema-ish validation. Returns a structured error, never raises."""
+# How strictly a call's arguments are checked before the tool runs. A run
+# records the version it ran under (the trace header's `tool_checks`; absent
+# before v27, and read as 1), and a replay uses the recorded one, so an old run
+# rebuilds exactly the state it ended in.
+#
+#   1  every required argument present, none the tool does not take
+#   2  also: the arguments are a JSON object; each has the type and, where
+#      its schema lists them, a value the schema allows, read as JSON Schema
+#      reads them; no required argument is null; and an escalation names an
+#      order that exists. A refused call to a write tool is logged as a failed
+#      attempt, as the tools log their own refusals, so a check that forbids
+#      the attempt itself (must_succeed=False) still sees it.
+#
+# Version 1 let a call through that any API checking its own schema refuses.
+# escalate_to_human lists eight categories and took any string, and took
+# "unknown" for an order id, though every other write answers "no such order".
+# The agent was told it had escalated, and the check then failed it for the
+# category or the order: 6 recorded episodes for the category, 203 for the
+# order (WHAT_FAILED #35).
+CHECKS = 2
+
+_JSON_TYPES: dict[str, Any] = {"string": str, "integer": int, "number": (int, float),
+                               "boolean": bool, "array": list, "object": dict}
+_TYPE_WORDS = {"string": "a string", "integer": "an integer", "number": "a number",
+               "boolean": "true or false", "array": "a list", "object": "an object"}
+
+
+def _json_word(v: Any) -> str:
+    if isinstance(v, bool):
+        return "true or false"
+    for t, py in (("integer", int), ("number", float), ("string", str),
+                  ("array", list), ("object", dict)):
+        if isinstance(v, py):
+            return _TYPE_WORDS[t]
+    return type(v).__name__
+
+
+def _is_type(v: Any, t: str) -> bool:
+    """JSON Schema's reading: true is not a number, and 4700.0 is an integer."""
+    if t in ("integer", "number") and isinstance(v, bool):
+        return False
+    if t == "integer" and isinstance(v, float):
+        return v.is_integer()
+    return isinstance(v, _JSON_TYPES[t])
+
+
+def _extra(fn: Callable, args: dict[str, Any]) -> str | None:
+    """An argument the tool does not take, reported here and not by Python's
+    TypeError. The two said the same until 3.13, which appends "Did you mean
+    'user_id'?": an agent run on 3.13 was told more than one run on 3.12, and a
+    replay on 3.13 could not reproduce what a 3.12 run recorded. This is the
+    wording every recorded run shows, on every interpreter."""
+    names, open_ended = _parameters(fn)
+    extra = None if open_ended else next((k for k in args if k not in names), None)
+    if extra is None:
+        return None
+    return f"bad arguments: {fn.__qualname__}() got an unexpected keyword argument '{extra}'"
+
+
+def _refusal(fn: Callable, props: dict[str, Any], required: list[str],
+             args: Any) -> str | None:
+    """Version 2: why a call is refused before the tool runs, or None.
+
+    Values are quoted with ascii(), not repr(): repr() of a character newer
+    than an interpreter's Unicode tables prints differently on 3.11 and 3.13,
+    and a replay on the other would no longer match the recorded payload."""
+    if not isinstance(args, dict):
+        return "bad arguments: the arguments must be a JSON object"
+    missing = [r for r in required if r not in args]
+    if missing:
+        return f"missing required argument(s): {missing}"
+    if (extra := _extra(fn, args)) is not None:
+        return extra
+    for k, v in args.items():
+        p = props.get(k)
+        if p is None:
+            continue
+        t = p.get("type")
+        if v is None:
+            if k in required:
+                return f"bad arguments: {k} must be {_TYPE_WORDS.get(t, 'given')}, not null"
+            continue                 # an optional null is not given
+        if v == "" and t == "string" and k not in required:
+            continue                 # nor is an empty optional filter: status=""
+        if t in _JSON_TYPES and not _is_type(v, t):
+            return f"bad arguments: {k} must be {_TYPE_WORDS[t]}, not {_json_word(v)}"
+        # "invalid value", not "bad arguments": diagnose counts the latter as
+        # malformed arguments, a measure of broken JSON across languages that
+        # a well-formed call with a wrong value would otherwise inflate.
+        if "enum" in p and v not in p["enum"]:
+            allowed = ", ".join(ascii(x) for x in p["enum"])
+            return f"invalid value: {k} must be one of {allowed}; got {ascii(v)}"
+    return None
+
+
+def _integers(props: dict[str, Any], args: dict[str, Any]) -> dict[str, Any]:
+    """4700.0 for an integer is 4700: JSON has one kind of number, and the
+    tools do arithmetic and slicing with what they are given."""
+    return {k: int(v) if isinstance(v, float) and props.get(k, {}).get("type") == "integer"
+            else v for k, v in args.items()}
+
+
+def call(db: Database, name: str, args: dict[str, Any], checks: int = CHECKS) -> dict:
+    """Dispatch with schema validation (see CHECKS). Returns a structured error,
+    never raises."""
     if name not in TOOLS:
         return {"ok": False, "error": f"unknown tool '{name}'"}
     spec = TOOLS[name]
-    required = spec["schema"]["function"]["parameters"]["required"]
-    missing = [r for r in required if r not in args]
-    if missing:
-        return {"ok": False, "error": f"missing required argument(s): {missing}"}
-    # An argument the tool does not take is reported here, not by Python's
-    # TypeError. The two said the same until 3.13, which appends "Did you mean
-    # 'user_id'?": an agent run on 3.13 was told more than one run on 3.12, and
-    # a replay on 3.13 could not reproduce what a 3.12 run recorded. This is
-    # the wording every recorded run shows, on every interpreter.
     fn = spec["fn"]
-    names, open_ended = _parameters(fn)
-    extra = None if open_ended else next((k for k in args if k not in names), None)
-    if extra is not None:
-        return {"ok": False, "error": f"bad arguments: {fn.__qualname__}() got an "
-                                      f"unexpected keyword argument '{extra}'"}
+    params = spec["schema"]["function"]["parameters"]
+    if checks >= 2:
+        props = params["properties"]
+        err = _refusal(fn, props, params["required"], args)
+        # The one write that never looked its order up, answered the way every
+        # other write answers an order that does not exist.
+        if err is None and name == "escalate_to_human" and not db.row("orders", args["order_id"]):
+            err = "no such order"
+        if err is not None:
+            if name in WRITE_TOOLS:
+                db.log(name, {k: args.get(k) for k in props} if isinstance(args, dict) else {},
+                       ok=False, error=err)
+            return {"ok": False, "error": err}
+        args = _integers(props, args)
+    else:
+        missing = [r for r in params["required"] if r not in args]
+        if missing:
+            return {"ok": False, "error": f"missing required argument(s): {missing}"}
+        if (extra := _extra(fn, args)) is not None:
+            return {"ok": False, "error": extra}
     try:
-        return spec["fn"](db, **args)
+        return fn(db, **args)
     except TypeError as e:
         return {"ok": False, "error": f"bad arguments: {e}"}
     except Exception as e:  # noqa: BLE001 - harness must never crash on a tool
