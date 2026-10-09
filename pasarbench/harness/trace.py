@@ -97,6 +97,19 @@ def read_episode(path: str | Path) -> list[dict[str, Any]]:
     return [json.loads(line) for line in Path(path).read_text().splitlines() if line.strip()]
 
 
+def customer_saw(step: dict[str, Any]) -> bool:
+    """Whether a step's text counts as said to the customer: not held back by
+    the claim guardrail (guardrail.py), and not written after the customer had
+    left (the closing check, closing.py). Its tool calls ran either way.
+
+    Not quite "reached": text the agent writes beside a tool call is never
+    shown to the simulated customer either (simulator.py), and the readers
+    have always counted it. Leaving it out changes no false-claim count in any
+    run recorded up to v28 -- checked on all of them -- so it is kept, and
+    this reads as it always has for every step but these two kinds."""
+    return not step.get("guardrail") and not step.get("closing")
+
+
 def summarise_run(run_dir: str | Path) -> dict[str, Any]:
     """Fold a whole run directory into headline numbers. Cheap enough to call
     after every sweep; keep the output next to the traces."""
