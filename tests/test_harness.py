@@ -362,6 +362,185 @@ def test_claim_guardrail():
               r.stderr[-500:] or str(heads))
 
 
+def test_tool_input_checks():
+    """WHAT_FAILED #35. escalate_to_human listed eight categories and took any
+    string, and took "unknown" for an order; the agent was told it had
+    escalated and the check then failed it. The tools now refuse what their
+    schemas do not allow -- and a run recorded before that must still replay
+    under the checks it ran under, or re-scoring would rebuild a state the
+    episode never ended in."""
+    print("\n=== the tools refuse what their schemas do not allow ===")
+    import hashlib
+    import json
+    import subprocess
+    import sys
+
+    from pasarbench.harness.replay import replay
+    from pasarbench.tasks import world_digest
+    from pasarbench.tools import CHECKS, call
+
+    task = BY_ID["T14"]
+
+    def fresh() -> Database:
+        return Database.fresh(task.db_patch)
+
+    good = {"order_id": "O1009", "category": "duplicate_refund", "reason": "already refunded"}
+    db = fresh()
+    r = call(db, "escalate_to_human", {**good, "category": "duplicate_refund_claim"})
+    check("a category the schema does not list is refused, the error lists the allowed "
+          "ones, nothing is written, and the attempt is logged as a failed call",
+          not r["ok"] and r["error"].startswith("invalid value: category must be one of")
+          and "'duplicate_refund'" in r["error"] and not db.t("escalations")
+          and [(a.tool, a.ok) for a in db.action_log] == [("escalate_to_human", False)], str(r))
+    r = call(fresh(), "escalate_to_human", {**good, "category": "remboursement dupliqué"})
+    check("…the value is quoted the same on every interpreter (ascii, not repr), and the "
+          "error is not counted as malformed JSON",
+          r.get("error", "").endswith("got 'remboursement dupliqu\\xe9'")
+          and "bad arguments" not in r.get("error", ""), str(r))
+    db = fresh()
+    r = call(db, "escalate_to_human", {**good, "category": None})
+    check("a required argument sent as null is refused, not stored -- the same failure "
+          "as an unlisted category",
+          r.get("error") == "bad arguments: category must be a string, not null"
+          and not db.t("escalations"), str(r))
+    for bad_args in (["order_id"], [], "", 5):
+        try:
+            r = call(fresh(), "get_order", bad_args)
+            ok = r.get("error") == "bad arguments: the arguments must be a JSON object"
+        except Exception as e:  # noqa: BLE001
+            ok, r = False, f"raised {type(e).__name__}: {e}"
+        if not ok:
+            break
+    check("arguments that are valid JSON but not an object are refused, never raised",
+          ok, str(r))
+    t06 = BY_ID["T06"]
+    cod = ("issue_refund", {"order_id": "O1004", "amount_minor": 1000, "method": "cod",
+                            "reason": "customer insists"})
+    for checks_ in (1, 2):
+        db6 = Database.fresh(t06.db_patch)
+        for name, a in [SOLUTIONS["T06"][0], cod, *SOLUTIONS["T06"][1:]]:
+            call(db6, name, a, checks=checks_)
+        v = verify(t06, db6)
+        if checks_ == 1:
+            v1_failures = v.failures
+    check("a forbidden attempt the schema refuses is still an attempt: refunding a COD order "
+          "with method 'cod' fails T06 under the checks, as it did before them",
+          not v.passed and any("forbidden" in f and "issue_refund" in f for f in v.failures)
+          and v1_failures == v.failures, str((v1_failures, v.failures)))
+    db = fresh()
+    r = call(db, "escalate_to_human", {**good, "order_id": "unknown"})
+    check("an escalation naming no order is answered 'no such order', as every other "
+          "write answers it, and logged as a failed call",
+          not r["ok"] and r["error"] == "no such order" and not db.t("escalations")
+          and [(a.tool, a.ok) for a in db.action_log] == [("escalate_to_human", False)],
+          str(r))
+    check("…a blank order too",
+          call(fresh(), "escalate_to_human", {**good, "order_id": ""}).get("error")
+          == "no such order")
+    db = fresh()
+    check("a valid escalation still goes through",
+          call(db, "escalate_to_human", good)["ok"] and len(db.t("escalations")) == 1)
+    refund = {"order_id": "O1009", "amount_minor": "4700", "method": "card", "reason": "r"}
+    r = call(fresh(), "issue_refund", refund)
+    check("an amount sent as text is refused for its type before the tool runs",
+          r.get("error") == "bad arguments: amount_minor must be an integer, not a string",
+          str(r))
+    r = call(fresh(), "issue_refund", {**refund, "amount_minor": True})
+    check("…and true is not an integer",
+          r.get("error") == "bad arguments: amount_minor must be an integer, not true or false",
+          str(r))
+    db = fresh()
+    call(db, "verify_identity", {"user_id": task.user_id,
+                                 "phone_last4": task.hidden_facts["phone_last4"]})
+    whole = call(db, "issue_refund", {**refund, "amount_minor": 4700.0})
+    part = call(fresh(), "issue_refund", {**refund, "amount_minor": 4700.5})
+    stored = [r["amount_minor"] for r in db.t("refunds").values() if r["refund_id"] != "REF9999"]
+    check("…but no stricter than JSON Schema: 4700.0 is an integer, and the tool is given "
+          "4700; 4700.5 is not an integer",
+          whole.get("ok") and stored == [4700] and type(stored[0]) is int
+          and part.get("error") == "bad arguments: amount_minor must be an integer, not a number",
+          str((whole, part, stored)))
+    u = task.user_id
+    check("an empty optional filter is still 'not given', as the tool reads it; a status "
+          "the schema does not list is refused",
+          call(fresh(), "list_user_orders", {"user_id": u, "status": ""})["ok"]
+          and call(fresh(), "list_user_orders", {"user_id": u, "status": None})["ok"]
+          and not call(fresh(), "list_user_orders", {"user_id": u, "status": "lost"})["ok"])
+    db = fresh()
+    bad = {**good, "order_id": "unknown", "category": "duplicate_refund_claim"}
+    check("under version 1, what every run before v27 ran under, both were taken",
+          CHECKS == 2 and call(db, "escalate_to_human", bad, checks=1)["ok"]
+          and len(db.t("escalations")) == 1)
+
+    # A run recorded before v27: no tool_checks in its header, and an
+    # escalation the old tools took. The payload is the one v26 returned,
+    # written out, so a drift in version 1 itself would show here.
+    args = {"order_id": "unknown", "category": "duplicate_refund", "reason": "r"}
+    payload = '{"ok": true, "escalation_id": "ESC0001"}'
+    check("version 1 still answers exactly what v26 answered",
+          json.dumps(call(fresh(), "escalate_to_human", args, checks=1),
+                     ensure_ascii=False, default=str) == payload)
+    head = {"type": "header", "task_id": task.task_id, "world_digest": world_digest(task)}
+    step = {"type": "step", "step": 1,
+            "tool_calls": [{"name": "escalate_to_human", "arguments": args}],
+            "tool_results": [{"name": "escalate_to_human", "ok": True, "error": None,
+                              "result_chars": len(payload),
+                              "result_sha1": hashlib.sha1(payload.encode()).hexdigest()[:12]}]}
+    old = replay([head, step], task)
+    new = replay([{**head, "tool_checks": 2}, step], task)
+    check("a run recorded before v27 replays under the checks it ran under, and rebuilds "
+          "the state it ended in",
+          not old.diverged and old.verified == 1 and len(old.db.t("escalations")) == 1,
+          str(old.diverged))
+    check("…and one that recorded today's checks replays under them",
+          len(new.diverged) == 1 and "no such order" in new.diverged[0]
+          and not new.db.t("escalations"), str(new.diverged))
+
+    class Rec:
+        meta: dict = {}
+
+        def open_episode(self, task_id, run_index=None, meta=None):
+            self.meta = meta or {}
+
+        def step(self, record):
+            pass
+
+        def event(self, *a, **kw):
+            pass
+
+    rec = Rec()
+    run_episode(task, fresh(), ScriptedBackend(["Let me look into that."]), trace=rec)
+    check("every new run records the checks it ran under in its trace header",
+          rec.meta.get("tool_checks") == CHECKS, str(rec.meta))
+    try:
+        res = run_episode(task, fresh(), ScriptedBackend([("get_order", 5), ("get_order", [])]))
+        tool_msgs = [m.content for m in res.state.messages if m.role == "tool"]
+        ok = (res.stop_reason == StopReason.DONE and len(tool_msgs) == 2
+              and all("must be a JSON object" in c for c in tool_msgs))
+        detail = str(tool_msgs)
+    except Exception as e:  # noqa: BLE001
+        ok, detail = False, f"raised {type(e).__name__}: {e}"
+    check("a model that sends a bare number or a list as its arguments gets an error back, "
+          "and the episode goes on", ok, detail)
+
+    with tempfile.TemporaryDirectory() as d:
+        sweep = [sys.executable, "-m", "pasarbench.sweep", "--backend", "scripted",
+                 "--suite", "core", "--tasks", "T14", "--strategies", "full",
+                 "--run-id", "c", "--trace-root", d]
+        cwd = Path(__file__).resolve().parent.parent
+        first = subprocess.run(sweep, capture_output=True, text=True, cwd=cwd)
+        f = next(Path(d).glob("c/*/*.jsonl"))
+        lines = f.read_text().splitlines()
+        h = json.loads(lines[0])
+        h.pop("tool_checks", None)
+        f.write_text("\n".join([json.dumps(h), *lines[1:]]) + "\n")
+        again = subprocess.run(sweep + ["--resume"], capture_output=True, text=True, cwd=cwd)
+        check("--resume refuses to mix a cell's episodes from before v27 with new ones",
+              first.returncode == 0 and again.returncode != 0
+              and "tool checks v1" in again.stdout + again.stderr,
+              (again.stdout + again.stderr)[-400:])
+
+
 def main() -> int:
     test_reference_through_loop()
     test_budgets_bite()
@@ -371,6 +550,7 @@ def main() -> int:
     test_traces()
     test_prompt_modes()
     test_claim_guardrail()
+    test_tool_input_checks()
     print(f"\n{len(PASS)} passed, {len(FAIL)} failed")
     for f in FAIL:
         print(f"  FAILED: {f}")
