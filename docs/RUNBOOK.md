@@ -607,6 +607,72 @@ something would happen is a question about language, which a model can
 answer; whether it happened is a question about state, which the tool log
 answers — the split the judge results argue for (WRITEUP, Result 2).
 
+### 1j. Does a closing check catch the action the agent let go? (API only, no GPU)
+
+With the tools named (1h), 22 of the 34 failures are a required call never
+made in a conversation the customer ended: 16 duplicate refunds closed once the
+earlier refund was explained — though P10 says, in bold, to escalate even when
+the customer accepts it — 2 identity failures never escalated, and 4 vouchers
+offered and never issued. Twelve more were inputs the tools now refuse (#35),
+and none is a tool the agent could not find. A check on what the agent says
+cannot reach these (1i): the agent never said it had acted.
+
+`--closing check` gives the agent one note when the customer leaves, which the
+customer never sees: go over the case against the policy, make any call it
+requires that no call has made — including one you told the customer was done
+or under way — and make no call it does not require
+(`pasarbench/harness/closing.py`). It reads nothing about the task, so a
+deployed agent could run it as work after the customer has gone. The calls it
+makes are real writes; the text it writes is a case note no one reads, and the
+claim readers skip it. It gets at most six model calls, inside the episode's
+budget, and context strategies that drop old messages keep the note. Every one
+of the 57 tasks forbids some write, so a closing phase that acts where the
+policy does not ask pays for it in failures — that is the cost the run
+measures.
+
+Run it on 1h's 57 tasks with the named policy, with a control the same day:
+
+```bash
+set -a; . ./.env; set +a
+TASKS=$(python scripts/naming_tasks.py)
+for C in off check; do
+  python -m pasarbench.sweep \
+    --backend openai --model deepseek-v4-pro --base-url https://api.deepseek.com/v1 \
+    --extra-body '{"thinking":{"type":"disabled"}}' \
+    --simulator openai --sim-model qwen3.8-flash \
+    --sim-url https://dashscope-intl.aliyuncs.com/compatible-mode/v1 \
+    --sim-extra-body '{"reasoning_effort":"low"}' \
+    --suite all --tasks "$TASKS" --strategies full --exposure search-300 -k 3 \
+    --policy-mode preload-named --closing $C --run-id M-$C --workers 8
+done
+python scripts/compare_cells.py traces/M-off/full+search-300 traces/M-check/full+search-300 > M.txt
+python scripts/audit_tool_arms.py traces/M-check >> M.txt
+```
+
+342 episodes, the size of 1h. Both arms run under v27's tool checks, so the
+control is not 1h's named arm: an unlisted category or an order called
+"unknown" now gets an error back, and the control should pass more than 0.80.
+
+**The reading, fixed before the run:**
+
+- **Works** if `compare_cells.py`'s paired line says BETTER — p < 0.05 over the
+  57 tasks — and its closing section shows required actions first made after
+  the customer left. A pass-rate gain without those is not this effect.
+- **Cost:** the closing section's forbidden calls first made after the
+  customer left; it lists every one. Read them. If they are as many as the
+  episodes where a required action was first made then and the episode passed,
+  the check is not worth running, whatever the pass rate. Both counts read the
+  database's action log, as the verifier does: a call to a tool the arm hid,
+  or a verification the tool denied, is not an action.
+- **Secondary:** tokens per episode. The note costs at least one more model
+  call in every episode the customer ends. The section also counts closing
+  phases cut short — by the six-call cap or the episode's budget; if that is
+  more than a few, the phase was too short to judge.
+- **A first test, not a confirmation.** These 57 tasks produced the
+  hypothesis — their failures in 1h — so a positive result here is confirmed
+  only on tasks that did not. And the note is fixed: reworded after this run,
+  it is a new intervention, and is tested on tasks it has not seen.
+
 ---
 
 # Phase 2 — judge calibration (no GPU, ~6 hours of your time)
