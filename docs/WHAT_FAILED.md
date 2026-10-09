@@ -1,6 +1,6 @@
 # What failed
 
-Thirty-three real defects found while building this. The first fifteen are in
+Thirty-five real defects found while building this. The first fifteen are in
 the order of how much damage they would have done; the rest are in the order
 they were found. Every one is reproducible from the git history.
 
@@ -1260,6 +1260,63 @@ has been flagged", a promise never kept — about as often in each arm
 construction. Grade it with one it does not share, and write down which before
 the run. It is #26 again — a detector's blind spot read as the world's — in the
 other direction: there the detector invented a problem, here it hid one.
+
+---
+
+## 35. The escalation tool took what its own schema refused
+
+**What happened.** `escalate_to_human` declares eight categories and takes an
+order id. It checked neither. Any string went into the database as a category,
+and "unknown", a blank or a user id went in as the order — though every other
+write answers an order that does not exist with "no such order". The agent was
+told it had escalated, and the check then failed it for the category or the
+order. Across the 10,684 recorded episodes, 6 escalated under a category the
+schema does not list, every one `duplicate_refund_claim` in a run that named
+the tools: the agent's first call, made before it had looked the tool up,
+guessed the category; refused as an unknown tool, it searched and saw the
+list, and 14 times in 20 it corrected itself. Six times it sent its guess
+again, and the tool took it. And 203 escalated naming no order. The same escalation passed
+T13, whose check does not ask which order, all 30 times, and failed the
+generated identity tasks, whose check does, 147 times in 148.
+
+**Why.** `tools.call` checked that required arguments were there and that no
+unknown ones were, not what they held, so the schema promised more than the
+code enforced. The reference solutions never send a bad value, so they could
+not show it, and each failure looked like what it partly was — an agent
+mistake — rather than one any API that checks its own schema would have
+reported back.
+
+**What it moved**, at most: counting every episode that failed only on such an
+escalation as one the agent would have fixed once told. In the confirmation
+run (RUNBOOK 1h) all twelve failures "getting the action's details wrong" are
+these, 5 categories and 7 orders, and 6 of the control's are: the named arm
+would be at most 0.871 and the control 0.474, so the effect can only be
+larger. In the post-training comparison, 21 of
+the API reference's failures are escalations naming no order, all on the
+identity trap, and the base and fine-tuned models made none: its 6.6-point
+deficit to the base model would be at least 4.7 (p = 0.012). The fine-tune's
++0.3 and the tool-exposure gap do not move, and the language null holds — the
+largest paired gap becomes 6.2 points, every p ≥ 0.25.
+
+**Fix.** v27: `tools.call` checks each argument's type and allowed values
+against its schema, read as JSON Schema reads them, refuses a null for a
+required argument, and an escalation must name an order that exists. The
+errors say what is allowed. A refused write is logged as a failed attempt, as
+the tools log their own refusals, so a check that forbids the attempt itself
+still sees it. An independent review of the first draft caught that it did
+not: refunding a COD order with method `cod` failed T06 before the change and
+passed after it. The same review caught that valid JSON that is not an object
+crashed the new checks. A run records which checks it ran under (`tool_checks`
+in the trace header), and a replay uses them. Under today's checks, 393
+recorded episodes would replay differently — these, and runs from before an ID
+format change whose orders are not in today's world — so a run without the
+field replays under version 1, and all 10,684 re-score exactly as they did
+before. `--resume` refuses to mix the two in one cell.
+
+**Lesson.** A schema is a promise the code has to keep. An environment that
+takes what its own interface forbids turns "the API would have told you" into
+"you failed", silently, because the one agent guaranteed to send valid values
+is the reference solution.
 
 ---
 
