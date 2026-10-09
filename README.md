@@ -23,10 +23,10 @@ rollouts ──▶ verifier ──▶ group advantage ──▶ policy update �
 
 Agent `deepseek-v4-pro`, simulated customer and judges `qwen3.8-flash`; for
 post-training, agent `Qwen3.8-27B` against a `gemma-4-31B-it` customer. Every
-number is regenerated from traces by `scripts/make_report.py` and
-`scripts/audit_tool_arms.py`, and the figure by `scripts/make_figure.py`, on
-today's checks — the runs' recorded verdicts are re-scored by replaying their
-tool calls (`scripts/rescore.py`).
+number is regenerated from traces by `scripts/make_report.py`,
+`scripts/audit_tool_arms.py` and `scripts/compare_cells.py`, and the figure by
+`scripts/make_figure.py`, on today's checks — the runs' recorded verdicts are
+re-scored by replaying their tool calls (`scripts/rescore.py`).
 
 <picture>
   <source media="(max-width: 600px) and (prefers-color-scheme: dark)" srcset="docs/img/results-narrow-dark.svg">
@@ -65,6 +65,17 @@ tool calls (`scripts/rescore.py`).
   real, and each ended in the call and a passed case. Read by hand, softer
   wording still got through about as often with it as without — "your case has
   been flagged", a promise never kept ([RUNBOOK 1i](docs/RUNBOOK.md)).
+- **A second look after the customer left rescued what the agent let go — at
+  a price.** When the customer ended the conversation, the agent got one note
+  she never saw: check the case against the policy, make any call it requires.
+  On the tasks that suggested it, pass^1 went from 0.85 to 0.96 (11 tasks
+  better, 2 worse, p = 0.02) under a rule written before the run, and every
+  gained episode was an escalation first made after the customer left, with no
+  forbidden call. The rule counted no other cost, and there were two: 15 of 171
+  episodes escalated a second time a case already escalated — never once
+  without the note — and twice the agent tried identity digits it had made up
+  ([RUNBOOK 1j](docs/RUNBOOK.md), [WHAT_FAILED #36](docs/WHAT_FAILED.md)). A
+  first test; what it does on the rest of the suite is 1k.
 - **An LLM judge could not stand in for the database.** Its best configuration —
   with the tool results and the policy — reached κ = 0.72 and still accepted 6
   of 15 failed episodes. It caught one of three false claims and noticed another
@@ -73,6 +84,10 @@ tool calls (`scripts/rescore.py`).
 - **No language differed from English beyond noise**, in two independent runs.
   The only significant gaps in the project came from a fact-gating bug, and the
   simulator "leaks" behind it were the detector's ([WHAT_FAILED #26](docs/WHAT_FAILED.md)).
+  One lead since, on one trap: with the tools named, the duplicate-refund case
+  failed far more often outside English in both runs — in English the agent
+  escalates right after the lookup, elsewhere it explains and stops. Found after
+  the fact, and not yet tested ([RUNBOOK 1j](docs/RUNBOOK.md)).
 
 ---
 
@@ -89,13 +104,13 @@ mistake):
 ```bash
 python -m pasarbench.run          # null agent → 0.0, reference agent → 1.0
 python -m tests.test_traps        # 10 naive solutions, all must be rejected
-python -m tests.test_harness      # 78 harness invariants, the claim guardrail, the closing check and every context strategy keeping its note, tools that refuse what their schemas don't allow while old runs replay under the checks they ran under
+python -m tests.test_harness      # 81 harness invariants, the claim guardrail, the closing check and every context strategy keeping its note, tools that refuse what their schemas don't allow while old runs replay under the checks they ran under
 python -m tests.test_reward       # 30 reward + dataset invariants
 python -m tests.test_generated    # 108 checks over all 199 generated tasks: dates in causal order, the same world in every process, reads of the task's own order, simulator QA
 python -m tests.test_rescore      # 29 re-scoring invariants: the pre-v19 world, replay by digest and by length, the same tool errors on every Python, nothing re-scored on a guess
 python -m tests.test_context      # 39 context-strategy + analysis invariants
 python -m tests.test_judge        # 83 judge + agreement-statistics invariants, judged against today's checks
-python -m tests.test_exposure     # 136 tool-scaling + diagnosis invariants, the tool-naming experiment and its confirmation tasks, the guardrail's report and dry run, the closing check's report and readers that skip its case note, cells compared across tool-check versions flagged
+python -m tests.test_exposure     # 139 tool-scaling + diagnosis invariants, the tool-naming experiment and its confirmation tasks, the guardrail's report and dry run, the closing check's report, its costs and readers that skip its case note, cells compared across tool-check versions flagged
 python -m tests.test_serving      # 54 metrics (SGLang and vLLM), cost and quality-guard invariants
 python -m tests.test_report       # 59 report invariants: paired verdicts, ties, replication, calibration, noise floor, post-training, both scorings in every section, a figure that matches its numbers and drops a title they stop bearing out
 python -m tests.test_training     # 161 checks: split, customer family, collection and resume, examples (Qwen3 and Qwen3.8 formats) against an SGLang-like server, adapter routing, the LoRA probe, serve and Modal scripts, one-GPU memory plans, the notebook helper (progress in place, an interrupt-proof cleanup), the CUDA compiler, run settings, LoRA steps on Qwen3 and Qwen3.8's hybrid architecture, training data picked by today's checks, a push script that keeps runs and keys off GitHub, closing-check runs refused as training data (119 without transformers/torch)
