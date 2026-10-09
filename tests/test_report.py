@@ -520,6 +520,103 @@ def test_judges_against_todays_verifier():
           "These views withhold it" in md and "never saw" not in md, md[:1500])
 
 
+def test_figure():
+    """scripts/make_figure.py draws the README's figure from numbers it reads
+    off the traces. The SVGs in docs/img must be the ones those numbers draw,
+    say what the docs say, and not keep a title the numbers stop bearing out."""
+    print("\n=== the results figure ===")
+    import contextlib
+    import io
+    import re
+    import xml.etree.ElementTree as ET
+    root = Path(__file__).resolve().parent.parent
+    spec = importlib.util.spec_from_file_location("make_figure", root / "scripts" / "make_figure.py")
+    mf = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mf)
+    img = root / "docs" / "img"
+    numbers = json.loads((img / "results.json").read_text())
+
+    tmp = Path(tempfile.mkdtemp())
+    with contextlib.redirect_stdout(io.StringIO()):
+        code = mf.main(["--numbers", str(img / "results.json"), "--out", str(tmp)])
+    drawn = sorted(p.name for p in tmp.iterdir())
+    sizes = {}
+    for (mode, layout), name in mf.FILES.items():
+        svg = ET.fromstring((tmp / name).read_text(encoding="utf-8"))
+        sizes[name] = (int(svg.get("width")), int(svg.get("height"))) == mf.LAYOUTS[layout]["size"]
+    check("redrawn from its numbers: four well-formed SVGs at their layouts' sizes, nothing else",
+          code == 0 and drawn == sorted(mf.FILES.values()) and all(sizes.values()),
+          f"{code} {drawn} {sizes}")
+    stale = [n for n in mf.FILES.values()
+             if (tmp / n).read_bytes() != (img / n).read_bytes()]
+    check("the committed SVGs are the ones results.json draws", not stale,
+          f"redraw with: python scripts/make_figure.py --numbers docs/img/results.json -- {stale}")
+
+    wide = (img / "results.svg").read_text(encoding="utf-8")
+    texts = " | ".join(re.findall(r"<text [^>]*>([^<]*)</text>", wide))
+    quoted = ["44%", "80%", "38 tasks better, 4 worse", "p = 6 × 10⁻⁸", "of 96 per arm · p = 0.06",
+              "| 5 |", "| 0 |", "+0.3", "−6.6", "fine-tuned p = 0.84, reference p = 0.004",
+              "+7.5", "every p ≥ 0.12, in two independent runs"]
+    check("it shows the numbers the README and the blog quote",
+          all(q in texts for q in quoted), str([q for q in quoted if q not in texts]))
+    check("…and its description carries them for a screen reader",
+          all(q in wide.split("</desc>")[0] for q in ("44% to 80%", "5 to 0", "+2.3 to +0.3",
+                                                      "+4.0 to −6.6", "at best −4.7")),
+          wide.split("</desc>")[0][-600:])
+
+    ok_ink, ok_marks = True, True
+    for (mode, layout), name in mf.FILES.items():
+        t = mf.THEMES[mode]
+        svg = (img / name).read_text(encoding="utf-8")
+        ok_ink &= set(re.findall(r'<text [^>]*fill="([^"]+)"', svg)) <= {t["ink"], t["ink2"], t["muted"]}
+        marks = re.findall(r"<(path|circle) [^>]*>(.*?)</\1>", svg)
+        ok_marks &= bool(marks) and all(inner.startswith("<title>") for _, inner in marks)
+    check("text wears text colours, never a series colour, in all four", ok_ink)
+    check("every bar and dot carries its value as a tooltip", ok_marks)
+    # The reference palette's own steps (the dataviz skill's palette.md): the
+    # dark accent and surface are stepped for the dark surface, not reused.
+    dark = (img / "results-dark.svg").read_text(encoding="utf-8")
+    light_only = ("#fcfcfb", "#0b0b0b", "#e1e0d9", "#2a78d6")
+    check("dark is its own palette, with no light-mode colour left in it",
+          all(c in dark for c in ("#1a1a19", "#3987e5"))
+          and not any(c in dark for c in light_only),
+          str([c for c in light_only if c in dark]))
+
+    check("the tests behind the panels: exact sign test and Fisher test",
+          abs(mf._sign_p(4, 38) - numbers["naming"]["p"]) < 1e-12
+          and abs(mf._fisher_p(5, 96, 0, 96) - numbers["guardrail"]["p"]) < 1e-12
+          and mf._sign_p(0, 0) == 1.0 and abs(mf._fisher_p(0, 9, 0, 9) - 1.0) < 1e-12,
+          f"{mf._sign_p(4, 38)} {mf._fisher_p(5, 96, 0, 96)}")
+    shown = [mf._p(5.65e-8), mf._p(9.6e-4), mf._p(0.00366), mf._p(0.0593), mf._signed(-6.6),
+             mf._signed(0.04), mf._signed(2.33)]
+    check("p and signs print as a reader expects: a real exponent, a real minus",
+          shown == ["p = 6 × 10⁻⁸", "p = 1 × 10⁻³", "p = 0.004", "p = 0.06", "−6.6",
+                    "0.0", "+2.3"], str(shown))
+
+    moved = json.loads(json.dumps(numbers))
+    moved["language"]["D-nozh/full"]["th"]["p"] = 0.02
+    moved["finetune"]["fixed"]["p_rft"] = 0.01
+    (tmp / "moved.json").write_text(json.dumps(moved))
+    out_dir = tmp / "moved"
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        code = mf.main(["--numbers", str(tmp / "moved.json"), "--out", str(out_dir)])
+    said = buf.getvalue()
+    check("a title the numbers stop bearing out is not drawn under the old words",
+          code == 1 and not out_dir.exists() and "No language differed" in said
+          and "checker quirk" in said and mf.unsupported(numbers) == [], said)
+
+    pages = {"README.md": "docs/img/", "docs/BLOG.md": "img/"}
+    linked = {page: all(f'srcset="{pre}{n}"' in (root / page).read_text(encoding="utf-8")
+                        or f'src="{pre}{n}"' in (root / page).read_text(encoding="utf-8")
+                        for n in mf.FILES.values())
+              for page, pre in pages.items()}
+    check("README and the blog offer all four, by paths that resolve from each page",
+          all(linked.values()) and all((root / page).parent.joinpath(pre, n).is_file()
+                                       for page, pre in pages.items() for n in mf.FILES.values()),
+          str(linked))
+
+
 def main() -> int:
     test_context_verdicts_need_a_paired_test()
     test_ties_are_said_out_loud()
@@ -531,6 +628,7 @@ def main() -> int:
     test_both_scorings()
     test_ablation_sections_under_both_checkers()
     test_judges_against_todays_verifier()
+    test_figure()
     print(f"\n{len(PASS)} passed, {len(FAIL)} failed")
     for f in FAIL:
         print(f"  FAILED: {f}")
