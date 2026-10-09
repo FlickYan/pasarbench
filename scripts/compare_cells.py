@@ -25,6 +25,12 @@ second -- graded by its own reading it passes by construction (WHAT_FAILED
 #34). For the guarded cell it lists every reply held back and what the agent
 did next. Read the held replies: one that claims nothing, or claims what
 happened before the conversation, is a false alarm.
+
+For the closing check (docs/RUNBOOK.md, 1j) it says what the agent did after
+the customer left: the required actions first made then -- the mechanism --
+and the forbidden calls first made then -- the cost -- read off the database's
+action log as the verifier reads it, and how many closing phases were cut
+short. Read both before the pass rate.
 """
 
 from __future__ import annotations
@@ -72,11 +78,61 @@ def _reviews(cell: Path, ids: set[str]) -> dict[str, dict]:
     return out
 
 
+def _closings(cell: Path, eps: list[dict], tasks: dict) -> dict[str, dict]:
+    """transcript_id -> closing.review of its trace (harness/closing.py), with
+    whether the episode passed, for finished episodes."""
+    from pasarbench.harness.closing import review
+    out = {}
+    for e in eps:
+        recs = [json.loads(l) for l in (cell / f"{e['transcript_id']}.jsonl").read_text(
+            encoding="utf-8").splitlines() if l.strip()]
+        r = review(recs, tasks.get(e["task_id"]))
+        out[e["transcript_id"]] = {**r, "passed": e["passed"], "trap": e["trap"]}
+    return out
+
+
+def _print_closing(name: str, cv: dict[str, dict], show: int = 40) -> None:
+    """What the closing check did, read before the pass rate: the mechanism is
+    a required call first made after the customer left, and the cost is a
+    forbidden call first made then. Every episode with a cost is listed; the
+    others up to `show`."""
+    noted = [t for t, r in cv.items() if r["noted"]]
+    if not noted:
+        return
+    wrote = [t for t in noted if cv[t]["writes"]]
+    calls = Counter(tool for t in noted for tool, ok in cv[t]["writes"] if ok)
+    first = [t for t in noted if cv[t]["first"]]
+    cost = [t for t in noted if cv[t]["forbidden"]]
+    cut = Counter(why for t in noted for why in cv[t]["cut"])
+    print(f"\nclosing check in {name}: the customer left and the agent got the note in "
+          f"{len(noted)} episodes; it made a write after that in {len(wrote)}.")
+    if cut:
+        print(f"  cut short before the agent was done: {sum(cut.values())} episodes ("
+              + ", ".join(f"{n} by {why}" for why, n in cut.most_common()) + ")")
+    print("  successful writes after the customer left: "
+          + (", ".join(f"{t} {n}" for t, n in calls.most_common()) or "none"))
+    print(f"  {'a required action first made then':42s} {len(first):>4d} episodes, "
+          f"{sum(cv[t]['passed'] for t in first)} of them passed -- the mechanism")
+    print(f"  {'a forbidden call first made then':42s} {len(cost):>4d} episodes"
+          f"{' -- its cost; read them' if cost else ''}")
+    rest = sorted(set(first) - set(cost))
+    for t in sorted(cost) + rest[:show]:
+        r = cv[t]
+        what = ([f"first: {', '.join(r['first'])}"] if r["first"] else []) + \
+               ([f"FORBIDDEN: {', '.join(tool for tool, _ in r['forbidden'])}"]
+                if r["forbidden"] else [])
+        print(f"    {t:24s} {r['trap']:34s} {'pass' if r['passed'] else 'FAIL'}  "
+              f"{'; '.join(what)}")
+    if len(rest) > show:
+        print(f"    ... and {len(rest) - show} more with a required action first made then")
+
+
 def _audit_claims(cell: Path, eps: list[dict], tasks: dict) -> tuple[int, int]:
     """(failed English episodes read, of them claiming a required action the
     database never saw) -- scripts/audit_tool_arms.py's section 3, which reads
     passives and "we" for every action and so is not the guardrail's reading."""
     from pasarbench.claims import ENGLISH, false_claims
+    from pasarbench.harness.trace import customer_saw
     read = claimed = 0
     for e in eps:
         task = tasks.get(e["task_id"])
@@ -86,7 +142,7 @@ def _audit_claims(cell: Path, eps: list[dict], tasks: dict) -> tuple[int, int]:
             encoding="utf-8").splitlines() if l.strip()]
         steps = [r for r in recs if r.get("type") == "step"]
         texts = [st["model_content"] for st in steps
-                 if (st.get("model_content") or "").strip() and not st.get("guardrail")]
+                 if (st.get("model_content") or "").strip() and customer_saw(st)]
         calls = [(tc["name"], bool(tr.get("ok"))) for st in steps
                  for tc, tr in zip(st.get("tool_calls") or [], st.get("tool_results") or [])]
         read += 1
@@ -145,9 +201,9 @@ def main(argv: list[str] | None = None) -> int:
     print(f"{'':12s} {names[0]:>34s} {names[1]:>34s}")
     # tool_checks: absent before v27, when the tools took any argument value
     # (WHAT_FAILED #35) -- two cells that differ here are not one experiment.
-    defaults = {"guardrail": "off", "tool_checks": 1}
-    for key in ("policy_mode", "exposure", "guardrail", "tool_checks", "requested_model",
-                "simulator"):
+    defaults = {"guardrail": "off", "closing": "off", "tool_checks": 1}
+    for key in ("policy_mode", "exposure", "guardrail", "closing", "tool_checks",
+                "requested_model", "simulator"):
         default = defaults.get(key)
         print(f"{key:12s} {str(heads[0].get(key, default)):>34s} "
               f"{str(heads[1].get(key, default)):>34s}")
@@ -210,6 +266,9 @@ def main(argv: list[str] | None = None) -> int:
                     continue
                 for tool, quote in (st.get("guardrail") or {}).get("claims", []):
                     print(f"    {tid:24s} {tool}: \"{quote[:110]}\"")
+
+    for name, cell, eps in zip(names, cells, (ea, eb)):
+        _print_closing(name, _closings(cell, eps, tasks))
 
     def per_trap(eps):
         d: dict[str, list[bool]] = defaultdict(list)
