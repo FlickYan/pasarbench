@@ -30,6 +30,7 @@ from typing import Any
 _ALIAS_WARNED: set[tuple[str, str]] = set()
 
 from ..db import Database
+from ..tools import CHECKS as TOOL_CHECKS
 from ..tools import DEFAULT_TOOLS
 from ..tools import call as tool_call
 from ..tools import schemas
@@ -120,6 +121,10 @@ def run_episode(
         "agent_temperature": getattr(backend, "temperature", None),
         # Only when on, so the headers of every run before it stay as they were.
         **({"guardrail": guardrail} if guardrail != "off" else {}),
+        # How strictly the tools checked their arguments (tools.CHECKS). A
+        # replay runs the calls under the same checks; a header without this
+        # ran before v27, under version 1.
+        "tool_checks": TOOL_CHECKS,
     })
 
     steps: list[StepRecord] = []
@@ -179,7 +184,9 @@ def run_episode(
 
         results: list[dict[str, Any]] = []
         for tc in resp.tool_calls:
-            if "__malformed__" in tc.arguments:
+            # Valid JSON need not be an object: a bare number here used to raise
+            # and end the sweep. The tools refuse a non-object themselves.
+            if isinstance(tc.arguments, dict) and "__malformed__" in tc.arguments:
                 out = {"ok": False,
                        "error": "arguments were not valid JSON; re-emit them as a JSON object"}
             elif tc.name not in names:
@@ -194,7 +201,7 @@ def run_episode(
                 # Still answer the call. An orphaned tool_call breaks the next request.
                 out = {"ok": False, "error": "tool call budget exhausted for this episode"}
             else:
-                out = tool_call(db, tc.name, tc.arguments)
+                out = tool_call(db, tc.name, tc.arguments, checks=TOOL_CHECKS)
                 tracker.tool_calls += 1
             payload = json.dumps(out, ensure_ascii=False, default=str)
             state.messages.append(Message(role="tool", name=tc.name,
