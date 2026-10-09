@@ -313,6 +313,10 @@ def build(run_dir: str | Path, tasks: dict[str, Any], folds: dict[str, Any],
         raise SystemExit(f"{run_dir} ran with the claim guardrail: its held-back "
                          f"replies and the notes that answered them are not turns "
                          f"to train on. Collect without --guardrail")
+    if any(e["header"].get("closing", "off") != "off" for e in eps):
+        raise SystemExit(f"{run_dir} ran with the closing check: the note after the "
+                         f"customer left is the harness's, not a turn to train on. "
+                         f"Collect without --closing")
 
     by_task: dict[str, list[dict]] = defaultdict(list)
     for e in eps:
