@@ -221,10 +221,18 @@ def annotate(args) -> None:
 def _render(path: str) -> str:
     recs = [json.loads(l) for l in Path(path).read_text().splitlines() if l.strip()]
     out = []
+    left = False
     for r in recs:
         if r.get("type") == "step":
+            if r.get("closing") and not left:
+                out.append("--- the customer has left: closing check, which the customer "
+                           "never sees ---")
+                left = True
             if r.get("model_content"):
-                out.append(f"AGENT: {r['model_content']}")
+                tag = ("AGENT (held back by the claim guardrail, never sent)"
+                       if r.get("guardrail") else
+                       "AGENT (case note, never sent)" if r.get("closing") else "AGENT")
+                out.append(f"{tag}: {r['model_content']}")
             for tc in r.get("tool_calls", []):
                 out.append(f"   -> {tc['name']}({json.dumps(tc['arguments'])[:200]})")
             for tr in r.get("tool_results", []):
