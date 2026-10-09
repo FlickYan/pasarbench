@@ -297,7 +297,7 @@ def run_cell(strategy_name: str, backend_factory, simulator_factory, tasks: list
              k: int, budget: Budget, policy_mode: str, trace_root: str, run_id: str,
              summarizer=None, exposure_spec: str = "", workers: int = 1,
              save_messages: bool = False, resume: bool = False,
-             guardrail: str = "off") -> dict:
+             guardrail: str = "off", closing: str = "off") -> dict:
     strategy = make_strategy(strategy_name, summarizer)
     exposure = build_exposure(exposure_spec, ALL_SOLUTIONS) if exposure_spec else None
     cell = strategy_name if not exposure_spec else f"{strategy_name}+{exposure_spec}"
@@ -318,7 +318,7 @@ def run_cell(strategy_name: str, backend_factory, simulator_factory, tasks: list
                           simulator=simulator_factory(task),
                           context=strategy, budget=budget, trace=w,
                           policy_mode=policy_mode, exposure=exposure,
-                          run_index=seed, guardrail=guardrail)
+                          run_index=seed, guardrail=guardrail, closing=closing)
         v = verify(task, db, n_turns=res.budget["steps"],
                    tokens=res.budget["tokens"])
         if save_messages:
@@ -362,12 +362,14 @@ def run_cell(strategy_name: str, backend_factory, simulator_factory, tasks: list
                     or head.get("context") != strategy.name
                     or head.get("policy_mode", policy_mode) != policy_mode
                     or head.get("guardrail", "off") != guardrail
+                    or head.get("closing", "off") != closing
                     or head.get("tool_checks", 1) != TOOL_CHECKS):
                 raise SystemExit(
                     f"--resume: {cell_dir} already holds episodes from a different "
                     f"setup (model {head.get('requested_model')!r}, simulator "
                     f"{head.get('simulator')!r}, policy {head.get('policy_mode')!r}, "
-                    f"guardrail {head.get('guardrail', 'off')!r}, tool checks "
+                    f"guardrail {head.get('guardrail', 'off')!r}, closing "
+                    f"{head.get('closing', 'off')!r}, tool checks "
                     f"v{head.get('tool_checks', 1)}). Use a new --run-id.")
             if save_messages and not done["has_messages"]:
                 todo.append((task, seed))
@@ -533,6 +535,11 @@ def main() -> None:
                     help="claims: hold back a reply that claims a write action no "
                          "tool call has done, and tell the agent instead "
                          "(pasarbench/harness/guardrail.py; docs/RUNBOOK.md, 1i)")
+    ap.add_argument("--closing", default="off", choices=["off", "check"],
+                    help="check: when the customer leaves, give the agent one note "
+                         "to go over the case against the policy and make any call "
+                         "it requires that was not made "
+                         "(pasarbench/harness/closing.py; docs/RUNBOOK.md, 1j)")
     ap.add_argument("-k", type=int, default=1)
     ap.add_argument("--suite", default="core", choices=["core", "generated", "all"])
     ap.add_argument("--sample", type=int, default=0,
@@ -615,7 +622,8 @@ def main() -> None:
                                  args.policy_mode, args.trace_root, run_id,
                                  summarizer, exp, args.workers,
                                  save_messages=args.save_messages,
-                                 resume=args.resume, guardrail=args.guardrail))
+                                 resume=args.resume, guardrail=args.guardrail,
+                                 closing=args.closing))
 
     print("\n" + markdown_table(rows))
 
