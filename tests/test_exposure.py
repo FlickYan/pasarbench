@@ -800,6 +800,23 @@ def test_claim_guardrail_report():
           and counts.get("G/full+search-300") == [2, 2, 0]
           and {h[3] for h in hits} == {"escalate_to_human"}, str((counts, hits)))
 
+    import json
+    check("both cells record the tool checks they ran under, and nothing is flagged",
+          re.search(r"tool_checks\s+2\s+2", text) is not None
+          and "different tool checks" not in text, text[:800])
+    for f in (tmp / "C" / "full+search-300").glob("*.jsonl"):
+        lines = f.read_text().splitlines()
+        head = json.loads(lines[0])
+        head.pop("tool_checks", None)
+        f.write_text("\n".join([json.dumps(head), *lines[1:]]) + "\n")
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out):
+        cc.main([str(tmp / "C" / "full+search-300"), str(tmp / "G" / "full+search-300")])
+    check("…and a cell from before v27 set against one after is flagged as not one "
+          "experiment (WHAT_FAILED #35)",
+          re.search(r"tool_checks\s+1\s+2", out.getvalue()) is not None
+          and "different tool checks" in out.getvalue(), out.getvalue()[:800])
+
 
 def main() -> int:
     test_distractors()
