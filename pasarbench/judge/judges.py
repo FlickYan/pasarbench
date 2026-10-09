@@ -43,6 +43,11 @@ def render_transcript(messages: list[Message], include_tools: bool = True,
     out, turn = [], 0
     for m in messages:
         if m.role == "system":
+            # The opening one is the agent's prompt. One further on is a note
+            # about the conversation -- the customer leaving before the
+            # closing check (scripts/run_judges.py) -- and is shown as one.
+            if out:
+                out.append(f"      [{m.content}]")
             continue
         if m.role == "user":
             out.append(f"[{turn}] CUSTOMER: {m.content}")
