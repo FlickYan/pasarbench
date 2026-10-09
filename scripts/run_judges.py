@@ -52,6 +52,7 @@ from pasarbench.judge.judges import DecomposedJudge, NaiveJudge      # noqa: E40
 from pasarbench.judge.rubric import is_complete, overall_acceptable  # noqa: E402
 from pasarbench.claims import ENGLISH, false_claims                    # noqa: E402
 from pasarbench.harness.replay import replay_payloads                  # noqa: E402
+from pasarbench.harness.trace import customer_saw                      # noqa: E402
 
 ROOT = Path("data/labels")
 
@@ -77,16 +78,23 @@ def messages_from_trace(path: str, payloads: list[str | None] | None = None
 
     msgs: list[Message] = [Message("system", f"[{head.get('policy_mode', '?')} mode]")]
     turn, k = 1, 0
+    left = False
     for st in steps:
         if st.get("guardrail"):
             # Held back by the claim guardrail: the customer never saw it, and
             # no customer turn followed it.
             continue
+        if st.get("closing") and not left:
+            # The closing check (harness/closing.py): its calls ran, so they
+            # stay, but the customer had gone -- said so, as judges.py renders
+            # a system note mid-conversation -- and its case note is dropped.
+            msgs.append(Message("system", CLOSING_NOTE))
+            left = True
         calls = [ToolCall(name=tc["name"], arguments=tc.get("arguments", {}),
                           id=tc.get("id", "")) for tc in st.get("tool_calls", [])]
-        if st.get("model_content") or calls:
-            msgs.append(Message("assistant", st.get("model_content", ""),
-                                tool_calls=calls))
+        text = st.get("model_content", "") if customer_saw(st) else ""
+        if text or calls:
+            msgs.append(Message("assistant", text, tool_calls=calls))
         for tc, tr in zip(calls, st.get("tool_results", [])):
             real = payloads[k] if payloads and k < len(payloads) else None
             k += 1
@@ -96,12 +104,17 @@ def messages_from_trace(path: str, payloads: list[str | None] | None = None
                 {"ok": tr.get("ok"), "error": tr.get("error"),
                  "args_echo": tr.get("args")}, ensure_ascii=False)
             msgs.append(Message("tool", body, tool_call_id=tc.id, name=tc.name))
-        if not calls:
+        if not calls and not st.get("closing"):
             ev = events.get(turn)
             if ev and ev.get("text"):
                 msgs.append(Message("user", ev["text"]))
             turn += 1
     return msgs
+
+
+CLOSING_NOTE = ("The customer has left the conversation. The agent was asked to check the "
+                "case against the policy before it closed; the calls below ran then, and "
+                "the customer saw none of it.")
 
 
 def judge_vs_verifier(cell: Path, mk, mode: str = "batched", workers: int = 8,
@@ -147,7 +160,7 @@ def judge_vs_verifier(cell: Path, mk, mode: str = "batched", workers: int = 8,
         nj = NaiveJudge(mk(), context=ctx).judge(f.stem, msgs)
         dj = DecomposedJudge(mk(), mode=mode, context=ctx).judge(f.stem, msgs)
         texts = [st["model_content"] for st in steps
-                 if (st.get("model_content") or "").strip() and not st.get("guardrail")]
+                 if (st.get("model_content") or "").strip() and customer_saw(st)]
         calls = [(tc["name"], bool(tr.get("ok"))) for st in steps
                  for tc, tr in zip(st.get("tool_calls", []), st.get("tool_results", []))]
         read = task is not None and head.get("language") in ENGLISH
