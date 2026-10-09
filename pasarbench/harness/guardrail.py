@@ -102,6 +102,8 @@ def review(steps: list[dict[str, Any]]) -> dict[str, Any]:
             held.append(tools)
             pending |= set(tools)
             continue
+        if st.get("closing"):
+            continue            # a case note after the customer left (closing.py)
         # A reply the customer saw.
         now = [(t, q) for t, q in own_claims(st.get("model_content") or "")
                if not backed(t, done)]
