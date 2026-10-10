@@ -610,6 +610,8 @@ def test_closing_check():
                                  "reason": "refund already issued for this order"})
     note = "Escalated: duplicate refund request; the refund had already been issued."
     plan = [look, explain, esc, note]
+    other = ("escalate_to_human", {"order_id": "O1009", "category": "other",
+                                   "reason": "customer asks about a refund"})
 
     def run(plan, mode, task=task, last_words=bye, **kw):
         cust, rec = Customer(last_words), Rec()
@@ -636,6 +638,15 @@ def test_closing_check():
           and r["noted"] and r["ran"] and not r["cut"]
           and r["first"] == ["escalate_to_human"] and r["writes"] == [("escalate_to_human", True)]
           and not r["forbidden"] and "closing_check" in rec.events, str((r, rec.events)))
+    check("…and the verdict as the customer left the case, beside the one at the end, says "
+          "what the phase changed: a fail it turned into a pass",
+          r["at_note"] is False and r["at_end"] is True and not r["unscored"], str(r))
+    _, _, quiet, _, _ = run(plan, "check", last_words="")
+    check("…with what she last said, so a rescue after \"yes, go ahead\" reads as the turn "
+          "the agent never had, not a second look (WHAT_FAILED #38) -- and a customer who "
+          "left without a word said nothing, which is not the same as no record",
+          r["left_saying"] == bye and cl.review(quiet.recs, task)["left_saying"] == ""
+          and cl.review([], task)["left_saying"] is None, str(r.get("left_saying")))
     check("…the agent reads the customer's last words, then the note",
           seen.seen[2][-2:] == [("user", bye), ("user", cl.NOTE)], str(seen.seen[2][-3:]))
     check("…the customer is asked for nothing after leaving and never sees the note; the "
@@ -662,6 +673,38 @@ def test_closing_check():
           "fails and the review names the call",
           [t for t, _ in r["forbidden"]] == ["issue_refund"] and not verify(task, db).passed,
           str(r))
+    _, _, rec, db, _ = run([look, ver, esc, explain, refund, "Refunded again."], "check")
+    r = cl.review(rec.recs, task)
+    check("…and when the case had passed as the customer left it, the review says the phase "
+          "broke a pass", r["at_note"] is True and r["at_end"] is False
+          and [t for t, _ in r["forbidden"]] == ["issue_refund"], str(r))
+    _, _, rec, _, _ = run([look, esc, explain, other, "Also filed under other."], "check")
+    r = cl.review(rec.recs, task)
+    check("a write no check asks for or forbids is listed to be read, not counted either way",
+          [t for t, _ in r["unscored"]] == ["escalate_to_human"] and not r["repeated"]
+          and r["at_note"] is True and r["at_end"] is True, str(r))
+    stale = [{**x, "task_digest": "0" * 16} if x.get("type") == "header" else x for x in rec.recs]
+    r = cl.review(stale, task)
+    check("…and an episode whose task has changed since the run is not read at all -- no "
+          "verdicts, no lists -- as rescore.py leaves its recorded verdict alone",
+          r["not_replayed"] == "the task changed since the run" and r["at_note"] is None
+          and r["at_end"] is None and not r["unscored"] and not r["writes"], str(r))
+    # T02 counts the return in its database check, though no required action
+    # names initiate_return: a return opened after the customer left is seen.
+    t02 = BY_ID["T02"]
+    cod = [("verify_identity", {"user_id": "U001", "phone_last4": "6789"}),
+           ("check_return_eligibility", {"order_id": "O1001", "order_item_id": "OI1"}),
+           ("issue_store_credit", {"user_id": "U001", "amount_minor": 17800, "currency": "MYR",
+                                   "reason": "broken pumps", "order_id": "O1001"}),
+           "Store credit of MYR 178.00 is in your account."]
+    ret = ("initiate_return", {"order_id": "O1001", "order_item_id": "OI1",
+                               "reason": "broken pumps", "photo_evidence_provided": False})
+    _, _, rec, db, _ = run(cod + [ret, "Return opened."], "check", task=t02)
+    r = cl.review(rec.recs, t02)
+    check("a write a database check needs is not one no check sees: replayed without it the "
+          "verdict changes, so it is the rescue, though no required action names it",
+          r["at_note"] is False and r["at_end"] is True and verify(t02, db).passed
+          and r["first"] == [] and r["unscored"] == [] and r["not_replayed"] is None, str(r))
 
     _, _, rec, _, _ = run([look, esc, explain, esc, "Escalated again."], "check")
     r = cl.review(rec.recs, task)
@@ -669,8 +712,6 @@ def test_closing_check():
           "made again, it is a second ticket for one case, and the review says so",
           r["first"] == [] and r["writes"] == [("escalate_to_human", True)]
           and [t for t, _ in r["repeated"]] == ["escalate_to_human"], str(r))
-    other = ("escalate_to_human", {"order_id": "O1009", "category": "other",
-                                   "reason": "customer asks about a refund"})
     _, _, rec, _, _ = run([look, other, explain, esc, "Escalated as a duplicate refund."],
                           "check")
     r = cl.review(rec.recs, task)
