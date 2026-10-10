@@ -840,12 +840,14 @@ rescued 27 episodes and 23 had a cost: 1j's 17, and here 6 repeats. 27 outnumber
   escalation had failed on order "unknown". Those two are the only replies the
   guardrail's reading flags in either arm.
 
-So 22 rescues against 21 costs — or 24, if the three refunds after a
-cancellation below are costs, which #37 decides. And 19 of the 21 are one thing:
-a call made again, which no conversation in either arm of either run did on its
-own (0 of 1,290). A note that told the agent to read its own calls before making
-one is aimed at exactly that, and is a new intervention, for tasks it has not
-seen.
+So 22 rescues against 21 costs, and 23 with the three refunds after a
+cancellation below read the way #37 has since decided: in the world that run
+had, nothing else returned the money, so refunding a captured payment was right;
+refunding T03's authorization, twice, paid back money that was never taken. And
+19 of the 21 are one thing: a call made again, which no conversation in either
+arm of either run did on its own (0 of 1,290). A note that told the agent to
+read its own calls before making one is aimed at exactly that, and is a new
+intervention, for tasks it has not seen.
 
 **What the checks cannot say.** The three writes no check scores are refunds
 after a cancellation, each a promise kept: the agent had told the customer "the
@@ -879,6 +881,85 @@ not counted as the note's.
 
 **Before any new run:** decide #37 and #38. Each changes what every later run
 measures, and a run made before the decision is one more run to set aside.
+Decided, and both fixed in v31 — 1l checks them.
+
+### 1l. Do the two fixes do what they say? (API only, no GPU)
+
+v31 changes the world and the customer, so every run from it on measures
+something slightly different from the runs before it:
+
+- **The tools (#37).** Since tool checks version 3 a cancellation settles the
+  order's payment, as the platforms the suite models do: a captured payment is
+  refunded to its method — less anything an agent already paid back for the
+  order — a card authorization released, a cash-on-delivery order owes nothing,
+  and the tool's result says which. Once the payment is refunded or released, a
+  refund or store credit for the order is refused as paying it twice, and an
+  authorization is never refunded.
+- **The customer (#38).** Customer 2 is told to end the conversation only once
+  the agent says it has done what she needs, and never in a message that agrees
+  to something. Customer 1 is kept, byte for byte, as `--customer 1` — a run
+  with her has the new tools all the same: it compares the customers, it does
+  not re-run an old run. Whether customer 2 waits is what this run shows.
+
+Old runs replay under the tools they ran with: all 11,974 recorded episodes
+re-score exactly as before v31. A new run set against an old one is not one
+experiment, and `compare_cells.py` says so — it flags different tool checks and
+different customers (the simulator's name records which: `llm-user/v2:...`).
+
+One run checks both, on the six traps where they bite — the cancellations, and
+every trap where #38 was recorded: the voucher offer and the hazmat and
+perishable refunds the agent asks to confirm, where all 63 failures it caused
+were, and the livestream refund and the identity hand-off among the closing
+check's rescues (1j, 1k) — customer 1 against customer 2, same day, both under
+the new tools:
+
+```bash
+set -a; . ./.env; set +a
+TRAPS=cancel_while_processing,out_of_window_offer_voucher,hazmat_refund_without_return,perishable_refund_without_return,livestream_claim_overrides_window,identity_verification_failure
+for C in 1 2; do
+  python -m pasarbench.sweep \
+    --backend openai --model deepseek-v4-pro --base-url https://api.deepseek.com/v1 \
+    --extra-body '{"thinking":{"type":"disabled"}}' \
+    --simulator openai --sim-model qwen3.8-flash \
+    --sim-url https://dashscope-intl.aliyuncs.com/compatible-mode/v1 \
+    --sim-extra-body '{"reasoning_effort":"low"}' \
+    --suite all --traps $TRAPS --strategies full --exposure search-300 -k 3 \
+    --policy-mode preload-named --customer $C --run-id O-c$C --workers 8
+done
+python scripts/compare_cells.py traces/O-c1/full+search-300 traces/O-c2/full+search-300 --endings > O.txt
+```
+
+84 tasks, 252 episodes an arm, 504 in all: about half of 1k. The header will
+flag the two customers — that is the experiment. `--endings` lists every episode
+the customer ended, passes too: the agent's last reply, then her last words — or
+that she said nothing more: customer 2 is told to end with `###END###` alone.
+
+**The reading, fixed before the run:**
+
+- **The customer works** if none of customer 2's endings is a yes to something
+  the agent had offered or asked to confirm and had not yet done, nor an end
+  with no answer to it — read every one; "no, that's all" is not a yes, nor is
+  an offer without a question mark missed. Customer 1's endings, the same day,
+  show what the old customer still does. If customer 2 leaves on a yes, the rule
+  is not enough, and #38's other fix — a turn on her last message — is next; if
+  she leaves without an answer, the rule needs other words.
+- **The paired line must not say WORSE** (p < 0.05) — and if it does, read the
+  tasks that got worse before calling it harm. A customer who waits can expose
+  what customer 1's early exit hid: she agreed to something the policy forbids
+  and left before the agent made it. That is the measurement corrected, not the
+  agent made worse; a WORSE line with no such episode behind it is the rule
+  changing something else. Steps and tokens per episode are secondary: she stays
+  a turn longer when she waits.
+- **The tools** are right by construction (`tests/test_harness.py`). The run
+  adds two readings: what the agent tells the customer once a cancellation has
+  settled the payment — read the English replies after one; they should say what
+  the tool's note said — and the refunds or credit the tools refused as already
+  settled, which `compare_cells.py` counts: only those in a step after the
+  cancellation are an agent that had read the note and tried to pay again (one
+  response can hold both calls, and then the refusal comes first).
+- **Not a result about the agent.** Both arms are the same agent; what differs
+  is the customer. The closing check's confirmation still needs new tasks of
+  1j's traps, and is measured with customer 2.
 
 ---
 
