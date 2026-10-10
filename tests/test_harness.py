@@ -469,7 +469,7 @@ def test_tool_input_checks():
     db = fresh()
     bad = {**good, "order_id": "unknown", "category": "duplicate_refund_claim"}
     check("under version 1, what every run before v27 ran under, both were taken",
-          CHECKS == 2 and call(db, "escalate_to_human", bad, checks=1)["ok"]
+          CHECKS >= 2 and call(db, "escalate_to_human", bad, checks=1)["ok"]
           and len(db.t("escalations")) == 1)
 
     # A run recorded before v27: no tool_checks in its header, and an
@@ -872,6 +872,351 @@ def test_context_keeps_the_closing_note():
     check("…and before the calls that answered it", all(order.values()), str(order))
 
 
+def test_cancellation_settles():
+    """WHAT_FAILED #37. Since tools v3 a cancellation settles the order's payment,
+    as the platforms the suite models do -- a captured payment refunded to its
+    method, a card authorization released, a COD order owing nothing -- and the
+    result says which; a refund afterwards is refused as a second one. Before
+    it the agent promised the money back and nothing sent it. A run recorded
+    under v2 replays as it ran, and a refund claim the cancellation made true
+    is backed."""
+    print("\n=== a cancellation settles the payment (tools v3) ===")
+    import hashlib
+    import json
+
+    from pasarbench.harness import guardrail as g
+    from pasarbench.harness.replay import replay
+    from pasarbench.rescore import all_tasks
+    from pasarbench.tasks import world_digest
+    from pasarbench.tools import CHECKS, call
+
+    every = all_tasks()
+
+    def cancel(tid, checks=CHECKS):
+        t = every[tid]
+        db = Database.fresh(t.db_patch)
+        oid = t.hidden_facts["order_id"]
+        call(db, "verify_identity", {"user_id": t.user_id,
+                                     "phone_last4": t.hidden_facts["phone_last4"]}, checks=checks)
+        return t, db, oid, call(db, "cancel_order", {"order_id": oid, "reason": "changed mind"},
+                                checks=checks)
+
+    def refund(db, oid, checks=CHECKS):
+        return call(db, "issue_refund", {"order_id": oid, "amount_minor": 1000, "method": "card",
+                                         "reason": "order cancelled"}, checks=checks)
+
+    t, db, oid, r = cancel("CWP-SG.sg-en")
+    pay = db.where("payments", order_id=oid)[0]
+    again = refund(db, oid)
+    from pasarbench.tools import SETTLED
+    check("a captured card payment is refunded when the order is cancelled, and the agent "
+          "is told how much went where, and not to refund it again -- on the payment, not "
+          "as a refund an agent issued",
+          CHECKS == 3 and r["ok"] and r.get("payment") == "refunded"
+          and r.get("note") == "SGD 62.00 was refunded to the card ending 4242 automatically. "
+                               "Do not issue a separate refund."
+          and pay["status"] == "refunded" and not db.t("refunds")
+          and [(a.tool, a.ok, a.args.get("amount_minor")) for a in db.action_log
+               if a.tool == "refund_on_cancel"] == [("refund_on_cancel", True, 6200)], str(r))
+    check("…a refund after it is refused as a second one, logged as a failed attempt, and "
+          "the cancellation task still passes",
+          not again["ok"] and again["error"] == SETTLED + "the payment was refunded then, so "
+                                                          "there is nothing left to refund"
+          and [(a.tool, a.ok) for a in db.action_log][-1] == ("issue_refund", False)
+          and not db.t("refunds") and verify(t, db).passed, str(again))
+    _, db, oid, r = cancel("T03")
+    check("an authorization is released, not refunded: the customer was never charged",
+          r.get("payment") == "released"
+          and r.get("note") == "The authorization of SGD 129.00 on the card ending 4242 was "
+                               "released: the customer was never charged, and nothing is "
+                               "refunded."
+          and db.where("payments", order_id=oid)[0]["status"] == "released"
+          and refund(db, oid).get("error") == SETTLED + "the authorization was released and "
+                                                        "the customer was never charged, so "
+                                                        "there is nothing to refund", str(r))
+    _, db, oid, r = cancel("CCNRD-MY")
+    check("a cash-on-delivery order collected nothing, so nothing moves",
+          r.get("payment") == "nothing collected"
+          and r.get("note") == "Nothing was collected for this order, so nothing is refunded."
+          and db.where("payments", order_id=oid)[0]["status"] == "pending"
+          and "COD" in refund(db, oid).get("error", ""), str(r))
+
+    def first(tid, *calls_):
+        """Calls made after verifying and before cancelling."""
+        t = every[tid]
+        db = Database.fresh(t.db_patch)
+        oid = t.hidden_facts["order_id"]
+        call(db, "verify_identity", {"user_id": t.user_id,
+                                     "phone_last4": t.hidden_facts["phone_last4"]})
+        before = [call(db, name, {**a, "order_id": oid}) for name, a in calls_]
+        return db, oid, before, call(db, "cancel_order", {"order_id": oid, "reason": "x"})
+
+    whole = ("issue_refund", {"amount_minor": 6200, "method": "card", "reason": "r"})
+    part = ("issue_refund", {"amount_minor": 2000, "method": "card", "reason": "r"})
+    db, oid, _, r = first("CWP-SG.sg-en", whole)
+    db2, _, _, r2 = first("CWP-SG.sg-en", part)
+    check("what an agent already paid back is not paid again: a refund before the "
+          "cancellation leaves nothing for it to refund, part of one leaves the rest",
+          r.get("note") == "The whole SGD 62.00 had already been paid back for this order, so "
+                           "nothing more is refunded." and len(db.t("refunds")) == 1
+          and "refund_on_cancel" not in [a.tool for a in db.action_log]
+          and r2.get("note") == "SGD 42.00 was refunded to the card ending 4242 automatically "
+                                "(SGD 20.00 had already been paid back). Do not issue a "
+                                "separate refund."
+          and [a.args["amount_minor"] for a in db2.action_log
+               if a.tool == "refund_on_cancel"] == [4200], str((r, r2)))
+    _, db, oid, r = cancel("CWP-SG.sg-en")
+    credit = {"user_id": "GU-SG", "amount_minor": 1000, "currency": "SGD", "reason": "sorry"}
+    named = call(db, "issue_store_credit", {**credit, "order_id": oid})
+    check("…nor as store credit against the order once it is refunded -- while credit "
+          "that names no order is goodwill, and goes through",
+          not named["ok"] and named["error"] == SETTLED + "the payment was refunded then, and "
+                                                          "store credit for this order would "
+                                                          "pay it back twice"
+          and call(db, "issue_store_credit", credit)["ok"], str(named))
+    sgd = ("issue_store_credit", {"user_id": "GU-SG", "amount_minor": 2000, "currency": "SGD",
+                                  "reason": "r"})
+    idr = ("issue_store_credit", {**sgd[1], "currency": "IDR"})
+    db, oid, _, r = first("CWP-SG.sg-en", sgd)
+    db2, _, _, r2 = first("CWP-SG.sg-en", idr)
+    check("…store credit granted against the order counts as paid back, in its currency; "
+          "IDR 2,000 is not SGD 20.00, and does not stop the refund",
+          "SGD 42.00 was refunded" in r.get("note", "")
+          and [a.args["amount_minor"] for a in db.action_log if a.tool == "refund_on_cancel"]
+          == [4200] and "SGD 62.00 was refunded" in r2.get("note", "")
+          and "already" not in r2.get("note", ""), str((r, r2)))
+    db, oid, before, r = first("T03", ("issue_refund", {"amount_minor": 12900,
+                                                        "method": "card", "reason": "r"}))
+    after = call(db, "issue_store_credit", {"user_id": every["T03"].user_id, "amount_minor": 1000,
+                                            "currency": "SGD", "reason": "r", "order_id": oid})
+    check("a payment only authorized is never refunded, before the cancellation or after, nor "
+          "paid back as credit once released: nothing was charged (P4.3's reason) -- and its "
+          "release logs no refund",
+          not before[0]["ok"] and "only authorized" in before[0]["error"]
+          and r.get("payment") == "released" and not db.t("refunds")
+          and after.get("error") == SETTLED + "the authorization was released and the "
+                                              "customer was never charged, so there is "
+                                              "nothing to pay back"
+          and "refund_on_cancel" not in [a.tool for a in db.action_log], str((before, after)))
+    t = every["T03"]
+    dbu = Database.fresh(t.db_patch)
+    blind = call(dbu, "issue_refund", {"order_id": "O1002", "amount_minor": 100, "method": "card",
+                                       "reason": "r"})
+    check("…and a caller not yet verified is told to verify, not what the payment is (P1.1)",
+          not blind["ok"] and "identity not verified" in blind["error"], str(blind))
+    t3 = every["T03"]
+    db0 = Database.fresh(t3.db_patch)
+    call(db0, "verify_identity", {"user_id": t3.user_id,
+                                  "phone_last4": t3.hidden_facts["phone_last4"]})
+    goodwill = call(db0, "issue_store_credit", {"user_id": t3.user_id, "amount_minor": 1000,
+                                                "currency": "SGD", "reason": "sorry",
+                                                "order_id": "O1002"})
+    check("…while store credit before the cancellation is goodwill, and goes through: only a "
+          "refund of what was never charged is refused",
+          goodwill["ok"] and len(db0.t("store_credit_grants")) == 1, str(goodwill))
+    rows = {}
+    for x in every.values():
+        w = Database.fresh(x.db_patch)
+        for o in w.t("orders"):
+            rows[(x.task_id, o)] = len(w.where("payments", order_id=o))
+    check("every order in every task's world has one payment, the only kind the tools settle",
+          len(rows) > 2000 and set(rows.values()) == {1}, str(set(rows.values())))
+    t = every["CWP-SG.sg-en"]
+    oid = t.hidden_facts["order_id"]
+
+    def world(change):
+        db = Database.fresh(t.db_patch)
+        change(db, db.where("payments", order_id=oid)[0])
+        call(db, "verify_identity", {"user_id": t.user_id, "phone_last4": "6704"})
+        return db, call(db, "cancel_order", {"order_id": oid, "reason": "x"})
+
+    def split(db, pay):
+        pay["amount_minor"] = 5200
+        db.t("payments")["PAY-2"] = {**pay, "payment_id": "PAY-2", "amount_minor": 1000}
+    dbs, rs = world(split)
+    check("an order paid in parts is left as it was, and the result says so: the tools do not "
+          "guess which part to refund, nor refuse a refund they did not settle",
+          rs.get("payment") == "unsettled"
+          and rs.get("note") == "The payment was left as it was: the order was paid in 2 parts, "
+                                "which a cancellation does not settle. Nothing was refunded."
+          and {p["status"] for p in dbs.where("payments", order_id=oid)} == {"captured"}
+          and "refund_on_cancel" not in [a.tool for a in dbs.action_log]
+          and call(dbs, "issue_refund", {"order_id": oid, "amount_minor": 1000,
+                                         "method": "card", "reason": "r"})["ok"], str(rs))
+    dbo, ro = world(lambda db, pay: pay.update(status="collected"))
+    dbn, rn = world(lambda db, pay: db.t("payments").pop(pay["payment_id"]))
+    check("…nor a payment a cancellation does not settle; an order with no payment collected "
+          "nothing",
+          ro.get("note") == "The payment was left as it was: its status is 'collected', which a "
+                            "cancellation does not settle. Nothing was refunded."
+          and dbo.where("payments", order_id=oid)[0]["status"] == "collected"
+          and rn.get("payment") == "nothing collected", str((ro, rn)))
+    unread = {}
+    for field in ("currency", "method"):        # read first, and last, before any change
+        dbm, rm = world(lambda db, pay: pay.pop(field))
+        unread[field] = (rm.get("ok"), rm.get("payment"), "nothing was refunded" in rm["note"],
+                         dbm.where("payments", order_id=oid)[0]["status"],
+                         "refund_on_cancel" in [a.tool for a in dbm.action_log])
+    check("a payment the tools cannot read stops nothing: the cancellation stands, the result "
+          "says the payment was not settled, and no money moved",
+          set(unread.values()) == {(True, "unsettled", True, "captured", False)}, str(unread))
+    dbx = Database.fresh(t3.db_patch)          # O1002 cancelled and released, its owner
+    dbx.row("orders", "O1002")["status"] = "cancelled"          # not verified here
+    dbx.where("payments", order_id="O1002")[0]["status"] = "released"
+    other = next(u for u in dbx.t("users") if u != dbx.row("orders", "O1002")["user_id"])
+    dbx.verified.add(other)
+    peek = call(dbx, "issue_store_credit", {"user_id": other, "amount_minor": 100,
+                                            "currency": "SGD", "reason": "r",
+                                            "order_id": "O1002"})
+    check("…and a customer verified as someone else learns nothing about this order's payment",
+          SETTLED not in str(peek.get("error")), str(peek))
+    t = every["CWP-SG.sg-en"]
+    dbw = Database.fresh(t.db_patch)
+    dbw.where("payments", order_id=t.hidden_facts["order_id"])[0]["method"] = "ewallet"
+    call(dbw, "verify_identity", {"user_id": t.user_id, "phone_last4": "6704"})
+    rw = call(dbw, "cancel_order", {"order_id": t.hidden_facts["order_id"], "reason": "x"})
+    check("…and the note names where the money went by the payment's method, not by a "
+          "card number an e-wallet payment also carries",
+          "refunded to the e-wallet" in rw.get("note", "") and "card" not in rw.get("note", ""),
+          str(rw))
+    _, db2, oid2, _ = cancel("T03", checks=2)
+    t, db, oid, r = cancel("CWP-SG.sg-en", checks=2)
+    check("under v2, as every recorded run before v31 ran, the cancellation leaves the payment "
+          "as it was and a refund after it goes through -- of an authorization too, as two in "
+          "1k's closing arm did",
+          r == {"ok": True, "order_id": oid, "new_status": "cancelled"}
+          and db.where("payments", order_id=oid)[0]["status"] == "captured"
+          and refund(db, oid, checks=2)["ok"] and refund(db2, oid2, checks=2)["ok"], str(r))
+
+    # A v2 run that cancelled and then refunded, as P-base did seven times:
+    # its trace replays under v2, and would not under v3.
+    calls = [("verify_identity", {"user_id": t.user_id, "phone_last4": "6704"}),
+             ("cancel_order", {"order_id": oid, "reason": "changed mind"}),
+             ("issue_refund", {"order_id": oid, "amount_minor": 6200, "method": "card",
+                               "reason": "order cancelled"})]
+    live = Database.fresh(t.db_patch)
+    results = []
+    for name, a in calls:
+        p = json.dumps(call(live, name, a, checks=2), ensure_ascii=False, default=str)
+        results.append({"name": name, "ok": json.loads(p)["ok"], "error": None,
+                        "result_chars": len(p),
+                        "result_sha1": hashlib.sha1(p.encode("utf-8")).hexdigest()[:12]})
+    step = {"type": "step", "step": 1, "tool_calls": [{"name": n, "arguments": a} for n, a in calls],
+            "tool_results": results}
+    head = {"type": "header", "task_id": t.task_id, "world_digest": world_digest(t)}
+    old = replay([{**head, "tool_checks": 2}, step], t)
+    new = replay([{**head, "tool_checks": 3}, step], t)
+    check("a run recorded under v2 replays under v2: every payload as recorded, the refund "
+          "in the table -- no recorded verdict moves",
+          not old.diverged and not old.mismatched and old.verified == 3
+          and len(old.db.t("refunds")) == 1, str((old.diverged, old.mismatched)))
+    check("…while the same calls under v3 would not reproduce: the refund is refused",
+          any("issue_refund" in d for d in new.diverged) and not new.db.t("refunds"),
+          str(new.diverged))
+
+    claim = "I've processed your refund of SGD 62.00 to your card."
+    _, db3, _, _ = cancel("CWP-SG.sg-en")
+    _, db2, _, _ = cancel("CWP-SG.sg-en", checks=2)
+    check("a refund claim after a cancellation that refunded is backed; after one that "
+          "did not, it is not -- as the claim was false in every run before v31",
+          g.unbacked(claim, db3.action_log) == []
+          and [x for x, _ in g.unbacked(claim, db2.action_log)] == ["issue_refund"])
+
+    class Rec:
+        def __init__(self):
+            self.meta, self.steps = {}, []
+
+        def open_episode(self, task_id, run_index=None, meta=None):
+            self.meta = meta or {}
+
+        def step(self, record):
+            self.steps.append(json.loads(json.dumps(record, default=str)))
+
+        def event(self, *a, **kw):
+            pass
+
+    rec = Rec()
+    plan = [calls[0], calls[1], "Done: your order is cancelled. " + claim]
+    res = run_episode(t, Database.fresh(t.db_patch), ScriptedBackend(plan), trace=rec)
+    results = [tr for st in rec.steps for tr in st.get("tool_results") or []]
+    check("the trace records what each cancellation did to the payment, which its digest "
+          "cannot show a reader, and the version it ran under",
+          [tr.get("payment") for tr in results] == [None, "refunded"]
+          and rec.meta.get("tool_checks") == 3 and res.stop_reason == StopReason.DONE,
+          str(results))
+    stripped = [{**st, "tool_results": [{k: v for k, v in tr.items() if k != "payment"}
+                                        for tr in st.get("tool_results") or []]}
+                for st in rec.steps]
+    released = [{**st, "tool_results": [{**tr, "payment": "released"} if tr.get("payment")
+                                        else tr for tr in st.get("tool_results") or []]}
+                for st in rec.steps]
+    check("…so a trace reader backs the claim the same way the live guardrail does -- and "
+          "only because the trace says the payment went back: a released authorization "
+          "backs no refund",
+          g.review(rec.steps)["delivered"] == []
+          and [x for x, _ in g.review(stripped)["delivered"]] == ["issue_refund"]
+          and [x for x, _ in g.review(released)["delivered"]] == ["issue_refund"],
+          str(g.review(rec.steps)))
+
+
+def test_customer_waits():
+    """WHAT_FAILED #38. The first simulated customer ended the conversation on her
+    yes -- "Sure, I'll take the voucher. Thanks." -- before the agent could act
+    on it. The second is told to wait for what she agreed to; the first is
+    kept, byte for byte, so a run can still have her (under today's tools),
+    and the name each run records says which one it had."""
+    print("\n=== the simulated customer waits for what she agreed to ===")
+    import hashlib
+    from types import SimpleNamespace
+
+    from pasarbench.harness.simulator import CUSTOMER, LLMUser
+    from pasarbench.sweep import make_simulator, select_tasks
+
+    class B:
+        name = "openai-compat:m"
+
+    new = LLMUser(B(), persona="P", facts={"order_id": "O1"})
+    check("the default customer is version 2, told to wait for what she agreed to be done, "
+          "and says so in her name",
+          CUSTOMER == 2 and new.name == "llm-user/v2:openai-compat:m"
+          and "Never put ###END### in a message that agrees to" in new._system()
+          and "HAS done what you need" in new._system(), new.name)
+    pinned = {"en": "f94e7df766425939", "id": "297a64e44b0796a5", "zh-SG": "92f631fe8f896ec2"}
+    got = {lang: hashlib.sha256(LLMUser(B(), persona="P", language=lang, customer=1,
+                                        facts={"order_id": "O1", "phone_last4": "1234"})
+                                ._system().encode()).hexdigest()[:16] for lang in pinned}
+    old = LLMUser(B(), persona="P", facts={}, customer=1)
+    check("version 1 is the prompt every run before v31 had, byte for byte, under the name "
+          "those runs recorded", got == pinned and old.name == "llm-user:openai-compat:m"
+          and "agrees to" not in old._system(), str(got))
+    try:
+        LLMUser(B(), persona="P", facts={}, customer=3)
+        refused = False
+    except ValueError:
+        refused = True
+    check("…and a version that does not exist is refused, not run as one that does", refused)
+    args = SimpleNamespace(sim_url="http://127.0.0.1:9/v1", base_url="http://127.0.0.1:9/v1",
+                           sim_api_key="", api_key="", sim_model="m", sim_extra_body="",
+                           extra_body="", gate_facts=False, customer=1)
+    task = BY_ID["T03"]
+    check("the sweep builds the customer the run asked for",
+          make_simulator("openai", args)(task).name.startswith("llm-user:")
+          and make_simulator("openai", SimpleNamespace(**{**vars(args), "customer": 2}))(task)
+          .name.startswith("llm-user/v2:"))
+    sel = SimpleNamespace(suite="all", languages="", tasks="", sample=0,
+                          traps="cancel_while_processing,out_of_window_offer_voucher")
+    picked = select_tasks(sel)
+    try:
+        select_tasks(SimpleNamespace(**{**vars(sel), "traps": "cancel_while_procesing"}))
+        typo = False
+    except SystemExit as e:
+        typo = "no such trap" in str(e)
+    check("--traps picks every task of the traps named, and refuses one that does not exist",
+          len(picked) == 28 and {t.trap for t in picked}
+          == {"cancel_while_processing", "out_of_window_offer_voucher"} and typo,
+          str(len(picked)))
+
+
 def main() -> int:
     test_reference_through_loop()
     test_budgets_bite()
@@ -884,6 +1229,8 @@ def main() -> int:
     test_tool_input_checks()
     test_closing_check()
     test_context_keeps_the_closing_note()
+    test_cancellation_settles()
+    test_customer_waits()
     print(f"\n{len(PASS)} passed, {len(FAIL)} failed")
     for f in FAIL:
         print(f"  FAILED: {f}")
