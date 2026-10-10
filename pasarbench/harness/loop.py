@@ -126,9 +126,10 @@ def run_episode(
         # Only when on, so the headers of every run before it stay as they were.
         **({"guardrail": guardrail} if guardrail != "off" else {}),
         **({"closing": closing} if closing != "off" else {}),
-        # How strictly the tools checked their arguments (tools.CHECKS). A
-        # replay runs the calls under the same checks; a header without this
-        # ran before v27, under version 1.
+        # What the tools checked and did (tools.CHECKS): their arguments since
+        # v27, the payment a cancellation settles since v31. A replay runs the
+        # calls under the same version; a header without this ran before v27,
+        # under version 1.
         "tool_checks": TOOL_CHECKS,
     })
 
@@ -235,7 +236,11 @@ def run_episode(
                             "ok": out.get("ok"), "error": out.get("error"),
                             "result_chars": len(payload),
                             "result_sha1": hashlib.sha1(
-                                payload.encode("utf-8")).hexdigest()[:12]})
+                                payload.encode("utf-8")).hexdigest()[:12],
+                            # What a cancellation did to the payment (tools v3):
+                            # a reader of the trace cannot see the payload.
+                            **({"payment": out["payment"]}
+                               if tc.name == "cancel_order" and out.get("payment") else {})})
 
         # A reply to the customer that claims a write no call has done is held
         # back: the customer never sees it, and the agent gets a note instead
