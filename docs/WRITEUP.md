@@ -636,10 +636,10 @@ keeping as an option, 27 rescues against 23 costs. Reading them one by one made
 it about even. Five "rescues" were customers who'd said "yes, go ahead, thanks"
 in one message, which ended the episode before the agent could act: the note
 gave it a turn the harness owed it. Two "costs" were a shipping credit the
-policy asks for. That leaves 22 against 21 — or 24, if three refunds it made
-after a cancellation were wrong, which the benchmark can't yet say. What only
-the review did is narrower: the 19 actions the agent had let go, 18 of them on
-one trap.
+policy asks for, and two refunds it made after a cancellation paid back a card
+authorization that had never been charged. That leaves 22 against 23. What
+only the review did is narrower: the 19 actions the agent had let go, 18 of
+them on one trap.
 <!-- RUNBOOK 1j, 1k; traces/M-* 2026-10-09, traces/N-* 2026-10-10; compare_cells.py (v30): 1j pass^1 0.848 -> 0.959, 11 better 2 worse, p=0.022; 1k 0.964 -> 0.951, 6 better 10 worse, p=0.454; as left -> at end 21 -> 0 and 6 -> 0 (171, 472); as left, paired: 2 better 3 worse p=1.000, 6 better 15 worse p=0.078; rescued 21 + 6 (1j: 18 DRE let go, IVF-VN__r1 let go, IVF-MY.zh-MY__r2 said yes and left, T13__r1 promise; 1k: HRWR-ID.id__r2, LCOW-SG.zh-SG__r0, PRWR-MY.zh-MY__r0, __r1 said yes and left, CCNRD-MY__r0, IVF-SG.sg-en__r1 promises); costs 17 + 6 (repeated 15 + 6, of 1k's 6 two CCRTOM shipping credits P4.6 asks for; guessed 2); repeated writes before the note 0 of 1,290 conversations -->
 
 **"What did the second look find about the benchmark?"** Two holes. Cancelling
@@ -650,8 +650,11 @@ The closing review kept the promise three times, and the checks couldn't say
 whether that was right. And the simulated customer often said yes and goodbye
 in one message; the episode ended on it before the agent read it, which is more
 than half of one trap's failures across every run. Counted at their worst, neither
-reverses a result I report — one would cross p < 0.05. Both change what the
-next run should measure, so they're decided before it.
+reverses a result I report — one would cross p < 0.05. Both are changed now: a
+cancellation settles the payment, as real platforms do, and the simulated
+customer is told to wait until what she agreed to is done — whether she does
+is the next run's question. Every recorded run replays under the version it
+ran with and re-scores exactly as before.
 <!-- WHAT_FAILED #37: N-off cancel_while_processing 42/42 told of a refund, 0 refunded, 42 passed; all runs 690 cancelled, 10 refunded (P-base 7, N-check 3). #38: 63 failures in 11,329 episodes without a closing phase, 57 in out_of_window_offer_voucher (of its 106 failures); upper bound, all 63 passing: naming 0.474 -> 0.825 (39 better, 3 worse), RFT +0.1, reference -6.6, largest language gap 6.2 (C-clean th), p >= 0.25; I-tools2 search vs all-20 -12.5 p=0.039 -->
 
 **"How do you know your false-claim detector isn't wrong the way the leak
@@ -689,13 +692,12 @@ a run from before an ID format change. Then I read the conversations the fix
 had promoted — a replay proves the state, not that the state means what the
 check assumes.
 
-**"What would you do next?"** Close the two holes first — say what happens to a
-cancelled order's money, and keep the simulated customer in the conversation
-until what she agreed to is done — because each changes what every later run
-measures. Then confirm the closing check — the same note, on new tasks of
-the traps that suggested it, after the customer-ending fix — and, as a separate
-experiment on tasks it hasn't seen, a note that tells the agent to read its own
-calls before making one: nearly all its cost was a call made twice. Replace the
+**"What would you do next?"** Check the two fixes in one small run: the old
+customer against the new one on the traps where they bite. Then confirm the
+closing check — the same note, on new tasks of the traps that suggested it,
+with the new customer — and, as a separate experiment on tasks it hasn't seen,
+a note that tells the agent to read its own calls before making one: nearly
+all its cost was a call made twice. Replace the
 guardrail's phrase list with a model that reads what the customer was told
 would happen, and keep the check against the tool log mechanical: what got
 past the list was wording — "flagged", "will be reviewed", a promise — and
