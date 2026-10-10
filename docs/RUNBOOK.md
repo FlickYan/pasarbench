@@ -779,6 +779,107 @@ python scripts/audit_tool_arms.py traces/N-check >> N.txt
   And the note stays as it is: one that told the agent to read its own calls
   before repeating one is a new intervention, for a run of its own.
 
+**Run on 2026-10-10, v29** (`N-off`, `N-check`, back to back): no harm, and
+worth keeping as an option, by the reading fixed before the run. Read episode by
+episode it comes out about even — and it walked into two things the benchmark
+cannot score (WHAT_FAILED #37, #38).
+
+| | control | closing check |
+|---|---|---|
+| pass^1 (pass^k) | 0.964 (0.930) | 0.951 (0.905) |
+| paired by task | | 6 tasks better, 10 worse, p = 0.45: INCONCLUSIVE, not WORSE |
+| the same, each case as its customer left it | | 6 better, 15 worse, p = 0.08 |
+| the case as she left it → at the end | | 6 failed → passed, 0 passed → failed, of 472 |
+| a required action first made after she left | | 6 episodes, all 6 passed |
+| a forbidden call first made then | | none |
+| a write repeating one already made | | 6 episodes (4, read) |
+| a verification with digits she never gave | | none |
+| a write no check asks for or forbids | | 3 episodes, each a refund after a cancellation |
+| closing phases cut short | | 18, all by the episode's 120,000 tokens |
+| tokens per episode | 56,205 | 65,575 (+17%) |
+
+**The 10 worse tasks are the conversations', not the note's.** Since v30
+`compare_cells.py` scores each closing episode twice by replaying its calls: as
+the case stood when the customer left, and at the end. In 472 episodes the
+closing phase turned 6 failures into passes and no pass into a failure — nor any
+of 1j's 171. With every case as its customer left it, the arms differ by 6 tasks
+better and 15 worse (p = 0.08), and the note only narrowed that. The arms run
+the same code until the customer leaves and spent the same tokens doing it
+(56,086 an episode against 56,205); the closing arm drew the worse
+conversations. Eight of the 15 worse tasks, and 4 of the 6 better, are the
+livestream trap's: outside English, 5 more of its 21 conversations ended in
+failure than in the control, and each was already failing when its customer
+left.
+
+**Worth keeping, by the rule.** Over 1j and 1k, every task once, the note
+rescued 27 episodes and 23 had a cost: 1j's 17, and here 6 repeats. 27 outnumber
+23.
+
+**Read one by one, it is about even.** Both sides shrink.
+
+- Two of the six repeats are not a case done twice. In CCRTOM-ID and its
+  Indonesian twin the conversation credited a defective item and told the
+  customer shipping was not included; after she left, the agent credited the IDR
+  37,000 shipping that P4.6 refunds when the item is at fault — a correction no
+  check sees. The other four are real: an escalation made a second time (DRE-PH,
+  LCOW-TH.th, LCOW-VN.vi) and a message to the seller sent twice (LCOW-VN.vi).
+- Five of the 27 rescues are not a second look. The agent had asked whether to
+  go ahead, and the customer said yes and goodbye in one message — "好的，确认退款，谢谢！"
+  — which ended the episode before the agent read it (WHAT_FAILED #38). The note
+  gave it the turn the episode withheld. Four of 1k's six are this — a hazmat
+  refund, two perishable refunds, a livestream refund — and one of 1j's 21, an
+  identity case the agent had offered to hand to a person ("算了，转人工吧": fine, a
+  human then). The controls lost the same kind of conversation: two perishable
+  refunds here, one voucher in 1j. `compare_cells.py` now prints what each
+  customer last said under every episode it lists.
+- What is left is the review the note was written for: 19 actions the agent had
+  let go — 1j's 18 duplicate refunds closed after the explanation, and one
+  identity failure never escalated — and 3 promises kept, calls the agent had
+  told the customer were made and were not: T13__r1 in 1j; here CCNRD-MY__r0,
+  "I've cancelled your order" with no call, and IVF-SG.sg-en__r1, whose
+  escalation had failed on order "unknown". Those two are the only replies the
+  guardrail's reading flags in either arm.
+
+So 22 rescues against 21 costs — or 24, if the three refunds after a
+cancellation below are costs, which #37 decides. And 19 of the 21 are one thing:
+a call made again, which no conversation in either arm of either run did on its
+own (0 of 1,290). A note that told the agent to read its own calls before making
+one is aimed at exactly that, and is a new intervention, for tasks it has not
+seen.
+
+**What the checks cannot say.** The three writes no check scores are refunds
+after a cancellation, each a promise kept: the agent had told the customer "the
+refund will be issued back to your original payment method", and after she left
+it issued it. No check asks for that refund or forbids it, because the world
+never says what happens to money paid for an order that is cancelled. In all 42
+cancellations of the control the agent told the customer her money would go
+back, in every language; nothing sent it, and all 42 passed. Two of the three
+refund T03, whose card payment was only authorized: a hold to release, not money
+to return. WHAT_FAILED #37; the fix is a decision about the world.
+
+**Secondary.** Tokens +9,370 an episode, 143 tasks costlier and 15 cheaper.
+Eighteen closing phases were cut short, all by the episode's token budget, 7
+before the agent took a single step in them; one was failing when the note came
+(HRWR-VN.vi__r0), so the cap hid at most one rescue. The 10 tasks of 1j's traps:
+seven passed every time in both arms, and IVF-SG.sg-en too, once by a rescue;
+OOWOV-VN lost one conversation to a customer who accepted the voucher and left
+before verifying (#38); T14, an English duplicate refund, passed once in three
+in the control and never with the note — each review concluded that, with the
+refund already issued, nothing more was required. P10 read and let go, as in
+1j's English failures. Too few to test anything, as fixed.
+
+**What it means.** By its rule, the note is worth keeping as an option; read, it
+is about even, and the part only a note can do is narrower than its pass rate.
+Five of its rescues are a turn the episode owed the agent anyway (#38), and
+three are promises kept — the claim guardrail's ground (1i). What only the
+review did is the 19 actions let go, 18 of them one trap, on the tasks that
+suggested it. That still needs its confirmation on new tasks of 1j's traps,
+measured after #38 is fixed, so that a turn the conversation owed the agent is
+not counted as the note's.
+
+**Before any new run:** decide #37 and #38. Each changes what every later run
+measures, and a run made before the decision is one more run to set aside.
+
 ---
 
 # Phase 2 — judge calibration (no GPU, ~6 hours of your time)
