@@ -241,6 +241,8 @@ def test_post_training():
     (tmp / "data" / "splits" / "folds.json").write_text(json.dumps(folds))
     fm = {"A": "Qwen/Qwen3-8B:pasar-rft-A", "B": "Qwen/Qwen3-8B:pasar-rft-B"}
 
+    from pasarbench.tools import CHECKS
+
     def run(name, model_of, passes, temp=0.0,
             sim="llm-user:openai-compat:RedHatAI/gemma-4-31B-it-FP8-Dynamic",
             setup=None):
@@ -250,7 +252,8 @@ def test_post_training():
             for k in range(2):
                 head = {"type": "header", "task_id": t.task_id, "language": t.language,
                         "trap": t.trap, "requested_model": model_of(t), "simulator": sim,
-                        "agent_temperature": temp, "task_digest": task_digest(t)}
+                        "agent_temperature": temp, "task_digest": task_digest(t),
+                        "tool_checks": CHECKS}
                 foot = {"type": "footer", "passed": passes(i, k), "stop_reason": "done",
                         "budget": {"tokens": 1000, "steps": 5}}
                 (d / f"{t.task_id}__r{k}.jsonl").write_text(json.dumps(head) + "\n"
@@ -272,11 +275,26 @@ def test_post_training():
           "RFT, each on its held-out fold" in md and "is better than base" in md, md[:1500])
     check("the routing is verified episode by episode",
           "80/80 RFT episodes answered by the model that did not train" in md, md)
-    check("the missing reference prints the command that fills it",
-          "Reference: **NOT MEASURED**" in md and "--run-id P-ref" in md)
-    check("same customer, same temperature, tasks unchanged: all checked",
+    check("the missing reference prints the command that fills it, with the base run's "
+          "customer and repetitions",
+          "Reference: **NOT MEASURED**" in md and "--run-id P-ref" in md
+          and "--customer 1 " in md and " -k 2 " in md, md[md.find("Reference:"):][:700])
+    check("same customer, same temperature, same tools, tasks unchanged: all checked",
           "✓ one customer in every run" in md and "✓ agent temperature 0" in md
+          and "✓ one tool version in every run" in md
           and "✓ tasks unchanged since the split" in md, md[md.find("Checks"):][:600])
+    for f in (tmp / "traces" / "P-rft" / "full").glob("*.jsonl"):
+        lines = f.read_text().splitlines()
+        lines[0] = json.dumps({**json.loads(lines[0]), "tool_checks": CHECKS - 1})
+        f.write_text("\n".join(lines) + "\n")
+    try:
+        os.chdir(tmp)
+        md3 = mr.section_training(Path("traces"))
+    finally:
+        os.chdir(cwd)
+    check("…and a fine-tune evaluated under other tools than its base fails the tool check: "
+          "since v3 a cancellation settles the payment (WHAT_FAILED #37)",
+          "✗ **one tool version in every run" in md3, md3[md3.find("Checks"):][:800])
 
     import shutil
     shutil.rmtree(tmp / "traces" / "P-rft")
@@ -294,6 +312,33 @@ def test_post_training():
           "LEAKED" in md and "78/80" in md, md[md.find("Checks"):][:800])
     check("a reference run with a different customer fails the customer check",
           "✗ **one customer in every run" in md, md[md.find("Checks"):][:800])
+    shutil.rmtree(tmp / "traces" / "P-ref")
+    for f in (tmp / "traces" / "P-base" / "full").glob("*.jsonl"):
+        lines = f.read_text().splitlines()
+        lines[0] = json.dumps({**json.loads(lines[0]),
+                               "simulator": "llm-user/v2:openai-compat:gemma"})
+        f.write_text("\n".join(lines) + "\n")
+    try:
+        os.chdir(tmp)
+        md = mr.section_training(Path("traces"))
+    finally:
+        os.chdir(cwd)
+    check("…and a base run with customer 2 gets a reference command for customer 2: the "
+          "name a run recorded says which it had (WHAT_FAILED #38)",
+          "--customer 2 " in md and "--customer 1 " not in md, md[md.find("Reference:"):][:700])
+    for f in (tmp / "traces" / "P-base" / "full").glob("*.jsonl"):
+        lines = f.read_text().splitlines()
+        lines[0] = json.dumps({**json.loads(lines[0]), "tool_checks": CHECKS - 1})
+        f.write_text("\n".join(lines) + "\n")
+    try:
+        os.chdir(tmp)
+        md = mr.section_training(Path("traces"))
+    finally:
+        os.chdir(cwd)
+    check("…while a base run under older tools gets no command: a reference made now would "
+          "run today's, and not be compared with like (WHAT_FAILED #37)",
+          "would not be compared with like" in md and "--run-id P-ref" not in md,
+          md[md.find("Reference:"):][:700])
 
     empty = Path(tempfile.mkdtemp())
     try:
