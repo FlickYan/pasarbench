@@ -83,6 +83,7 @@ FOLDS = "data/splits/folds.json"
 NO_THINKING = json.dumps({"chat_template_kwargs": {"enable_thinking": False}})
 
 from pasarbench.models import AGENT_DEFAULT, SIM_DEFAULT  # noqa: E402  (after sys.path)
+from pasarbench.harness.simulator import CUSTOMER  # noqa: E402
 
 # AGENT_MODEL / SIM_MODEL override both here and in serve_sglang.sh, so one
 # export in gpu_pipeline.sh changes every step together.
@@ -107,7 +108,8 @@ def _sweep(args, run_id: str, k: int, temperature: float, extra: list[str]) -> N
            "--workers", str(args.workers), "--run-id", run_id, "--resume",
            "--max-tokens", "2048", "--extra-body", args.extra_body,
            # the agent's flags (Qwen's enable_thinking) are not the customer's
-           "--sim-extra-body", "{}", *extra]
+           "--sim-extra-body", "{}",
+           "--customer", str(getattr(args, "customer", CUSTOMER)), *extra]
     if args.sample:
         cmd += ["--sample", str(args.sample)]
     print("$ " + " ".join(shlex.quote(c) for c in cmd), flush=True)
@@ -610,6 +612,11 @@ def main() -> None:
         # SIM_MODEL overrides the customer here and in serve_sglang.sh together
         p.add_argument("--sim-model", default=os.environ.get("SIM_MODEL") or SIM_DEFAULT)
         p.add_argument("--sim-url", default="http://localhost:8001/v1")
+        # The recorded P-* runs had customer 1; every run since v31 has 2
+        # (WHAT_FAILED #38). PASAR_CUSTOMER=1 gives a run the old customer,
+        # under today's tools; gpu_pipeline.sh keeps stage 1's for stage 2.
+        p.add_argument("--customer", type=int, choices=[1, 2],
+                       default=int(os.environ.get("PASAR_CUSTOMER") or CUSTOMER))
         p.add_argument("-k", type=int, default=k)
         p.add_argument("--workers", type=int, default=24)
         p.add_argument("--extra-body", default=NO_THINKING,
