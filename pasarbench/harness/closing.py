@@ -85,10 +85,34 @@ def review(recs: list[dict[str, Any]], task=None) -> dict[str, Any]:
                one case. No check forbids it; a person handles it twice.
     guessed    [digits] identity verifications after the note with digits the
                customer never gave -- there was no one left to ask.
+    unscored   [(tool, args)] writes after the note that the checks do not see:
+               not required, not forbidden, not a repeat, and the episode
+               replayed without the write ends with the same verdict and the
+               same failures. A write a database check needs -- a return the
+               check counts, though no required action names it -- is seen,
+               and is not here. These are read, not counted.
+    at_note    whether the case passed as the customer left it -- the verdict
+               the episode would have had without the note
+    at_end     whether it passed at the end. at_note -> at_end is the closing
+               phase's whole effect on the verdict, episode by episode, with
+               the conversation held fixed: a pass it broke shows here however
+               it broke it, which "forbidden" alone does not see.
+    left_saying  the customer's last words, as she left ("" if she said
+               nothing). A rescue after "yes, go ahead, thanks" is not a
+               second look: it is the turn the agent never had, because
+               without the note the episode ends on those words before the
+               agent reads them (WHAT_FAILED #38). Read it beside "first".
+    not_replayed  why the rest could not be read, if it could not: the task
+               changed since the run, or a call replays differently. Then the
+               lists are empty and the verdicts None -- as rescore.py leaves
+               such an episode's recorded verdict alone rather than guess.
 
-    The 1j run found the last two, which its rule had not counted (RUNBOOK
-    1j): 15 escalations made a second time and 2 verifications tried with
-    "0000", in 171 episodes; neither ever happened without the note.
+    The 1j run found "repeated" and "guessed", which its rule had not counted
+    (RUNBOOK 1j): 15 escalations made a second time and 2 verifications tried
+    with "0000", in 171 episodes; neither ever happened without the note. 1k
+    added "unscored", the verdicts before and after, and "left_saying": what
+    it did that no check scores, what it changed, and what the customer last
+    said -- 4 of 1k's 6 rescues followed a yes the agent never got to act on.
 
     All but the first three read what the verifier reads: the database's
     action log, rebuilt by replaying the episode's calls (replay.py) and split
@@ -97,7 +121,7 @@ def review(recs: list[dict[str, Any]], task=None) -> dict[str, Any]:
     and a verification the tool denied is not a verification. A forbidden
     action the conversation had already taken is the conversation's failure,
     not the closing phase's: "forbidden", like "first", counts what the phase
-    did first. Without the task they are empty.
+    did first. Without the task they are empty, and the verdicts None.
     """
     steps = [r for r in recs if r.get("type") == "step"]
     events = [r for r in recs if r.get("type") == "event"]
@@ -105,16 +129,35 @@ def review(recs: list[dict[str, Any]], task=None) -> dict[str, Any]:
         "noted": any(e.get("kind") == "closing_check" for e in events),
         "ran": any(st.get("closing") for st in steps),
         "cut": [e.get("reason") for e in events if e.get("kind") == "closing_cut_short"],
-        "writes": [], "first": [], "forbidden": [], "repeated": [], "guessed": []}
-    if task is None or not out["ran"]:
+        "writes": [], "first": [], "forbidden": [], "repeated": [], "guessed": [],
+        "unscored": [], "at_note": None, "at_end": None,
+        "left_saying": next((str(e.get("text") or "").strip() for e in reversed(events)
+                             if e.get("kind") == "user_turn" and e.get("ended")), None),
+        "not_replayed": None}
+    if task is None or not out["noted"]:
         return out
+    from ..tasks import task_digest
     from ..tools import WRITE_TOOLS
+    from ..verifier import verify
     from .replay import replay
 
     head = [r for r in recs if r.get("type") == "header"][:1]
-    at = next(i for i, st in enumerate(steps) if st.get("closing"))
-    n_before = len(replay(head + steps[:at], task).db.action_log)
-    log = replay(head + steps, task).db.action_log
+    if head and head[0].get("task_digest") and head[0]["task_digest"] != task_digest(task):
+        out["not_replayed"] = "the task changed since the run"
+        return out
+    at = next((i for i, st in enumerate(steps) if st.get("closing")), len(steps))
+    end = replay(head + steps, task)
+    if end.diverged or end.mismatched:
+        out["not_replayed"] = (end.diverged or end.mismatched)[0]
+        return out
+    db_note, db_end = replay(head + steps[:at], task).db, end.db
+    v_end = verify(task, db_end)
+    out["at_note"] = verify(task, db_note).passed
+    out["at_end"] = v_end.passed
+    if not out["ran"]:
+        return out
+    n_before = len(db_note.action_log)
+    log = db_end.action_log
     before, during = log[:n_before], log[n_before:]
     out["writes"] = [(a.tool, a.ok) for a in during if a.tool in WRITE_TOOLS]
     for spec in task.checks.required_actions:
@@ -125,12 +168,40 @@ def review(recs: list[dict[str, Any]], task=None) -> dict[str, Any]:
         hit = next((a for a in during if spec.matches(a)), None)
         if hit is not None and not any(spec.matches(a) for a in before):
             out["forbidden"].append((hit.tool, hit.args))
+    # The phase's successful write calls, in order: each logged exactly one
+    # successful action, so the k-th of them is the k-th successful write in
+    # the log after the note (the replay reproduced every call's success).
+    calls = [(i, j) for i in range(at, len(steps))
+             for j, (tc, tr) in enumerate(zip(steps[i].get("tool_calls") or [],
+                                              steps[i].get("tool_results") or []))
+             if tc.get("name") in WRITE_TOOLS and tr.get("ok")]
+    wrote = [a for a in during if a.tool in WRITE_TOOLS and a.ok]
+    paired = len(calls) == len(wrote)
+
+    def seen(k: int) -> bool:
+        """Whether the checks see the k-th write: replayed without it, the
+        episode ends with another verdict or other failures. If the calls and
+        the log do not pair up, it cannot be told -- and a write is not called
+        one no check sees on a guess."""
+        if not paired:
+            return True
+        i, j = calls[k]
+        st = steps[i]
+        cut = {**st, "tool_calls": [c for n, c in enumerate(st.get("tool_calls") or []) if n != j],
+               "tool_results": [c for n, c in enumerate(st.get("tool_results") or []) if n != j]}
+        v = verify(task, replay(head + steps[:i] + [cut] + steps[i + 1:], task).db)
+        return (v.passed, sorted(v.failures)) != (v_end.passed, sorted(v_end.failures))
+
     made = {_target(a) for a in before if a.tool in WRITE_TOOLS and a.ok}
-    for a in during:
-        if a.tool in WRITE_TOOLS and a.ok:
-            if _target(a) in made:
-                out["repeated"].append((a.tool, a.args))
-            made.add(_target(a))
+    checks = task.checks
+    for k, a in enumerate(wrote):
+        if _target(a) in made:
+            out["repeated"].append((a.tool, a.args))
+        elif not any(spec.via(a.tool, a.args) for spec in checks.required_actions) \
+                and not any(spec.matches(a) for spec in checks.forbidden_actions) \
+                and not seen(k):
+            out["unscored"].append((a.tool, a.args))
+        made.add(_target(a))
     said = _digits(" ".join([task.opening] + [str(e.get("text") or "") for e in events
                                                if e.get("kind") == "user_turn"]))
     out["guessed"] = [str(a.args.get("phone_last4")) for a in during
