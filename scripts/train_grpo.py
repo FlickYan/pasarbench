@@ -69,7 +69,7 @@ import sys
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from pasarbench.harness.backends import OpenAICompatBackend
-from pasarbench.harness.simulator import LLMUser
+from pasarbench.harness.simulator import CUSTOMER, LLMUser
 from pasarbench.harness.types import Budget
 from pasarbench.models import AGENT_DEFAULT, SIM_DEFAULT, check_agent_simulator
 from pasarbench.rl.collect import grpo_groups, rollout_task
@@ -101,7 +101,8 @@ def collect_groups(args) -> list[dict]:
         all_rollouts.extend(rollout_task(
             task, agent, k=args.group_size, cfg=RewardConfig(),
             reference_steps=len(ALL_SOLUTIONS.get(task.task_id, [])),
-            simulator=LLMUser(sim, task.persona, task.hidden_facts, task.language),
+            simulator=LLMUser(sim, task.persona, task.hidden_facts, task.language,
+                              customer=args.customer),
             budget=Budget(max_steps=args.max_steps),
             policy_mode=args.policy_mode,
         ))
@@ -139,6 +140,9 @@ def main() -> None:
     ap.add_argument("--base-url", default="http://localhost:8000/v1")
     ap.add_argument("--sim-model", default=os.environ.get("SIM_MODEL") or SIM_DEFAULT)
     ap.add_argument("--sim-url", default="http://localhost:8001/v1")
+    ap.add_argument("--customer", type=int, choices=[1, 2],
+                    default=int(os.environ.get("PASAR_CUSTOMER") or CUSTOMER),
+                    help="the simulated customer's rules (WHAT_FAILED #38)")
     ap.add_argument("--extra-body",
                     default=json.dumps({"chat_template_kwargs": {"enable_thinking": False}}))
     ap.add_argument("--group-size", type=int, default=8)
