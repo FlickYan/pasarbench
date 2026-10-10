@@ -33,7 +33,9 @@ WHICH CHECKS. v27 made the tools check each argument against its schema
 (tools.CHECKS, WHAT_FAILED #35). A run records the version it ran under, and a
 trace without one ran before it: replayed under today's checks, an escalation
 it recorded with category "duplicate_refund_claim" or order "unknown" would be
-refused, and the state rebuilt would not be the one the episode ended in.
+refused, and the state rebuilt would not be the one the episode ended in. v31
+(version 3) made a cancellation refund the payment and a refund after it
+refused (WHAT_FAILED #37); a run before it replays without either.
 """
 
 from __future__ import annotations
