@@ -547,6 +547,10 @@ def test_wrappers():
           and "--folds" in ev and "--temperature 0.0" in ev, ev)
     check("thinking is off in every step, by the same flag",
           all('"enable_thinking": false' in c for c in (base, coll, ev)))
+    want = os.environ.get("PASAR_CUSTOMER") or "2"
+    check("every step asks for the same simulated customer, the one runs since v31 have "
+          "unless PASAR_CUSTOMER says otherwise (WHAT_FAILED #38)",
+          all(f"--customer {want}" in c for c in (base, coll, ev)), base)
     sim = os.environ.get("SIM_MODEL") or tr.SIM_DEFAULT
     check("the customer is Gemma 4 31B, served locally",
           tr.SIM_DEFAULT == "RedHatAI/gemma-4-31B-it-FP8-Dynamic"
@@ -716,6 +720,7 @@ def test_served_models():
 
 def test_serve_scripts():
     print("\n=== the serve script, the pipeline and the wrappers agree ===")
+    import re
     import shutil
     root = Path(__file__).resolve().parent.parent
     if not shutil.which("bash"):
@@ -831,17 +836,38 @@ def test_serve_scripts():
                            capture_output=True, text=True, env={**clean, **extra})
         return r.returncode, r.stdout + r.stderr
     code, out = settings(PASAR_K="3")
-    check("before stage 1 the knobs come from the environment",
-          code == 0 and "PASAR_K=3 " in out and "not run yet" in out, out)
+    check("before stage 1 the knobs come from the environment, and the customer is the one "
+          "every run since v31 has",
+          code == 0 and "PASAR_K=3 " in out and "not run yet" in out
+          and "PASAR_CUSTOMER=2" in out, out)
     (work / "data").mkdir()
     (work / "data" / "run_settings.env").write_text(
         "PASAR_K=3\nPASAR_COLLECT_K=4\nPASAR_EPOCHS=2\nPASAR_TRAIN_MAX_LEN=16384\n")
     code, out = settings()
-    check("after it, a new terminal gets stage 1's values, not the defaults",
-          code == 0 and "PASAR_K=3 PASAR_COLLECT_K=4" in out, out)
+    check("after it, a new terminal gets stage 1's values, not the defaults -- and a stage 1 "
+          "from before v31, which recorded no customer, had customer 1",
+          code == 0 and "PASAR_K=3 PASAR_COLLECT_K=4" in out and "PASAR_CUSTOMER=1" in out, out)
     code, out = settings(PASAR_K="5")
     check("…and a different repetition count is refused, not silently used",
           code != 0 and "stage 1 ran with PASAR_K=3" in out, out)
+    code, out = settings(PASAR_CUSTOMER="2")
+    check("…as is another customer than stage 1's: a base run and its fine-tune compared "
+          "with different customers would be measuring the customer",
+          code != 0 and "stage 1 ran with PASAR_CUSTOMER=1" in out, out)
+    stages = {st: subprocess.run(["bash", "scripts/gpu_pipeline.sh", st], cwd=work,
+                                 capture_output=True, text=True, env=clean)
+              for st in ("smoke", "stage1", "stage2")}
+    check("…and no stage runs on a stage 1 from before v31, whose runs had the old tools and "
+          "customer, before a GPU hour is spent",
+          all(r.returncode != 0 and "stage 1 ran before v31" in r.stderr and not r.stdout
+              for r in stages.values()), {k: r.stderr[-200:] for k, r in stages.items()})
+    (work / "data" / "run_settings.env").write_text(
+        "PASAR_K=3\nPASAR_COLLECT_K=4\nPASAR_EPOCHS=2\nPASAR_TRAIN_MAX_LEN=16384\nPASAR_CUSTOMER=2\n")
+    code, out = settings(PASAR_CUSTOMER="2")
+    check("…while the customer stage 1 recorded goes through",
+          code == 0 and "PASAR_CUSTOMER=2" in out, out)
+    (work / "data" / "run_settings.env").write_text(
+        "PASAR_K=3\nPASAR_COLLECT_K=4\nPASAR_EPOCHS=2\nPASAR_TRAIN_MAX_LEN=16384\n")
     code, out = settings(PASAR_EPOCHS="1", PASAR_TRAIN_MAX_LEN="12288")
     check("…while epochs and the training length cap may still change for stage 2",
           code == 0 and "PASAR_EPOCHS=1 PASAR_TRAIN_MAX_LEN=12288" in out, out)
@@ -852,6 +878,15 @@ def test_serve_scripts():
     check("…and says plainly when one card cannot hold both models",
           code == 0 and "layout: too-small" in out and "H200 or B200" in out, out)
     pipe = (root / "scripts" / "gpu_pipeline.sh").read_text()
+    recorded = re.findall(r"(PASAR_[A-Z_]+)=%s", pipe)
+    grpo = (root / "scripts" / "train_grpo.py").read_text()
+    check("stage 1 records the customer with the knobs, the reference row and GRPO's "
+          "rollouts use the run's, and every knob it records reaches a Modal job",
+          "PASAR_CUSTOMER" in recorded and '--customer "$CUSTOMER"' in pipe
+          and 'export PASAR_CUSTOMER="$CUSTOMER"' in pipe
+          and re.search(r"LLMUser\([^)]*customer=args\.customer\)", grpo) is not None
+          and all(f'"{k}"' in (root / "scripts" / "modal_pipeline.py").read_text().split(
+              "PASSED_ON = (")[1].split(")")[0] for k in recorded), recorded)
     shared = pipe[pipe.index('if [ -n "${SHARE_GPU:-}" ]; then\n    # One card'):]
     check("on one card the customer starts only after the agent is up",
           shared.index("wait_ready 8000") < shared.index("serve_sglang.sh sim"))
