@@ -39,9 +39,26 @@ export SIM_MODEL="${SIM_MODEL:-RedHatAI/gemma-4-31B-it-FP8-Dynamic}"
 # same repetitions. Epochs and the training length cap may still be overridden
 # in stage 2 (the second is the way out of a CUDA OOM).
 SETTINGS=data/run_settings.env
-saved() { if [ -f "$SETTINGS" ]; then sed -n "s/^$1=//p" "$SETTINGS" | tail -1; fi; }
+saved() {
+  if [ -f "$SETTINGS" ]; then
+    local v; v="$(sed -n "s/^$1=//p" "$SETTINGS" | tail -1)"
+    # A stage 1 from before v31 recorded no customer: it had the only one
+    # there was, version 1 (WHAT_FAILED #38).
+    if [ "$1" = PASAR_CUSTOMER ]; then v="${v:-1}"; fi
+    echo "$v"
+  fi
+}
+# A stage 1 from before v31 ran with the old customer and the old tools
+# (WHAT_FAILED #37, #38): nothing run now would be compared with like.
+if [ -f "$SETTINGS" ] && ! grep -q '^PASAR_CUSTOMER=' "$SETTINGS" && [ "$STAGE" != settings ]; then
+  echo "!! stage 1 ran before v31 ($SETTINGS records no customer): its runs had the" >&2
+  echo "   simulated customer and the tools from before WHAT_FAILED #37 and #38 were" >&2
+  echo "   fixed, and nothing run now would be compared with like. Move data/ and" >&2
+  echo "   traces/P-* aside and run stage 1 again." >&2
+  exit 1
+fi
 if [ -f "$SETTINGS" ]; then
-  for v in PASAR_K PASAR_COLLECT_K; do
+  for v in PASAR_K PASAR_COLLECT_K PASAR_CUSTOMER; do
     if [ -n "${!v:-}" ] && [ "${!v}" != "$(saved "$v")" ]; then
       echo "!! $v=${!v}, but stage 1 ran with $v=$(saved "$v") ($SETTINGS)." >&2
       echo "   Runs compared task by task must use the same value: unset $v." >&2
@@ -50,6 +67,10 @@ if [ -f "$SETTINGS" ]; then
   done
 fi
 K="${PASAR_K:-$(saved PASAR_K)}";                         K="${K:-5}"        # repetitions per task: baseline, evaluation, reference
+# The simulated customer's rules (WHAT_FAILED #38): every step and the
+# reference row get the same one, and train_rft.py reads it from here.
+CUSTOMER="${PASAR_CUSTOMER:-$(saved PASAR_CUSTOMER)}";    CUSTOMER="${CUSTOMER:-2}"
+export PASAR_CUSTOMER="$CUSTOMER"
 COLLECT_K="${PASAR_COLLECT_K:-$(saved PASAR_COLLECT_K)}"; COLLECT_K="${COLLECT_K:-8}"   # rollouts per task to learn from
 EPOCHS="${PASAR_EPOCHS:-$(saved PASAR_EPOCHS)}";          EPOCHS="${EPOCHS:-2}"         # LoRA epochs per fold
 TRAIN_MAX_LEN="${PASAR_TRAIN_MAX_LEN:-$(saved PASAR_TRAIN_MAX_LEN)}"; TRAIN_MAX_LEN="${TRAIN_MAX_LEN:-16384}"   # longest training turn
@@ -216,8 +237,8 @@ EOF
   stage1)
     mkdir -p data
     if [ ! -f "$SETTINGS" ]; then
-      printf 'PASAR_K=%s\nPASAR_COLLECT_K=%s\nPASAR_EPOCHS=%s\nPASAR_TRAIN_MAX_LEN=%s\n' \
-        "$K" "$COLLECT_K" "$EPOCHS" "$TRAIN_MAX_LEN" > "$SETTINGS"
+      printf 'PASAR_K=%s\nPASAR_COLLECT_K=%s\nPASAR_EPOCHS=%s\nPASAR_TRAIN_MAX_LEN=%s\nPASAR_CUSTOMER=%s\n' \
+        "$K" "$COLLECT_K" "$EPOCHS" "$TRAIN_MAX_LEN" "$CUSTOMER" > "$SETTINGS"
     fi
     echo "settings ($SETTINGS): $(tr '\n' ' ' < "$SETTINGS")"
     layout
@@ -273,6 +294,7 @@ EOF
         --base-url https://api.deepseek.com/v1 --extra-body '{"thinking":{"type":"disabled"}}' \
         --simulator openai --sim-model "$SIM_MODEL" \
         --sim-url http://localhost:8001/v1 --sim-extra-body '{}' --suite all -k "$K" --temperature 0 \
+        --customer "$CUSTOMER" \
         --strategies full --workers 8 --run-id P-ref --resume > logs/reference.log 2>&1 &
       REF=$!
     else
@@ -287,7 +309,7 @@ EOF
 
   settings)
     echo "agent $AGENT_MODEL | customer $SIM_MODEL"
-    echo "PASAR_K=$K PASAR_COLLECT_K=$COLLECT_K PASAR_EPOCHS=$EPOCHS PASAR_TRAIN_MAX_LEN=$TRAIN_MAX_LEN" \
+    echo "PASAR_K=$K PASAR_COLLECT_K=$COLLECT_K PASAR_EPOCHS=$EPOCHS PASAR_TRAIN_MAX_LEN=$TRAIN_MAX_LEN PASAR_CUSTOMER=$PASAR_CUSTOMER" \
          "($([ -f "$SETTINGS" ] && echo "stage 1 recorded in $SETTINGS" || echo "stage 1 not run yet"))"
     "$PY" scripts/gpu_plan.py show
     ;;
