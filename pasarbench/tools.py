@@ -553,13 +553,26 @@ def _parameters(fn: Callable) -> tuple[frozenset[str], bool]:
 #      attempt, as the tools log their own refusals, so a check that forbids
 #      the attempt itself (must_succeed=False) still sees it.
 #
+#   3  also: cancelling an order settles its payment, as the platforms the
+#      suite models do -- a captured payment is refunded to its method, less
+#      what an agent already paid back for the order, a card authorization
+#      released, and a cash-on-delivery order owes nothing -- and the result
+#      says which (`_settle`). Once a payment is refunded or released, a
+#      refund or store credit for its order is refused as paying it back
+#      twice, and a refund of a payment only authorized is refused at any
+#      time (`_settled`) -- each only once the order's customer is verified,
+#      so the identity check comes first.
+#
 # Version 1 let a call through that any API checking its own schema refuses.
 # escalate_to_human lists eight categories and took any string, and took
 # "unknown" for an order id, though every other write answers "no such order".
 # The agent was told it had escalated, and the check then failed it for the
 # category or the order: 6 recorded episodes for the category, 203 for the
-# order (WHAT_FAILED #35).
-CHECKS = 2
+# order (WHAT_FAILED #35). Versions 1 and 2 cancelled an order and left its
+# payment as it was: nothing in the world returned the money, nothing checked
+# whether anything did, and the agent told the customer it would come back --
+# in all 42 cancellations of one run (WHAT_FAILED #37).
+CHECKS = 3
 
 _JSON_TYPES: dict[str, Any] = {"string": str, "integer": int, "number": (int, float),
                                "boolean": bool, "array": list, "object": dict}
@@ -657,6 +670,8 @@ def call(db: Database, name: str, args: dict[str, Any], checks: int = CHECKS) ->
         # other write answers an order that does not exist.
         if err is None and name == "escalate_to_human" and not db.row("orders", args["order_id"]):
             err = "no such order"
+        if err is None and checks >= 3 and name in ("issue_refund", "issue_store_credit"):
+            err = _settled(db, name, args)
         if err is not None:
             if name in WRITE_TOOLS:
                 db.log(name, {k: args.get(k) for k in props} if isinstance(args, dict) else {},
@@ -670,11 +685,130 @@ def call(db: Database, name: str, args: dict[str, Any], checks: int = CHECKS) ->
         if (extra := _extra(fn, args)) is not None:
             return {"ok": False, "error": extra}
     try:
-        return fn(db, **args)
+        res = fn(db, **args)
     except TypeError as e:
         return {"ok": False, "error": f"bad arguments: {e}"}
     except Exception as e:  # noqa: BLE001 - harness must never crash on a tool
         return {"ok": False, "error": f"tool raised {type(e).__name__}: {e}"}
+    if checks >= 3 and name == "cancel_order" and res.get("ok"):
+        try:
+            res = {**res, **_settle(db, args["order_id"])}
+        except Exception as e:  # noqa: BLE001 - nor on what follows one
+            # _settle changes nothing until its note is written, so nothing moved.
+            res = {**res, "payment": "unsettled",
+                   "note": f"The order is cancelled, but its payment could not be settled "
+                           f"({type(e).__name__}): nothing was refunded."}
+    return res
+
+
+def _payee(pay: dict[str, Any]) -> str:
+    """Where a payment's money goes back to, by its method."""
+    m = str(pay.get("method"))
+    if m == "card":
+        return (f"the card ending {pay['instrument_last4']}" if pay.get("instrument_last4")
+                else "the card")
+    return {"ewallet": "the e-wallet", "bank_transfer": "the bank account"}.get(
+        m, "the original payment method")
+
+
+def _paid_back(db: Database, order_id: str, currency: str) -> int:
+    """What has already gone back for an order, in its minor units: refunds an
+    agent issued for it and store credit granted against it in its currency.
+    Credit in another currency is not counted -- minor units of two currencies
+    do not add up -- nor credit that names no order: the tools cannot know what
+    it was for, so credit and then a cancellation pay twice, as on a platform,
+    and the action log shows both."""
+    return (sum(r["amount_minor"] for r in db.where("refunds", order_id=order_id))
+            + sum(g["amount_minor"] for g in db.where("store_credit_grants", order_id=order_id)
+                  if g.get("currency") == currency))
+
+
+def _settle(db: Database, order_id: str) -> dict[str, Any]:
+    """Version 3: what cancelling an order does to its payment, and what the
+    result tells the agent. The money moves on the payment record -- refunded
+    or released -- not as a row in `refunds`, which holds the refunds an agent
+    issues and which several checks count; the action log gets a line of its
+    own (`refund_on_cancel`, no tool's name), so a refund claim it makes true
+    is backed (harness/guardrail.py) and no check that reads `issue_refund`
+    sees one. What an agent already paid back for the order -- a refund or
+    store credit before the cancellation -- is not paid again.
+
+    One payment per order, as every order in the suite has (tests/
+    test_harness.py checks): an order paid in parts, or a payment in a state a
+    cancellation does not settle, is left as it was and the result says so --
+    the tools do not guess which part to refund. Nothing changes until the
+    note is written, so a failure moves no money."""
+    pays = db.where("payments", order_id=order_id)
+    if not pays or (len(pays) == 1 and pays[0].get("status") == "pending"):
+        return {"payment": "nothing collected",
+                "note": "Nothing was collected for this order, so nothing is refunded."}
+    pay = pays[0]
+    if len(pays) > 1 or pay.get("status") not in ("authorized", "captured"):
+        return {"payment": "unsettled",
+                "note": "The payment was left as it was: "
+                        + (f"the order was paid in {len(pays)} parts" if len(pays) > 1 else
+                           f"its status is {pay.get('status')!r}")
+                        + ", which a cancellation does not settle. Nothing was refunded."}
+    money = fmt_money(pay["amount_minor"], pay["currency"])
+    if pay["status"] == "authorized":
+        note = (f"The authorization of {money} on {_payee(pay)} was released: the customer "
+                f"was never charged, and nothing is refunded.")
+        pay["status"] = "released"
+        return {"payment": "released", "note": note}
+    back = min(_paid_back(db, order_id, pay["currency"]), pay["amount_minor"])
+    rest = pay["amount_minor"] - back
+    if rest <= 0:
+        note = (f"The whole {money} had already been paid back for this order, so nothing "
+                f"more is refunded.")
+        line = None
+    else:
+        before = f" ({fmt_money(back, pay['currency'])} had already been paid back)" if back else ""
+        note = (f"{fmt_money(rest, pay['currency'])} was refunded to {_payee(pay)} "
+                f"automatically{before}. Do not issue a separate refund.")
+        line = {"order_id": order_id, "amount_minor": rest, "method": pay["method"]}
+    pay["status"] = "refunded"
+    if line:
+        db.log("refund_on_cancel", line, ok=True)
+    return {"payment": "refunded", "note": note}
+
+
+# Every refusal below starts with this, so a reader of a trace can count them.
+SETTLED = "settled at cancellation: "
+
+
+def _settled(db: Database, name: str, args: dict[str, Any]) -> str | None:
+    """Version 3: why a refund or store credit is refused because the payment
+    is already settled, or was never charged -- or None. An authorized payment
+    is held, not taken: there is nothing to refund before the cancellation
+    releases it either (P4.3's reason, "no money has been collected"). Asked
+    only once the order's customer is verified: the identity check comes
+    first, as in every tool, and no caller learns the state of a payment that
+    is not theirs to ask about (P1.1). A cash-on-delivery order a cancellation
+    left owing nothing is not refused here: what an agent gives for it is the
+    checks' to judge (P2.4), as before."""
+    order_id = args.get("order_id")
+    if not isinstance(order_id, str) or not order_id:
+        return None
+    o = db.row("orders", order_id)
+    pays = db.where("payments", order_id=order_id)
+    if not o or o["user_id"] not in db.verified or len(pays) != 1:
+        return None
+    status = pays[0].get("status")
+    if name == "issue_refund" and status == "authorized":
+        return ("payment only authorized, not charged: there is nothing to refund "
+                "(P4.3)")
+    if o["status"] != "cancelled":
+        return None
+    if status == "refunded":
+        return SETTLED + ("the payment was refunded then, so there is nothing left to "
+                          "refund" if name == "issue_refund" else
+                          "the payment was refunded then, and store credit for this "
+                          "order would pay it back twice")
+    if status == "released":
+        return SETTLED + ("the authorization was released and the customer was never "
+                          "charged, so there is nothing to " +
+                          ("refund" if name == "issue_refund" else "pay back"))
+    return None
 
 
 def schemas(names: list[str] | None = None) -> list[dict]:
