@@ -32,7 +32,13 @@ and the forbidden calls first made then -- the cost -- read off the database's
 action log as the verifier reads it, and how many closing phases were cut
 short. Since 1j it also counts the two costs that run found and its rule had
 not: a write made a second time, and a verification tried with digits the
-customer never gave. Read all of them before the pass rate.
+customer never gave. Since 1k, each episode's verdict as the customer left it
+beside its verdict at the end -- the phase's effect with the conversation held
+fixed -- the paired comparison with every case as she left it, which is the
+conversations' difference alone, the writes no check scores either way, and
+under each episode listed what she last said. Read all of them before the
+pass rate: a rescue after "yes, go ahead, thanks" is the turn the episode's
+end never gave the agent (WHAT_FAILED #38), not a second look.
 """
 
 from __future__ import annotations
@@ -82,14 +88,36 @@ def _reviews(cell: Path, ids: set[str]) -> dict[str, dict]:
 
 def _closings(cell: Path, eps: list[dict], tasks: dict) -> dict[str, dict]:
     """transcript_id -> closing.review of its trace (harness/closing.py), with
-    whether the episode passed, for finished episodes."""
+    whether the episode passed, for finished episodes. The verdicts before and
+    after the note are today's checks on the replayed calls, so they are kept
+    only where the episode's own verdict is too ("rescored"): beside the runs'
+    recorded verdicts (--checker recorded), or an episode rescore.py leaves
+    alone, they would be two scorings in one line."""
     from pasarbench.harness.closing import review
     out = {}
     for e in eps:
         recs = [json.loads(l) for l in (cell / f"{e['transcript_id']}.jsonl").read_text(
             encoding="utf-8").splitlines() if l.strip()]
         r = review(recs, tasks.get(e["task_id"]))
+        if e.get("scored") != "rescored":
+            r = {**r, "at_note": None, "at_end": None}
         out[e["transcript_id"]] = {**r, "passed": e["passed"], "trap": e["trap"]}
+    return out
+
+
+def _as_left(eps: list[dict], cv: dict[str, dict]) -> list[dict]:
+    """The episodes, each with its verdict as the customer left the case
+    (closing.review's at_note) -- what the arm would have scored without the
+    note, its conversations unchanged. An episode the note reached but whose
+    case could not be scored as she left it is left out: its verdict at the
+    end could count what the note did."""
+    out = []
+    for e in eps:
+        r = cv.get(e["transcript_id"], {})
+        if r.get("at_note") is not None:
+            out.append({**e, "passed": r["at_note"]})
+        elif not r.get("noted"):
+            out.append(e)
     return out
 
 
@@ -98,7 +126,10 @@ def _print_closing(name: str, cv: dict[str, dict], show: int = 40) -> None:
     a required call first made after the customer left, and the cost is a
     forbidden call first made then -- and, since 1j, a write made a second
     time and a verification tried with digits nobody gave. Every episode with
-    a cost is listed; the others up to `show`."""
+    a cost is listed, and every case the phase turned from a fail into a pass
+    some other way; the rest up to `show`. Each with what the customer last
+    said: a rescue after her "yes, go ahead" is a turn the agent never had
+    (WHAT_FAILED #38), not a second look."""
     noted = [t for t, r in cv.items() if r["noted"]]
     if not noted:
         return
@@ -118,13 +149,33 @@ def _print_closing(name: str, cv: dict[str, dict], show: int = 40) -> None:
           + (", ".join(f"{t} {n}" for t, n in calls.most_common()) or "none"))
     print(f"  {'a required action first made then':42s} {len(first):>4d} episodes, "
           f"{sum(cv[t]['passed'] for t in first)} of them passed -- the mechanism")
+    scored = [t for t in noted if cv[t]["at_note"] is not None]
+    fixed = sorted(t for t in scored if not cv[t]["at_note"] and cv[t]["at_end"])
+    broke = sorted(t for t in scored if cv[t]["at_note"] and not cv[t]["at_end"])
+    if scored:
+        print(f"  {'the case as the customer left it -> at end':42s} {len(fixed):>4d} failed -> "
+              f"passed, {len(broke)} passed -> failed, of {len(scored)}"
+              f"{' -- read every one it broke' if broke else ''}")
+    else:
+        print(f"  {'the case as the customer left it -> at end':42s} not scored: the "
+              f"verdicts here are not today's checks on replayed calls")
+    lost = Counter(cv[t]["not_replayed"] for t in noted if cv[t].get("not_replayed"))
+    if lost:
+        print(f"  {'not read: the calls do not replay':42s} {sum(lost.values()):>4d} episodes ("
+              + "; ".join(f"{n}: {why[:60]}" for why, n in lost.most_common(2)) + ")")
     print(f"  {'a forbidden call first made then':42s} {len(cost):>4d} episodes"
           f"{' -- its cost; read them' if cost else ''}")
     print(f"  {'a write repeating one already made':42s} {len(again):>4d} episodes"
           f"{' -- one case done twice; read them' if again else ''}")
     print(f"  {'a verification with digits never given':42s} {len(guess):>4d} episodes"
           f"{' -- read them' if guess else ''}")
-    paid = sorted(set(cost) | set(again) | set(guess))
+    blind = [t for t in noted if cv[t]["unscored"]]
+    print(f"  {'a write no check asks for or forbids':42s} {len(blind):>4d} episodes"
+          f"{' -- the checks cannot say; read them' if blind else ''}")
+    # A fail turned into a pass by no required action -- a write a database
+    # check needed -- is the mechanism too, and nothing else names it.
+    other = [t for t in fixed if not cv[t]["first"]]
+    paid = sorted(set(cost) | set(again) | set(guess) | set(broke) | set(blind) | set(other))
     rest = sorted(set(first) - set(paid))
     for t in paid + rest[:show]:
         r = cv[t]
@@ -133,9 +184,18 @@ def _print_closing(name: str, cv: dict[str, dict], show: int = 40) -> None:
                 if r["forbidden"] else []) + \
                ([f"REPEATED: {', '.join(tool for tool, _ in r['repeated'])}"]
                 if r["repeated"] else []) + \
-               ([f"GUESSED: verify_identity {', '.join(r['guessed'])}"] if r["guessed"] else [])
+               ([f"GUESSED: verify_identity {', '.join(r['guessed'])}"] if r["guessed"] else []) + \
+               ([f"UNSCORED: {', '.join(tool for tool, _ in r['unscored'])}"]
+                if r["unscored"] else []) + \
+               (["BROKE A PASS"] if r["at_note"] and r["at_end"] is False else []) + \
+               (["FIXED A FAIL"] if r["at_note"] is False and r["at_end"] and not r["first"]
+                else [])
         print(f"    {t:24s} {r['trap']:34s} {'pass' if r['passed'] else 'FAIL'}  "
               f"{'; '.join(what)}")
+        if r.get("left_saying") is not None:
+            words = " ".join(r["left_saying"].split())
+            print(f"      she left saying: \"{words[:100]}{'...' if len(words) > 100 else ''}\""
+                  if words else "      she left saying nothing")
     if len(rest) > show:
         print(f"    ... and {len(rest) - show} more with a required action first made then")
 
@@ -231,6 +291,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"{label:12s} {fmt.format(sa[key]):>34s} {fmt.format(sb[key]):>34s}")
 
     g = paired_episodes(ea, eb)
+    cvs = [_closings(c, eps, tasks) for c, eps in zip(cells, (ea, eb))]
     print()
     if g is None:
         print("paired: fewer than 5 shared tasks -- not testable")
@@ -239,6 +300,18 @@ def main(argv: list[str] | None = None) -> int:
                    else "INCONCLUSIVE")
         print(f"paired by task ({g['n']} shared): {g['diff']:+.3f}; {g['better']} tasks "
               f"better, {g['worse']} worse, sign test p={g['p']:.3f}  ->  {verdict}")
+        if any(r["at_note"] is not None for cv in cvs for r in cv.values()):
+            # Every closing cell's cases as each customer left them, against
+            # the other cell's the same way: what the conversations did alone.
+            la, lb = _as_left(ea, cvs[0]), _as_left(eb, cvs[1])
+            out = len(ea) + len(eb) - len(la) - len(lb)
+            gl = paired_episodes(la, lb)
+            print("  the same, each case as its customer left it: " + (
+                f"{gl['diff']:+.3f}; {gl['better']} tasks better, {gl['worse']} worse, "
+                f"p={gl['p']:.3f} -- the conversations alone, before any closing note"
+                if gl else "fewer than 5 shared tasks -- not testable")
+                + (f" ({out} episodes left out: not scored as the customer left them)"
+                   if out else ""))
     t = paired_episodes(ea, eb, metric="tokens")
     if t:
         print(f"tokens, paired: {t['diff']:+,.0f} per episode; {t['better']} tasks "
@@ -280,8 +353,8 @@ def main(argv: list[str] | None = None) -> int:
                 for tool, quote in (st.get("guardrail") or {}).get("claims", []):
                     print(f"    {tid:24s} {tool}: \"{quote[:110]}\"")
 
-    for name, cell, eps in zip(names, cells, (ea, eb)):
-        _print_closing(name, _closings(cell, eps, tasks))
+    for name, cv in zip(names, cvs):
+        _print_closing(name, cv)
 
     def per_trap(eps):
         d: dict[str, list[bool]] = defaultdict(list)
