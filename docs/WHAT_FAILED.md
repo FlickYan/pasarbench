@@ -1,6 +1,6 @@
 # What failed
 
-Thirty-five real defects found while building this. The first fifteen are in
+Thirty-eight real defects found while building this. The first fifteen are in
 the order of how much damage they would have done; the rest are in the order
 they were found. Every one is reproducible from the git history.
 
@@ -1349,6 +1349,101 @@ forbidden calls.
 **Lesson.** Count an intervention's cost in what it does, not in what the
 checks forbid. The checks were written for the agent's mistakes before the
 intervention existed; the mistakes a new mechanism makes are new.
+
+## 37. Cancelling a paid order never gave the money back
+
+**What happened.** Thirteen of the fourteen tasks that cancel a card order still
+being processed are orders whose payment was captured: the customer has paid.
+Their checks ask for a verified customer and a cancelled order. The policy says
+when an order may be cancelled, and that a cash-on-delivery order needs no
+refund (P2.4); of a paid one it says nothing, and `cancel_order` changes the
+order and its items, not the payment. Nothing in the world returns the money,
+and nothing checks whether anything did. In all 42 cancellations of the 1k
+control the agent told the customer it would come back — "the refund will be
+issued back to your original payment method", "dana akan dikembalikan ke metode
+pembayaran asal", "款项会退回原支付方式" — none sent it, and all 42 passed. Across every
+recorded run 690 of these orders were cancelled and 10 refunded: 7 by the base
+Qwen model during the conversation, 3 by the closing check after the customer
+had left, each keeping the agent's own promise (RUNBOOK 1k). They passed too.
+Two of those three refund T03, whose payment was only authorized: a hold the
+cancellation should release, which P4.3's reason — "no money has been collected"
+— covers and its letter, "pending", does not.
+
+**Why.** The cancellation tasks were written for the half of the trap that fails
+— cancelling what has shipped, refunding what was never paid. What follows a
+cancellation that succeeds was never in a check, so it never had to be in the
+world, and a promise about it is neither true nor false here. On the platforms
+the suite models it is true: they refund a cancelled paid order themselves. The
+agent was describing a world this one does not implement.
+
+**What it moved.** No verdict — the checks never look at the money. What it hid
+is a claim: in all 42 cancellations of the 1k control the agent told the
+customer what would happen to her money, and the benchmark could not say whether
+that was true.
+
+**Fix.** Open: a decision about the world, not the agent. (a) `cancel_order`
+does what the platforms do — refunds a captured payment to its method, releases
+an authorized one, and says so in its result — and a refund after it is refused
+as a second one, as a refund to a COD order is. Runs replay under the tool they
+ran with (`tool_checks`, #35), so no recorded verdict moves, and the agent's
+promise becomes true. (b) A policy rule — refund a cancelled paid order in full
+to its method, release an authorized one — that the cancellation checks require.
+Then every recorded cancellation of a captured order fails but the eight that
+refunded its total, and every result that includes them moves. (a) is what the suite's
+own markets do, and the smaller change.
+
+**Lesson.** A world defines what its checks need and no more. The money after a
+cancellation was in no check, so it was in no rule and no tool — and the agent
+kept describing it to customers, in words nothing could check.
+
+## 38. The customer's yes ended the conversation
+
+**What happened.** The simulated customer is told to end the conversation, with
+`###END###`, when her problem is resolved. She often counts it resolved when it
+is offered: "Would you like me to issue that voucher for you?" — "Sure, I'll
+take the voucher. Thanks." The episode ends on her words, and without the
+closing check the harness never shows them to the agent. An agent that asks
+before it acts — P6.2 says it "may offer" a voucher — never makes the call she
+has just agreed to, and the case fails. Reading every recorded failure whose
+last reply asked the customer something and whose answer ended the conversation,
+63 failures in the 11,329 episodes without a closing phase are this: 57 in the
+voucher trap, more than half of its 106 failures, and 6 refunds the agent had
+asked her to confirm ("รบกวนยืนยันให้ดิฉันดำเนินการคืนเงินเลยไหมคะ?" — "ใช่ค่ะ
+ดำเนินการเลยนะคะ"). The closing check gave the agent the turn the episode
+withheld: 5 of its 27 rescues are this, not a second look (RUNBOOK 1k).
+
+**Why.** Two things, each harmless alone: a model playing the customer hears
+"yes" as the end, and the loop ends on her message without passing it on. In 44
+of the 57 voucher cases the agent had not yet verified her, so a turn after her
+yes would not have helped either — the voucher needs her digits (P1.1), which
+only a customer still there could give. In the other 13, and in all 6 refunds,
+the agent could have acted at once — and in the closing arms it did whenever it
+could: four refunds and an escalation, and none of the four vouchers, none of
+them verified.
+
+**What it moved.** No result in the README reverses, counted at its most — every
+one of the 63 made a pass. Tool naming goes from 0.44 → 0.80 to 0.47 → 0.82 (39
+tasks better, 3 worse); the fine-tune's +0.3 to +0.1, and the reference's −6.6
+stays; the largest language gap from 7.5 points to 6.2, every p ≥ 0.25; the
+closing check's first test from p = 0.022 to 0.006, its second stays
+INCONCLUSIVE. One reading crosses a line on one episode: search against all 20
+tools, −11.5 points at p = 0.07, would be −12.5 at p = 0.04. The number it moves
+most is the voucher trap's own: half its failures measured whether the agent
+issued the voucher before asking.
+
+**Fix.** Open: either one changes every later conversation. (a) The customer:
+when she agrees to something she says so and waits for it, and ends only once
+the agent says it is done or cannot be. That removes the cause and covers all
+63. (b) The harness: give the agent her last message and one turn to act on it,
+as the closing phase does without its note — what a deployed agent gets anyway,
+since a closed chat window does not stop the last message arriving. It covers
+the 19 the agent could act on, not the 44 that needed her. (a) is the fix and
+(b) can go with it; either way the closing check is measured again on top, so
+that a turn the episode owed the agent is not counted as the note's.
+
+**Lesson.** Who ends a simulated conversation, and on what, is part of what it
+measures. Read the last message of every failure: half of one trap's were saying
+yes.
 
 ---
 
