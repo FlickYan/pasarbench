@@ -897,11 +897,15 @@ def test_closing_report():
     # runs into the closing phase's cap.
     guess = ("verify_identity", {"user_id": t.user_id, "phone_last4": "0000"})
     a = _closing_cell(tmp, "A", "off", [[look, explain, esc, "Escalated."]] * 3)
+    other = ("escalate_to_human", {"order_id": "O1009", "category": "other",
+                                   "reason": "customer asked about a refund"})
     b = _closing_cell(tmp, "B", "check", [[look, explain, esc, "Escalated."],
                                           [look, explain, ver, refund, "Done."],
                                           [look, explain] + [look] * 8,
                                           [look, esc, explain, esc, "Escalated again."],
-                                          [look, explain, guess, "Could not verify."]])
+                                          [look, explain, guess, "Could not verify."],
+                                          [look, ver, esc, explain, refund, "Refunded."],
+                                          [look, esc, explain, other, "Filed under other."]])
     cc = _load_script("compare_cells")
     out = io.StringIO()
     with contextlib.redirect_stdout(out):
@@ -914,8 +918,15 @@ def test_closing_report():
           re.search(r"a required action first made then\s+1 episodes, 1 of them passed", text)
           is not None and "first: escalate_to_human" in text, text[-1200:])
     check("…and the forbidden call first made then, by episode -- the cost",
-          re.search(r"a forbidden call first made then\s+1 episodes", text) is not None
+          re.search(r"a forbidden call first made then\s+2 episodes", text) is not None
           and "FORBIDDEN: issue_refund" in text, text[-1200:])
+    check("…each episode's verdict as the customer left it beside the one at the end: the "
+          "phase's whole effect, the pass it broke named",
+          "1 failed -> passed, 1 passed -> failed, of 7" in text
+          and re.search(r"T14__r5 .*BROKE A PASS", text) is not None, text[-2000:])
+    check("…and the writes no check scores, listed to be read",
+          re.search(r"a write no check asks for or forbids\s+1 episodes", text) is not None
+          and re.search(r"T14__r6 .*UNSCORED: escalate_to_human", text) is not None, text[-2000:])
     check("…and the phase that was cut short, and by what",
           "cut short before the agent was done: 1 episodes (1 by closing.MAX_STEPS)" in text,
           text[-1200:])
@@ -929,15 +940,128 @@ def test_closing_report():
           and "GUESSED: verify_identity 0000" in text
           and "GUESSED: verify_identity 4567" in text, text[-1500:])
     check("a trap that moved is broken down by language, as 1j's was found to be",
-          "by language, passed: en 0/3 -> 2/5" in text, text[-700:])
+          "by language, passed: en 0/3 -> 3/7" in text, text[-700:])
     check("…while the control cell, which never got the note, has no such section",
           text.count("closing check in") == 1, text[-1200:])
+    # The scripted customer says the same words in every episode as she goes;
+    # six are listed -- five with a cost and the rescue (the cut-short one
+    # made no write).
+    check("under every episode listed, what the customer last said: a rescue after "
+          "\"yes, go ahead\" is a turn the agent never had, not a review (WHAT_FAILED #38)",
+          text.count("      she left saying: \"Oh, I didn't notice. Thanks, bye\"") == 6, text[-2500:])
+    check("…and with one task, too few to pair, the header says so and the paired line "
+          "for the cases as each customer left them is not printed either",
+          "paired: fewer than 5 shared tasks -- not testable" in text
+          and "each case as its customer left it" not in text, text[:1500])
 
-    cv = cc._closings(b, load_episodes(b, checker="current"), all_tasks())
+    eps_b = load_episodes(b, checker="current")
+    cv = cc._closings(b, eps_b, all_tasks())
+    check("the cases as she left them are the verdicts before the note: the escalation made "
+          "after she left does not count, the refund that broke a pass has not happened yet",
+          sorted(e["transcript_id"] for e in cc._as_left(eps_b, cv) if e["passed"])
+          == ["T14__r3", "T14__r5", "T14__r6"]
+          and sorted(e["transcript_id"] for e in eps_b if e["passed"])
+          == ["T14__r0", "T14__r3", "T14__r6"], str(cc._as_left(eps_b, cv)))
+    # One task is too few to pair, so stand in for the test and look at what
+    # it was given: each cell's cases as their customers left them, in the
+    # header's order.
+    import pasarbench.diagnose as dg
+    real = dg.paired_episodes
+
+    def spied(cells):
+        seen = []
+
+        def spy(x, y, metric="passed"):
+            seen.append((sorted(e["transcript_id"] for e in x if e["passed"]),
+                         sorted(e["transcript_id"] for e in y if e["passed"]), metric))
+            return real(x, y, metric) or {"unit": "task", "n": 1, "diff": 0.0, "better": 9,
+                                          "worse": 9, "p": 0.999, "resolved": False}
+        dg.paired_episodes = spy
+        try:
+            shown = io.StringIO()
+            with contextlib.redirect_stdout(shown):
+                cc.main([str(c) for c in cells])
+        finally:
+            dg.paired_episodes = real
+        return seen, shown.getvalue()
+
+    left_b = ["T14__r3", "T14__r5", "T14__r6"]
+    seen, shown = spied([a, b])
+    check("…set against the control, in the header's order, they are the conversations' "
+          "difference alone, printed under the paired line",
+          ([], left_b, "passed") in seen
+          and re.search(r"paired by task .*\n  the same, each case as its customer left it: "
+                        r"\+0\.000; 9 tasks better, 9 worse, p=0\.999 -- the conversations "
+                        r"alone", shown) is not None, str(seen))
+    seen, _ = spied([b, a])
+    check("…with the closing cell as the control, its cases as left stand in its own place",
+          (left_b, [], "passed") in seen, str(seen))
+    b2 = _closing_cell(tmp, "B2", "check", [[look, explain, esc, "Escalated."]] * 2)
+    seen, _ = spied([b, b2])
+    check("…and two closing cells are each taken as their customers left them: a turn "
+          "after the note counts in neither",
+          (left_b, [], "passed") in seen, str(seen))
+    # The rescued episode's task "changed since the run": rescore.py keeps its
+    # recorded pass, which the note made -- so it cannot stand for the case as
+    # she left it, and is left out rather than counted.
+    import json
+    import shutil
+    b3 = tmp / "B3" / "full"
+    shutil.copytree(b, b3)
+    f = b3 / "T14__r0.jsonl"
+    lines = f.read_text().splitlines()
+    head = json.loads(lines[0])
+    f.write_text("\n".join([json.dumps({**head, "task_digest": "0" * 16}), *lines[1:]]) + "\n")
+    seen, shown = spied([a, b3])
+    check("…and an episode the note reached whose case cannot be scored as she left it is "
+          "left out of that line, not counted at its end, and the line says so",
+          ([], left_b, "passed") in seen
+          and "(1 episodes left out: not scored as the customer left them)" in shown, str(seen))
+    # T02 counts the return in a database check that no required action
+    # names: a return opened after she left turned a fail into a pass.
+    ver2 = ("verify_identity", {"user_id": "U001", "phone_last4": "6789"})
+    elig = ("check_return_eligibility", {"order_id": "O1001", "order_item_id": "OI1"})
+    credit = ("issue_store_credit", {"user_id": "U001", "amount_minor": 17800, "currency": "MYR",
+                                     "reason": "broken pumps", "order_id": "O1001"})
+    ret = ("initiate_return", {"order_id": "O1001", "order_item_id": "OI1",
+                               "reason": "broken pumps", "photo_evidence_provided": False})
+    e = _closing_cell(tmp, "E", "check", [[ver2, elig, credit, "Credited.", ret, "Opened."]],
+                      task_id="T02")
+    shown = io.StringIO()
+    with contextlib.redirect_stdout(shown):
+        cc._print_closing("E/full", cc._closings(e, load_episodes(e, checker="current"),
+                                                 all_tasks()), show=0)
+    check("a fail the phase turned into a pass with a write no required action names is "
+          "listed however short the list, as the rescue it is -- not as a write no check sees",
+          re.search(r"T02__r0 .*pass  FIXED A FAIL", shown.getvalue()) is not None
+          and "UNSCORED" not in shown.getvalue()
+          and "1 failed -> passed, 0 passed -> failed, of 1" in shown.getvalue(),
+          shown.getvalue())
+    shown = io.StringIO()
+    with contextlib.redirect_stdout(shown):
+        cc._print_closing("E/full", cc._closings(e, load_episodes(e, checker="recorded"),
+                                                 all_tasks()))
+    check("…while beside the runs' recorded verdicts the before-and-after is not scored, "
+          "rather than mixing two scorings in one line",
+          "not scored: the verdicts here are not today's checks on replayed calls"
+          in shown.getvalue() and "FIXED A FAIL" not in shown.getvalue(), shown.getvalue())
     out = io.StringIO()
     with contextlib.redirect_stdout(out):
         cc._print_closing("B/full", cv, show=0)
     text = out.getvalue()
+    fake = {"T14__r9": {"noted": True, "ran": True, "cut": [], "writes": [("cancel_order", True)],
+                        "first": [], "forbidden": [], "repeated": [], "guessed": [],
+                        "unscored": [], "at_note": True, "at_end": False, "passed": False,
+                        "trap": "x", "left_saying": ""}}
+    shown = io.StringIO()
+    with contextlib.redirect_stdout(shown):
+        cc._print_closing("X", fake)
+    check("a pass the phase broke is listed even when no rule names how it broke",
+          re.search(r"T14__r9 .*BROKE A PASS", shown.getvalue()) is not None
+          and "0 failed -> passed, 1 passed -> failed, of 1" in shown.getvalue(), shown.getvalue())
+    check("…a customer who left without a word is said to have, not shown an empty quote",
+          "      she left saying nothing" in shown.getvalue()
+          and 'she left saying: ""' not in shown.getvalue(), shown.getvalue())
     check("every episode that paid the cost is listed, however many are; the rest are "
           "capped, and the cap says so",
           "FORBIDDEN: issue_refund" in text and "first: escalate_to_human" not in text
