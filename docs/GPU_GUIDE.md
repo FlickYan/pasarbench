@@ -104,7 +104,12 @@ In a notebook the same knobs are set in a cell before `pn.run("stage1")`:
 `data/run_settings.env` and stage 2 reads them from there, so a new terminal or
 session cannot quietly change them; exporting a different `PASAR_K` later is
 refused. `PASAR_EPOCHS` (and `PASAR_TRAIN_MAX_LEN`, below) may still be changed
-for stage 2.
+for stage 2. The simulated customer is kept the same way: stage 1 records
+`PASAR_CUSTOMER` — 2 by default, the customer told to wait for what she agreed
+to (WHAT_FAILED #38) — and stage 2 and the reference row use it. A stage 1 from
+before v31 recorded none; its runs had the old customer and the old tools
+(#37), and no stage runs on it: move `data/` and `traces/P-*` aside and run
+stage 1 again.
 
 The optional reference row calls deepseek-v4-pro through its API against the
 same customer; it only needs your DeepSeek key.
