@@ -37,7 +37,7 @@ from .diagnose import tool_scaling_report
 from .harness.context import BASE_STRATEGIES, make_strategy, note_discipline
 from .harness.exposure import build_exposure
 from .harness.loop import run_episode
-from .harness.simulator import LLMUser, SilentUser
+from .harness.simulator import CUSTOMER, LLMUser, SilentUser
 from .harness.trace import TraceWriter, summarise_run
 from .harness.types import Budget
 from .generate import generate, stratified_sample
@@ -63,6 +63,13 @@ def select_tasks(args) -> list[Task]:
     if args.tasks:
         ids = set(args.tasks.split(","))
         pool = [t for t in pool if t.task_id in ids]
+    if getattr(args, "traps", ""):
+        want = {x.strip() for x in args.traps.split(",") if x.strip()}
+        unknown = sorted(want - {t.trap for t in ALL_TASKS})
+        if unknown:
+            raise SystemExit(f"--traps: no such trap {unknown}; the traps are "
+                             f"{sorted({t.trap for t in ALL_TASKS})}")
+        pool = [t for t in pool if t.trap in want]
     if args.sample:
         pool = stratified_sample(pool, per_trap=args.sample)
     return pool
@@ -260,11 +267,13 @@ def make_simulator(kind: str, args) -> callable:
                                   extra_body=_extra_body(
                                       args.sim_extra_body or args.extra_body))
         return lambda t: LLMUser(sim, t.persona, t.hidden_facts, t.language,
-                                 gate_facts=args.gate_facts)
+                                 gate_facts=args.gate_facts,
+                                 customer=getattr(args, "customer", CUSTOMER))
     if kind == "anthropic":
         sim = AnthropicBackend(model=args.sim_model, temperature=0.7)
         return lambda t: LLMUser(sim, t.persona, t.hidden_facts, t.language,
-                                 gate_facts=args.gate_facts)
+                                 gate_facts=args.gate_facts,
+                                 customer=getattr(args, "customer", CUSTOMER))
     raise ValueError(kind)
 
 
@@ -547,6 +556,12 @@ def main() -> None:
                          "run the full suite only for final numbers.")
     ap.add_argument("--languages", default="", help="e.g. en,id,th")
     ap.add_argument("--tasks", default="", help="comma-separated ids, blank = all")
+    ap.add_argument("--traps", default="", help="comma-separated traps, blank = all")
+    ap.add_argument("--customer", type=int, default=CUSTOMER, choices=[1, 2],
+                    help="the simulated customer's rules: 2 (the default since v31) "
+                         "waits for what she agreed to be done before she ends the "
+                         "conversation; 1 could end it on her yes, before the agent "
+                         "acted (WHAT_FAILED #38). Recorded in the simulator's name.")
     ap.add_argument("--max-steps", type=int, default=30)
     ap.add_argument("--token-budget", type=int, default=Budget().max_tokens,
                     help="per-EPISODE token cap; an episode that hits it fails. "
