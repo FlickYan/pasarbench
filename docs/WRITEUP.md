@@ -428,7 +428,7 @@ ranked above the one it trails.
 
 ### What failed
 
-`docs/WHAT_FAILED.md` has 36 entries. Most were found by running experiments
+`docs/WHAT_FAILED.md` has 38 entries. Most were found by running experiments
 and refusing a number that couldn't be right. Three more:
 
 **The ceiling was below the floor.** The oracle arm — by design the best case —
@@ -481,7 +481,7 @@ recipe; a second, with training data balanced across traps, is designed but not
 run. Serving cost is built but not measured.
 <!-- RESULTS.md §3 paired table (pairs 13–16); audit_tool_arms.py §3 header; traces/J-preload OOWDE-VN.vi__r2: "Trường hợp của bạn đã được chuyển lên bộ phận xử lý khiếu nại", escalate_to_human never searched for, never called; traces/L2-claims OOWOV-VN__r1, DRE-PH__r1, HPRR-PH__r2 (RUNBOOK 1i, v25) -->
 
-The code, the trace generators, and all 36 failures are in the repo.
+The code, the trace generators, and all 38 failures are in the repo.
 
 ---
 
@@ -526,11 +526,11 @@ One line each, a number, and the mechanism. Pick three.
 > episodes are flagged, all English. The same blind spot had produced the
 > project's only significant language gaps.
 
-> **Documented 36 defects**, most caught by refusing implausible results —
+> **Documented 38 defects**, most caught by refusing implausible results —
 > including a "ceiling" arm that scored below baseline, a judge evaluated
 > without the evidence it was judging, a fine-tune rewarded for a checker's
-> quirk, a guardrail graded by its own detector, and a tool that took what its
-> own schema refused.
+> quirk, a guardrail graded by its own detector, a tool that took what its
+> own schema refused, and a simulated customer whose "yes" ended the episode.
 
 ---
 
@@ -627,15 +627,32 @@ check the case against the policy, and make any call it requires that no call
 has made. On the tasks that suggested it — the agent explains the earlier
 refund, the customer says thanks, and it closes, though the policy says to
 escalate anyway — pass^1 went from 0.85 to 0.96, 11 tasks better and 2 worse,
-under a rule I wrote before the run. Every gained episode was an escalation
-first made after the customer left, and it caused no forbidden call. But the
-rule counted only forbidden calls, and reading the traces found two other
-costs: in 15 of 171 episodes it escalated a case a second time, which never
-happened without the note, and twice it tried identity digits it had made up.
-Seventeen episodes with a cost against 21 rescued is a much closer call than
-21 against none. And it can't do what needs the customer: a voucher she
-accepted before she verified who she was can't be issued once she's gone.
-<!-- RUNBOOK 1j; traces/M-off and traces/M-check, 2026-10-09; compare_cells.py (v29): pass^1 0.848 -> 0.959, 11 better 2 worse, p=0.022; required action first made then 21, all passed (18 DRE, 3 IVF); forbidden first made then 0; repeated 15; guessed 2 (OOWOV-MY.ms__r0, __r2: "0000"); tokens 44,375 -> 55,201 -->
+under a rule I wrote before the run. On the other 158 tasks it did no harm, and
+replaying every episode as the customer left it and as it ended shows it broke
+no case in either run. It isn't free: it escalated cases a second time, 18
+times, which no conversation did without it in 1,290, and twice tried identity
+digits it had made up. By the rule I wrote before the second run it's worth
+keeping as an option, 27 rescues against 23 costs. Reading them one by one made
+it about even. Five "rescues" were customers who'd said "yes, go ahead, thanks"
+in one message, which ended the episode before the agent could act: the note
+gave it a turn the harness owed it. Two "costs" were a shipping credit the
+policy asks for. That leaves 22 against 21 — or 24, if three refunds it made
+after a cancellation were wrong, which the benchmark can't yet say. What only
+the review did is narrower: the 19 actions the agent had let go, 18 of them on
+one trap.
+<!-- RUNBOOK 1j, 1k; traces/M-* 2026-10-09, traces/N-* 2026-10-10; compare_cells.py (v30): 1j pass^1 0.848 -> 0.959, 11 better 2 worse, p=0.022; 1k 0.964 -> 0.951, 6 better 10 worse, p=0.454; as left -> at end 21 -> 0 and 6 -> 0 (171, 472); as left, paired: 2 better 3 worse p=1.000, 6 better 15 worse p=0.078; rescued 21 + 6 (1j: 18 DRE let go, IVF-VN__r1 let go, IVF-MY.zh-MY__r2 said yes and left, T13__r1 promise; 1k: HRWR-ID.id__r2, LCOW-SG.zh-SG__r0, PRWR-MY.zh-MY__r0, __r1 said yes and left, CCNRD-MY__r0, IVF-SG.sg-en__r1 promises); costs 17 + 6 (repeated 15 + 6, of 1k's 6 two CCRTOM shipping credits P4.6 asks for; guessed 2); repeated writes before the note 0 of 1,290 conversations -->
+
+**"What did the second look find about the benchmark?"** Two holes. Cancelling
+a card order, the agent told the customer her money would go back — 42 times in
+42 in one control, in every language — and nothing in the world did it: no
+rule, no tool, no check says what happens to that money, so every one passed.
+The closing review kept the promise three times, and the checks couldn't say
+whether that was right. And the simulated customer often said yes and goodbye
+in one message; the episode ended on it before the agent read it, which is more
+than half of one trap's failures across every run. Counted at their worst, neither
+reverses a result I report — one would cross p < 0.05. Both change what the
+next run should measure, so they're decided before it.
+<!-- WHAT_FAILED #37: N-off cancel_while_processing 42/42 told of a refund, 0 refunded, 42 passed; all runs 690 cancelled, 10 refunded (P-base 7, N-check 3). #38: 63 failures in 11,329 episodes without a closing phase, 57 in out_of_window_offer_voucher (of its 106 failures); upper bound, all 63 passing: naming 0.474 -> 0.825 (39 better, 3 worse), RFT +0.1, reference -6.6, largest language gap 6.2 (C-clean th), p >= 0.25; I-tools2 search vs all-20 -12.5 p=0.039 -->
 
 **"How do you know your false-claim detector isn't wrong the way the leak
 detector was?"** I don't, fully — it's the same kind of instrument. So it's
@@ -672,17 +689,21 @@ a run from before an ID format change. Then I read the conversations the fix
 had promoted — a replay proves the state, not that the state means what the
 check assumes.
 
-**"What would you do next?"** Replace the guardrail's phrase list with a model
-that reads what the customer was told would happen, and keep the check against
-the tool log mechanical: what got past the list was wording — "flagged", "will
-be reviewed", a promise — and wording is a language question. Run the closing
-check on the rest of the suite: its first test rescued the escalations the
-agent let go, but on traps where the right move is restraint a second look can
-do harm, and the rule for that run counts the repeats and the guessed digits
-from the start (RUNBOOK 1k). Then test the language lead it turned up — the
-duplicate-refund case failing far more often outside English — on a run built
-for it. A second fine-tune on trap-balanced data built with the corrected
-checks. Get the Thai and Vietnamese translations reviewed. Then serving cost.
+**"What would you do next?"** Close the two holes first — say what happens to a
+cancelled order's money, and keep the simulated customer in the conversation
+until what she agreed to is done — because each changes what every later run
+measures. Then confirm the closing check — the same note, on new tasks of
+the traps that suggested it, after the customer-ending fix — and, as a separate
+experiment on tasks it hasn't seen, a note that tells the agent to read its own
+calls before making one: nearly all its cost was a call made twice. Replace the
+guardrail's phrase list with a model that reads what the customer was told
+would happen, and keep the check against the tool log mechanical: what got
+past the list was wording — "flagged", "will be reviewed", a promise — and
+wording is a language question. Then test the language lead the closing check
+turned up — the duplicate-refund case failing far more often outside English —
+on a run built for it. A second fine-tune on trap-balanced data built with the
+corrected checks. Get the Thai and Vietnamese translations reviewed. Then
+serving cost.
 
 ### One thing not to do
 
