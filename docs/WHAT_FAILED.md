@@ -1381,16 +1381,29 @@ is a claim: in all 42 cancellations of the 1k control the agent told the
 customer what would happen to her money, and the benchmark could not say whether
 that was true.
 
-**Fix.** Open: a decision about the world, not the agent. (a) `cancel_order`
-does what the platforms do — refunds a captured payment to its method, releases
-an authorized one, and says so in its result — and a refund after it is refused
-as a second one, as a refund to a COD order is. Runs replay under the tool they
-ran with (`tool_checks`, #35), so no recorded verdict moves, and the agent's
-promise becomes true. (b) A policy rule — refund a cancelled paid order in full
-to its method, release an authorized one — that the cancellation checks require.
-Then every recorded cancellation of a captured order fails but the eight that
-refunded its total, and every result that includes them moves. (a) is what the suite's
-own markets do, and the smaller change.
+**Fix.** v31, as the platforms do. Since tool checks version 3 `cancel_order`
+settles the payment — a captured payment refunded to its method, less anything
+an agent already paid back for the order, a card authorization released, a
+cash-on-delivery order owing nothing — and its result tells the agent which.
+Once the payment is refunded or released, a refund or store credit for the order
+is refused as paying it twice, and an authorization is never refunded, before
+the cancellation or after; what an agent gives for a cash-on-delivery order is
+left to the checks, as before (P2.4). Credit counts as paid back only in the
+order's currency and only when it names the order: credit that names none is
+goodwill the tools cannot tie to it, so credit and then a cancellation pay
+twice, as they would on a platform, and the action log shows both. The tools
+settle one payment per order, as every order in the suite has; an order paid in
+parts would be left as it was, and the result would say so. Both refusals come
+only once the order's customer is verified, so no caller learns the state of a
+payment that is not theirs. The money moves on the payment record, not as a row
+in `refunds`, which several checks count; the action log gets a line of its own
+(`refund_on_cancel`, no tool's name), and that line backs a refund claim for the
+guardrail. A run records the version it ran under and replays under it
+(`tool_checks`, #35), so no recorded verdict moved: all 11,974 recorded episodes
+re-score as they did. A new run is a new world, and `compare_cells.py` flags one
+set against an old one. The other fix — a policy rule the checks require — would
+have failed every recorded cancellation of a captured order but the eight that
+refunded its total.
 
 **Lesson.** A world defines what its checks need and no more. The money after a
 cancellation was in no check, so it was in no rule and no tool — and the agent
@@ -1431,15 +1444,21 @@ tools, −11.5 points at p = 0.07, would be −12.5 at p = 0.04. The number it m
 most is the voucher trap's own: half its failures measured whether the agent
 issued the voucher before asking.
 
-**Fix.** Open: either one changes every later conversation. (a) The customer:
-when she agrees to something she says so and waits for it, and ends only once
-the agent says it is done or cannot be. That removes the cause and covers all
-63. (b) The harness: give the agent her last message and one turn to act on it,
-as the closing phase does without its note — what a deployed agent gets anyway,
-since a closed chat window does not stop the last message arriving. It covers
-the 19 the agent could act on, not the 44 that needed her. (a) is the fix and
-(b) can go with it; either way the closing check is measured again on top, so
-that a turn the episode owed the agent is not counted as the note's.
+**Fix.** v31, the first of the two: customer 2's rule says her problem is
+resolved only once the agent says it has done what she needs, and never to end
+the conversation in a message that agrees to something (`simulator.ENDING`).
+Customer 1 is kept byte for byte (`--customer 1`); a run with her has today's
+tools, so it compares the customers, and does not re-run an old run. A run
+records which customer it had in the simulator's name (`llm-user/v2:...`), so a
+report sees two customers where two ran, `--resume` will not mix them, and
+`compare_cells.py` flags two cells with different customers. It also lists, in
+every cell, the failures she ended — the agent's last reply, then her last
+words, or that she said nothing more — and with `--endings` every episode she
+ended, so a run shows whether she waited (RUNBOOK 1l). A rule in a prompt is a
+request, not a guarantee: until that run, the fix is a change, not a result. The
+second fix — a turn on her last message — is not built: with a customer who
+stays until it is done, there should be nothing left for it to act on. If 1l
+shows she still leaves on a yes, it is next.
 
 **Lesson.** Who ends a simulated conversation, and on what, is part of what it
 measures. Read the last message of every failure: half of one trap's were saying
