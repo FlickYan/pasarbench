@@ -75,11 +75,11 @@ re-scored by replaying their tool calls (`scripts/rescore.py`).
   p = 0.45) had done so before it. By a second rule written in advance it is
   worth keeping as an option — 27 episodes rescued against 23 with a cost, most
   of them a case escalated twice, which no conversation did on its own (0 of
-  1,290). Read one by one it is about even: five rescues were a customer who
-  said "yes, go ahead" and left in the same message, before the agent could
-  act, and two "repeats" were a shipping credit the policy asks for — 22
-  against 21, or 24 if three refunds after a cancellation count as costs, which
-  #37 decides ([RUNBOOK 1j, 1k](docs/RUNBOOK.md),
+  1,290). Read one by one it is about even, 22 against 23: five rescues were a
+  customer who said "yes, go ahead" and left in the same message, before the
+  agent could act; two "repeats" were a shipping credit the policy asks for; and
+  two refunds after a cancellation paid back an authorization that was never
+  charged ([RUNBOOK 1j, 1k](docs/RUNBOOK.md),
   [WHAT_FAILED #36](docs/WHAT_FAILED.md)).
 - **The checks were blind where that second look walked.** Cancelling a card
   order, the agent told the customer her money would go back — 42 times in 42
@@ -90,8 +90,10 @@ re-scored by replaying their tool calls (`scripts/rescore.py`).
   63 failures in the runs without the closing check, 57 of them the voucher
   trap's, more than half of its failures. Counted as passes they reverse no
   result above; one, search against all 20 tools, would cross p < 0.05
-  ([#38](docs/WHAT_FAILED.md)). Both are open: each fix changes what every
-  later run measures.
+  ([#38](docs/WHAT_FAILED.md)). Both are changed in v31 — a cancellation now
+  settles the payment, and the simulated customer is told to wait for what she
+  agreed to — with every recorded run re-scoring exactly as before. Whether she
+  waits is what the next run checks ([RUNBOOK 1l](docs/RUNBOOK.md)).
 - **An LLM judge could not stand in for the database.** Its best configuration —
   with the tool results and the policy — reached κ = 0.72 and still accepted 6
   of 15 failed episodes. It caught one of three false claims and noticed another
@@ -120,16 +122,16 @@ mistake):
 ```bash
 python -m pasarbench.run          # null agent → 0.0, reference agent → 1.0
 python -m tests.test_traps        # 10 naive solutions, all must be rejected
-python -m tests.test_harness      # 87 harness invariants, the claim guardrail, the closing check and every context strategy keeping its note, tools that refuse what their schemas don't allow while old runs replay under the checks they ran under
+python -m tests.test_harness      # 114 harness invariants, the claim guardrail, the closing check and every context strategy keeping its note, tools that refuse what their schemas don't allow and a cancellation that settles the payment once while old runs replay under the tools they ran with, a simulated customer told to wait for what she agreed to
 python -m tests.test_reward       # 30 reward + dataset invariants
 python -m tests.test_generated    # 108 checks over all 199 generated tasks: dates in causal order, the same world in every process, reads of the task's own order, simulator QA
 python -m tests.test_rescore      # 29 re-scoring invariants: the pre-v19 world, replay by digest and by length, the same tool errors on every Python, nothing re-scored on a guess
 python -m tests.test_context      # 39 context-strategy + analysis invariants
 python -m tests.test_judge        # 83 judge + agreement-statistics invariants, judged against today's checks
-python -m tests.test_exposure     # 152 tool-scaling + diagnosis invariants, the tool-naming experiment and its confirmation tasks, the guardrail's report and dry run, the closing check's report, its costs, each case before and after it and what each customer last said, a write a database check needs told from one no check sees, readers that skip its case note, cells compared across tool-check versions flagged
+python -m tests.test_exposure     # 160 tool-scaling + diagnosis invariants, the tool-naming experiment and its confirmation tasks, the guardrail's report and dry run, the closing check's report, its costs, each case before and after it and what each customer last said, a write a database check needs told from one no check sees, readers that skip its case note, how episodes ended and what cancellations settled, listed, cells compared across tool versions or customers flagged
 python -m tests.test_serving      # 54 metrics (SGLang and vLLM), cost and quality-guard invariants
-python -m tests.test_report       # 59 report invariants: paired verdicts, ties, replication, calibration, noise floor, post-training, both scorings in every section, a figure that matches its numbers and drops a title they stop bearing out
-python -m tests.test_training     # 161 checks: split, customer family, collection and resume, examples (Qwen3 and Qwen3.8 formats) against an SGLang-like server, adapter routing, the LoRA probe, serve and Modal scripts, one-GPU memory plans, the notebook helper (progress in place, an interrupt-proof cleanup), the CUDA compiler, run settings, LoRA steps on Qwen3 and Qwen3.8's hybrid architecture, training data picked by today's checks, a push script that keeps runs and keys off GitHub, closing-check runs refused as training data (119 without transformers/torch)
+python -m tests.test_report       # 62 report invariants: paired verdicts, ties, replication, calibration, noise floor, post-training with one customer and one tool version, both scorings in every section, a figure that matches its numbers and drops a title they stop bearing out
+python -m tests.test_training     # 166 checks: split, customer family, collection and resume, examples (Qwen3 and Qwen3.8 formats) against an SGLang-like server, adapter routing, the LoRA probe, serve and Modal scripts, one-GPU memory plans, the notebook helper (progress in place, an interrupt-proof cleanup), the CUDA compiler, run settings, LoRA steps on Qwen3 and Qwen3.8's hybrid architecture, training data picked by today's checks, a push script that keeps runs and keys off GitHub, closing-check runs refused as training data, one simulated customer in every step, kept from stage 1 to stage 2 (124 without transformers/torch)
 
 python -m pasarbench.sweep --backend scripted --suite all
 python scripts/make_report.py     # regenerates RESULTS.md; never hand-fill it
