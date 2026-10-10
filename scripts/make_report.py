@@ -985,7 +985,18 @@ REFERENCE_CMD = (
     "python -m pasarbench.sweep --backend openai --model deepseek-v4-pro \\\n"
     "  --base-url https://api.deepseek.com/v1 --extra-body '{\"thinking\":{\"type\":\"disabled\"}}' \\\n"
     "  --simulator openai --sim-model RedHatAI/gemma-4-31B-it-FP8-Dynamic --sim-url http://localhost:8001/v1 --sim-extra-body '{}' \\\n"
-    "  --suite all -k 5 --temperature 0 --strategies full --workers 8 --run-id P-ref --resume")
+    "  --suite all -k {k} --temperature 0 --customer {customer} --strategies full --workers 8 --run-id P-ref --resume")
+
+
+def _customer(simulator: Any) -> int:
+    """The simulated customer's version, from the name a run recorded:
+    "llm-user/v2:..." since v31, "llm-user:..." for version 1 (WHAT_FAILED #38)."""
+    name = str(simulator or "")
+    if name.startswith("llm-user/v"):
+        version = name[len("llm-user/v"):].split(":", 1)[0]
+        if version.isdigit():
+            return int(version)
+    return 1
 
 
 def _headers(cell: Path) -> dict[str, dict]:
@@ -1120,14 +1131,35 @@ def section_training(traces: Path = Path("traces"),
                    "# read logs/sim_audit.txt, logs/check-A.txt, data/rft/stats.json\n"
                    "bash scripts/gpu_pipeline.sh stage2   # one LoRA per fold, held-out eval\n```")
     if "reference" not in eps:
-        out.append(f"\nReference: {MISSING}, same customer, through the API:\n\n"
-                   f"```bash\n{REFERENCE_CMD}\n```")
+        # The base run's customer and repetitions: a reference with another
+        # customer would be measuring her. And its tools: one made now runs
+        # today's, and a base run under others is not the same world (#37).
+        from pasarbench.tools import CHECKS
+        customer = max((_customer(h.get("simulator")) for h in heads["base"].values()),
+                       default=2)
+        tools_base = sorted({h.get("tool_checks", 1) for h in heads["base"].values()})
+        if tools_base != [CHECKS]:
+            out.append(f"\nReference: {MISSING}. The base run had tools "
+                       f"{', '.join(f'v{x}' for x in tools_base)} and a run made now has "
+                       f"v{CHECKS} (WHAT_FAILED #37): a reference made now would not be "
+                       f"compared with like. Run stage 1 again first (docs/GPU_GUIDE.md).")
+        else:
+            cmd = (REFERENCE_CMD.replace("{customer}", str(customer))
+                   .replace("{k}", str(_passk(eps["base"])[2])))
+            out.append(f"\nReference: {MISSING}, same customer, through the API:\n\n"
+                       f"```bash\n{cmd}\n```")
 
     # -- checks
     checks = []
     sims = {h.get("simulator") for hs in heads.values() for h in hs.values()}
     checks.append((len(sims) == 1, f"one customer in every run: "
                    f"{', '.join('`' + str(x) + '`' for x in sorted(map(str, sims)))}"))
+    # The tools a run had (tools.CHECKS; absent before v27): v3 settles a
+    # cancelled order's payment (WHAT_FAILED #37), so runs on either side of
+    # it are not one world.
+    tools_v = {h.get("tool_checks", 1) for hs in heads.values() for h in hs.values()}
+    checks.append((len(tools_v) == 1, "one tool version in every run: "
+                   + ", ".join(f"v{x}" for x in sorted(tools_v))))
     temps = {role: {h.get("agent_temperature") for h in hs.values()}
              for role, hs in heads.items()}
     ok_t = all(t == {0.0} for t in temps.values())
