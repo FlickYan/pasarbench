@@ -71,11 +71,30 @@ HOW TO BEHAVE
   facts above, you do not know it.
 - Do NOT be helpful about the agent's job. You are the customer, not a tester.
 - Never mention that you are an AI, a simulation, or following instructions.
-- When your problem is resolved, or the agent has clearly told you it cannot be
-  resolved and you accept that, reply with exactly: ###END###
+{ending}
 - If the agent stalls or repeats itself, push back once, then accept.
 
 Reply with your next message only."""
+
+# When the customer ends the conversation. Version 1 ended it "when your problem
+# is resolved", and the customer read an offer as the resolution: "Would you
+# like me to issue that voucher?" -- "Sure, I'll take it. Thanks." and the
+# episode ended on her yes, before the agent could act on it. 63 recorded
+# failures, more than half of the voucher trap's (WHAT_FAILED #38). Version 2
+# waits for what she agreed to. A run records the version in the simulator's
+# name ("llm-user/v2:...", version 1 without the suffix), so a report sees two
+# customers where two ran, and --resume will not mix them.
+ENDING = {
+    1: "- When your problem is resolved, or the agent has clearly told you it cannot be\n"
+       "  resolved and you accept that, reply with exactly: ###END###",
+    2: "- Your problem is resolved only once the agent says it HAS done what you need,\n"
+       "  or has clearly told you it cannot be done and you accept that. Then reply\n"
+       "  with exactly: ###END###\n"
+       "- If the agent offers to do something or asks you to confirm, give your answer\n"
+       "  and wait for it to be done. Never put ###END### in a message that agrees to\n"
+       "  something.",
+}
+CUSTOMER = 2
 
 
 class LLMUser:
@@ -89,7 +108,10 @@ class LLMUser:
 
     def __init__(self, backend, persona: str, facts: dict[str, str],
                  language: str = "en", gate_facts: bool = False,
-                 release_after_turn: int = 6):
+                 release_after_turn: int = 6, customer: int = CUSTOMER):
+        if customer not in ENDING:
+            raise ValueError(f"customer must be one of {sorted(ENDING)}, not {customer!r}")
+        self.customer = customer
         self.backend = backend
         self.persona = persona
         self.facts = facts
@@ -122,8 +144,8 @@ class LLMUser:
                     f"extend simqa.ASK_PATTERNS, then add the language here.")
         self.gate_facts = gate_facts
         self.release_after_turn = release_after_turn
-        self.name = (f"llm-user:{getattr(backend, 'name', '?')}"
-                     + ("+gated" if gate_facts else ""))
+        self.name = (f"llm-user{'' if customer == 1 else f'/v{customer}'}:"
+                     f"{getattr(backend, 'name', '?')}" + ("+gated" if gate_facts else ""))
         # Accumulated across the episode. Without this every cost projection is
         # agent-only, which on a multi-turn benchmark understates the bill by
         # roughly half -- and the simulator is usually on a DIFFERENT provider
@@ -151,7 +173,8 @@ class LLMUser:
         facts = "\n".join(f"- {k}: {v}" for k, v in src.items()) or (
             "- (you cannot recall any details right now; if the agent asks for "
             "something specific, say you will look it up)")
-        base = USER_SYSTEM.format(persona=self.persona, facts=facts)
+        base = USER_SYSTEM.format(persona=self.persona, facts=facts,
+                                  ending=ENDING[self.customer])
         if self.language != "en":
             base += f"\n\nWrite in {self.language}. Keep the register informal."
             # Restate the hold-back rule in the target language. It was the
