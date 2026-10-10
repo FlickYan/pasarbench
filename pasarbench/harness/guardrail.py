@@ -27,7 +27,9 @@ A refund claim is backed by store credit too. For a cash-on-delivery order the
 policy's refund IS store credit (P4.2), and the agents say "I've processed
 your refund" after issuing it -- read against `issue_refund` alone, that was
 the one unbacked claim in passing episodes of the recorded runs, and holding
-it back would have sent the agent to a call the tool refuses for COD.
+it back would have sent the agent to a call the tool refuses for COD. Since
+tools v3 a cancellation that refunded the payment backs one as well: the
+money went back, and the tool refuses a second refund (WHAT_FAILED #37).
 """
 
 from __future__ import annotations
@@ -39,7 +41,7 @@ from ..claims import own_claims
 MODES = ("off", "claims")
 MAX_NOTES = 2
 # The calls that make a claim true. Everything else is backed by its own tool.
-BACKED_BY = {"issue_refund": ("issue_refund", "issue_store_credit")}
+BACKED_BY = {"issue_refund": ("issue_refund", "issue_store_credit", "refund_on_cancel")}
 # User messages starting with "[" are the harness's own: the simulated
 # customer never sees them, and the leak audit skips them.
 NOTE_HEAD = ("[Support system: this note is not from the customer, and the "
@@ -94,6 +96,8 @@ def review(steps: list[dict[str, Any]]) -> dict[str, Any]:
         for tc, tr in zip(calls, st.get("tool_results") or []):
             if tr.get("ok"):
                 done.add(tc["name"])
+            if tr.get("payment") == "refunded":      # a cancellation, tools v3
+                done.add("refund_on_cancel")
         if calls:
             continue
         g = st.get("guardrail")
