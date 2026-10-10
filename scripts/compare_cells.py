@@ -39,6 +39,16 @@ conversations' difference alone, the writes no check scores either way, and
 under each episode listed what she last said. Read all of them before the
 pass rate: a rescue after "yes, go ahead, thanks" is the turn the episode's
 end never gave the agent (WHAT_FAILED #38), not a second look.
+
+For every cell it lists the failures the customer ended -- the agent's last
+reply, then her last words, or that she said nothing more -- and with
+--endings every episode she ended, passes too. Under the first simulated
+customer a yes there was a turn the agent never had; the second is told to
+wait for what she agreed to (v31, WHAT_FAILED #38), and these lists are how a
+run shows whether she did. Under tool checks 3 it counts what each
+cancellation did to the payment and the refunds the tools refused as already
+settled (#37). Two cells with different customers, or different tool
+versions, are flagged: a difference between them is partly the setup's.
 """
 
 from __future__ import annotations
@@ -103,6 +113,96 @@ def _closings(cell: Path, eps: list[dict], tasks: dict) -> dict[str, dict]:
             r = {**r, "at_note": None, "at_end": None}
         out[e["transcript_id"]] = {**r, "passed": e["passed"], "trap": e["trap"]}
     return out
+
+
+def _endings(cell: Path, eps: list[dict], every: bool = False
+             ) -> list[tuple[str, str, bool, str, str]]:
+    """(transcript, trap, passed, the agent's last reply, her last words) for
+    each failed episode -- or, with `every`, each episode -- that the customer
+    ended. Under the first simulated customer a yes there, to something the
+    agent had offered or asked to confirm, was a turn the agent never had: she
+    agreed and left in one message, and the episode ended before the agent read
+    it (WHAT_FAILED #38). The second is told to wait -- and to end with
+    ###END### alone, which leaves no words: an ending with none is listed too,
+    since one right after an open offer is her leaving without an answer.
+    Nothing here decides what is a yes -- an offer can end without a question
+    mark, in any language -- so every ending is listed, to be read. Episodes
+    the agent, or a budget, ended are not hers, and are not listed. The reply
+    is the last she saw: not one the guardrail held back, nor one written
+    after she left, nor text beside a tool call, which the simulated customer
+    is never shown (simulator.py)."""
+    from pasarbench.harness.trace import customer_saw
+    out = []
+    for e in eps:
+        if e["passed"] and not every:
+            continue
+        recs = [json.loads(l) for l in (cell / f"{e['transcript_id']}.jsonl").read_text(
+            encoding="utf-8").splitlines() if l.strip()]
+        turns = [r for r in recs if r.get("type") == "event" and r.get("kind") == "user_turn"]
+        last = turns[-1] if turns else {}
+        if not last.get("ended"):
+            continue
+        words = " ".join(str(last.get("text") or "").split())
+        said = [st.get("model_content") for st in recs if st.get("type") == "step"
+                and customer_saw(st) and not st.get("tool_calls")
+                and (st.get("model_content") or "").strip()]
+        reply = " ".join(said[-1].split())[-200:] if said else ""
+        out.append((e["transcript_id"], e["trap"], bool(e["passed"]), reply, words))
+    return out
+
+
+def _print_endings(name: str, rows: list[tuple[str, str, bool, str, str]],
+                   every: bool = False) -> None:
+    what = "episodes" if every else "failures"
+    failed = sum(not passed for _, _, passed, _, _ in rows)
+    print(f"\n{what} in {name} that the customer ended: {len(rows)}"
+          + (f" ({failed} failed)" if every else "")
+          + (" -- read them: a yes to something the agent had offered is a turn the "
+             "agent never had, and an end without an answer to it is her leaving it "
+             "(WHAT_FAILED #38)" if rows else ""))
+    for tid, trap, passed, reply, words in rows:
+        print(f"    {tid:24s} {trap:34s} {'pass' if passed else 'FAIL'}  after: "
+              f"\"...{reply[-80:]}\"")
+        print(f"      she said: \"{words[:100]}{'...' if len(words) > 100 else ''}\"" if words
+              else "      she said nothing more")
+
+
+def _settlements(cell: Path, eps: list[dict]) -> tuple[Counter, int, int]:
+    """What cancellations did to payments (tool checks 3), counted from what
+    each trace recorded of them, and the refunds or credit the tools refused
+    as already settled -- in all, and in a step after the cancellation's, when
+    the agent had read the tool's note (one response can hold both calls, and
+    then the refusal comes before the note is read). Over the episodes the
+    rest of the comparison counts: an unfinished one is not among them."""
+    from pasarbench.tools import SETTLED
+    done: Counter = Counter()
+    refused = later = 0
+    for f in (cell / f"{e['transcript_id']}.jsonl" for e in eps):
+        cancelled_at = None
+        for i, st in enumerate(json.loads(l) for l in f.read_text(encoding="utf-8").splitlines()
+                               if l.strip()):
+            if st.get("type") != "step":
+                continue
+            for tr in st.get("tool_results") or []:
+                if tr.get("name") == "cancel_order" and tr.get("payment"):
+                    done[tr["payment"]] += 1
+                    cancelled_at = i if cancelled_at is None else cancelled_at
+                elif str(tr.get("error") or "").startswith(SETTLED):
+                    refused += 1
+                    later += cancelled_at is not None and cancelled_at < i
+    return done, refused, later
+
+
+def _print_settlements(name: str, done: Counter, refused: int, later: int) -> None:
+    if not done:
+        return
+    known = ("refunded", "released", "nothing collected")
+    print(f"\nwhat cancellations in {name} did to the payment: "
+          + ", ".join(f"{k} {done[k]}" for k in (*known, *sorted(set(done) - set(known)))
+                      if done[k])
+          + f"; refunds or credit refused as already settled: {refused}"
+          + (f", {later} of them in a step after the cancellation -- an agent that had "
+             f"read the tool's note and tried to pay again; read them" if refused else ""))
 
 
 def _as_left(eps: list[dict], cv: dict[str, dict]) -> list[dict]:
@@ -255,6 +355,9 @@ def main(argv: list[str] | None = None) -> int:
                                       "traces/J-named/full+search-300")
     ap.add_argument("--tools", default=DEFAULT_TOOLS,
                     help="tools whose use to count among episodes that need them")
+    ap.add_argument("--endings", action="store_true",
+                    help="list every episode the customer ended, passes too, not only "
+                         "the failures (RUNBOOK 1l: does the simulated customer wait?)")
     ap.add_argument("--checker", choices=["current", "recorded"], default="current",
                     help="today's checks on the replayed episodes (default, as "
                          "RESULTS.md) or the verdicts the runs recorded")
@@ -281,8 +384,13 @@ def main(argv: list[str] | None = None) -> int:
         print(f"{key:12s} {str(heads[0].get(key, default)):>34s} "
               f"{str(heads[1].get(key, default)):>34s}")
     if heads[0].get("tool_checks", 1) != heads[1].get("tool_checks", 1):
-        print("!! the two cells ran under different tool checks (WHAT_FAILED #35): a "
-              "difference between them is partly the tools'. Re-run the older one.")
+        print("!! the two cells ran under different tool checks (WHAT_FAILED #35, #37): "
+              "a difference between them is partly the tools'. Re-run the older one.")
+    if heads[0].get("simulator") != heads[1].get("simulator"):
+        print("!! the two cells had different simulated customers -- another model, "
+              "gating, or the rules v31 changed (WHAT_FAILED #38): a difference between "
+              "them is partly the customer's. Read it as an experiment on the customer, "
+              "or re-run one cell with the other's.")
     sa, sb = summary(ea), summary(eb)
     for key, fmt in (("episodes", "{:d}"), ("tasks", "{:d}"), ("pass1", "{:.3f}"),
                      ("passk", "{:.3f}"), ("tokens", "{:,.0f}"), ("steps", "{:.1f}")):
@@ -355,6 +463,9 @@ def main(argv: list[str] | None = None) -> int:
 
     for name, cv in zip(names, cvs):
         _print_closing(name, cv)
+    for name, cell, eps in zip(names, cells, (ea, eb)):
+        _print_endings(name, _endings(cell, eps, every=a.endings), every=a.endings)
+        _print_settlements(name, *_settlements(cell, eps))
 
     def per_trap(eps):
         d: dict[str, list[bool]] = defaultdict(list)
