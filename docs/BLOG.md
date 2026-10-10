@@ -380,7 +380,7 @@ ranked above the one it trails.
   guardrail did. Graded by the audit, the count of false claims had not moved.
   Graded that way from the start, the second version took it from five to
   none — and reading the failures by hand still found what neither reader could.
-- **Write down what failed.** The project's failure log has 36 entries; most
+- **Write down what failed.** The project's failure log has 38 entries; most
   were found by refusing a number that couldn't be right.
 
 ## Limits
@@ -398,5 +398,5 @@ spot, and its live test is one run of 192 conversations. The Thai and
 Vietnamese translations are not native-reviewed. The fine-tune is one run of
 one recipe.
 
-The code, the trace generators, and all 36 failures are in the repo:
+The code, the trace generators, and all 38 failures are in the repo:
 [github.com/FlickYan/pasarbench](https://github.com/FlickYan/pasarbench).
