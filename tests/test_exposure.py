@@ -810,8 +810,10 @@ def test_claim_guardrail_report():
           and {h[3] for h in hits} == {"escalate_to_human"}, str((counts, hits)))
 
     import json
+
+    from pasarbench.tools import CHECKS
     check("both cells record the tool checks they ran under, and nothing is flagged",
-          re.search(r"tool_checks\s+2\s+2", text) is not None
+          re.search(rf"tool_checks\s+{CHECKS}\s+{CHECKS}", text) is not None
           and "different tool checks" not in text, text[:800])
     for f in (tmp / "C" / "full+search-300").glob("*.jsonl"):
         lines = f.read_text().splitlines()
@@ -823,11 +825,12 @@ def test_claim_guardrail_report():
         cc.main([str(tmp / "C" / "full+search-300"), str(tmp / "G" / "full+search-300")])
     check("…and a cell from before v27 set against one after is flagged as not one "
           "experiment (WHAT_FAILED #35)",
-          re.search(r"tool_checks\s+1\s+2", out.getvalue()) is not None
+          re.search(rf"tool_checks\s+1\s+{CHECKS}", out.getvalue()) is not None
           and "different tool checks" in out.getvalue(), out.getvalue()[:800])
 
 
-def _closing_cell(root, run, mode, plans, task_id="T14"):
+def _closing_cell(root, run, mode, plans, task_id="T14",
+                  says="Oh, I didn't notice. Thanks, bye ###END###"):
     """Episodes of one task through the real loop, the customer leaving after
     the agent's first reply, written as a sweep writes them."""
     from pasarbench.harness.simulator import LLMUser
@@ -839,8 +842,7 @@ def _closing_cell(root, run, mode, plans, task_id="T14"):
         name, model, reports_usage = "leaves", "c", False
 
         def chat(self, messages, tools):
-            return ModelResponse(content="Oh, I didn't notice. Thanks, bye ###END###",
-                                 usage=Usage(1, 1))
+            return ModelResponse(content=says, usage=Usage(1, 1))
 
     t = BY_ID[task_id]
     for i, plan in enumerate(plans):
@@ -1137,6 +1139,153 @@ def test_closing_readers():
           and f"AGENT: {claim}" not in labelled, labelled[-500:])
 
 
+def test_answers_and_customers():
+    """WHAT_FAILED #38. compare_cells lists, in every cell, the failures the
+    customer ended, after the agent's last reply -- under the first customer a
+    yes there was a turn the agent never had; the second is told to wait, and
+    this list is how a run shows whether she did, an ending with no words
+    included. And it flags two cells whose simulated customers differ."""
+    print("\n=== compare_cells reads how each failure ended ===")
+    import contextlib
+    import io
+    import json
+    import re
+    import tempfile
+    from pathlib import Path
+
+    tmp = Path(tempfile.mkdtemp())
+    look, esc = T14_LOOK, T14_ESC
+    asking = "A refund of SGD 47.00 was already issued. Would you like me to escalate this?"
+    a = _closing_cell(tmp, "A", "off", [[look, asking, esc, "Escalated."]] * 2
+                      + [[look, T14_EXPLAIN, esc, "Escalated."]])
+    b = _closing_cell(tmp, "B", "off", [[look, esc, T14_EXPLAIN]] * 3)
+    cc = _load_script("compare_cells")
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out):
+        cc.main([str(a), str(b)])
+    text = out.getvalue()
+    check("the failures the customer ended are listed with the agent's last reply before "
+          "her words, to be read -- whether or not that reply asked a question -- and none "
+          "where the case passed",
+          "failures in A/full that the customer ended: 3" in text
+          and text.count('FAIL  after: "...') == 3 and "Would you like me to escalate this?" in text
+          and text.count("she said: \"Oh, I didn't notice. Thanks, bye\"") == 3
+          and "failures in B/full that the customer ended: 0" in text,
+          text[-1500:])
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out):
+        cc.main([str(a), str(b), "--endings"])
+    check("…and with --endings every episode she ended, passes too, for a run that asks "
+          "whether the customer waits",
+          "episodes in B/full that the customer ended: 3 (0 failed)" in out.getvalue()
+          and out.getvalue().count('pass  after: "...') == 3
+          and "episodes in A/full that the customer ended: 3 (3 failed)"
+          in out.getvalue(), out.getvalue()[-1500:])
+    from pasarbench.diagnose import load_episodes
+    bare = _closing_cell(tmp, "E", "off", [[look, asking]], says="###END###")
+    rows = cc._endings(bare, load_episodes(bare), every=True)
+    shown = io.StringIO()
+    with contextlib.redirect_stdout(shown):
+        cc._print_endings("E/full", rows, every=True)
+    check("…an ending with no words -- ###END### alone, the way customer 2 is told to end -- "
+          "listed, not dropped: right after an open offer it is her leaving without an answer",
+          len(rows) == 1 and rows[0][4] == "" and rows[0][3].endswith("escalate this?")
+          and "      she said nothing more\n" in shown.getvalue(), str(rows))
+    # What she saw last: never a reply the guardrail held back, nor one written
+    # after she left, nor text beside a tool call -- the last of several, and
+    # her last words of several; an episode she did not end is not hers to list.
+    cell = tmp / "R" / "full"
+    cell.mkdir(parents=True)
+    said = {"type": "step", "step": 1, "model_content": "Would you like a voucher?"}
+    turn = lambda text, ended=False: {"type": "event", "kind": "user_turn", "ended": ended,
+                                      "text": text}
+    episodes = {
+        "T05__r0": [said, {"type": "step", "step": 2, "model_content": "I've issued it.",
+                           "guardrail": {"claims": [["issue_goodwill_voucher", "issued"]]}},
+                    turn("Yes, thanks", True)],
+        "T05__r1": [said, turn("", True),
+                    {"type": "step", "step": 2, "closing": True, "model_content": "Case closed."}],
+        "T05__r2": [said, turn("Hm?")],
+        "T05__r3": [{"type": "step", "step": 1, "model_content": "Hello, how can I help?"},
+                    turn("My order is late", False), said,
+                    {"type": "step", "step": 3, "model_content": "Let me check.",
+                     "tool_calls": [{"name": "get_order", "arguments": {}}]},
+                    turn("Sure, thanks", True)],
+    }
+    for tid, recs in episodes.items():
+        (cell / f"{tid}.jsonl").write_text("\n".join(json.dumps(r) for r in recs) + "\n")
+    rows = cc._endings(cell, [{"transcript_id": tid, "trap": "x", "passed": False}
+                              for tid in episodes])
+    check("…after the reply the customer last saw: not one the guardrail held back, nor a "
+          "closing note's, nor text beside a tool call -- the last of several, with her last "
+          "words -- and not at all where she did not end the episode",
+          [(r[0], r[3], r[4]) for r in rows] == [
+              ("T05__r0", "Would you like a voucher?", "Yes, thanks"),
+              ("T05__r1", "Would you like a voucher?", ""),
+              ("T05__r3", "Would you like a voucher?", "Sure, thanks")], str(rows))
+    check("…with the customer both cells had, nothing is flagged",
+          "different simulated customers" not in text, text[:900])
+    for f in a.glob("*.jsonl"):
+        lines = f.read_text().splitlines()
+        head = json.loads(lines[0])
+        f.write_text("\n".join([json.dumps({**head, "simulator": "llm-user:leaves"}),
+                                *lines[1:]]) + "\n")
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out):
+        cc.main([str(a), str(b)])
+    check("…and two cells with different customers are flagged as an experiment on the "
+          "customer, not one on the agent",
+          re.search(r"simulator\s+llm-user:leaves\s+llm-user/v2:leaves", out.getvalue())
+          is not None and "different simulated customers --" in out.getvalue()
+          and "(WHAT_FAILED #38)" in out.getvalue(), out.getvalue()[:1200])
+    for f in a.glob("*.jsonl"):
+        lines = f.read_text().splitlines()
+        f.write_text("\n".join([json.dumps({**json.loads(lines[0]),
+                                            "simulator": "llm-user/v2:another-model"}),
+                                *lines[1:]]) + "\n")
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out):
+        cc.main([str(a), str(b)])
+    check("…as are the same rules played by another model",
+          "different simulated customers --" in out.getvalue(), out.getvalue()[:1200])
+
+    # Tool checks 3: what each cancellation did to the payment, as the trace
+    # recorded it, and the refunds refused as already settled -- one in the
+    # step after the cancellation (the agent had read the tool's note), one
+    # in the same response as it (the agent had not).
+    from pasarbench.tools import SETTLED
+    cell = tmp / "S" / "full"
+    cell.mkdir(parents=True)
+    head = {"type": "header", "task_id": "CWP-SG.sg-en", "tool_checks": 3}
+    cancel = {"name": "cancel_order", "ok": True, "payment": "refunded"}
+    refused = {"name": "issue_refund", "ok": False, "error": SETTLED + "nothing left"}
+    for n, steps in enumerate([[[cancel], [refused]], [[cancel, refused]],
+                               [[{**cancel, "payment": "released"}]],
+                               [[{**cancel, "payment": "unsettled"}]]]):
+        recs = [head] + [{"type": "step", "step": i + 1, "tool_results": trs}
+                         for i, trs in enumerate(steps)]
+        (cell / f"CWP-SG.sg-en__r{n}.jsonl").write_text(
+            "\n".join(json.dumps(r) for r in recs) + "\n")
+    counted = [{"transcript_id": f.stem} for f in sorted(cell.glob("*.jsonl"))]
+    (cell / "CWP-SG.sg-en__r9.jsonl").write_text(      # unfinished: no episode to count
+        json.dumps(head) + "\n" + json.dumps({"type": "step", "step": 1,
+                                              "tool_results": [cancel]}) + "\n")
+    done, n_refused, later = cc._settlements(cell, counted)
+    shown = io.StringIO()
+    with contextlib.redirect_stdout(shown):
+        cc._print_settlements("S/full", done, n_refused, later)
+    check("…and under tool checks 3 it counts what each cancellation did to the payment -- "
+          "one it could not settle too -- and the refunds refused as already settled, "
+          "telling one made after the agent had read the tool's note from one made in the "
+          "same response, over the episodes the comparison counts",
+          dict(done) == {"refunded": 2, "released": 1, "unsettled": 1}
+          and (n_refused, later) == (2, 1)
+          and "what cancellations in S/full did to the payment: refunded 2, released 1, "
+              "unsettled 1; refunds or credit refused as already settled: 2, 1 of them in a "
+              "step after the cancellation" in shown.getvalue(),
+          shown.getvalue())
+
+
 def main() -> int:
     test_distractors()
     test_arms_are_comparable()
@@ -1157,6 +1306,7 @@ def main() -> int:
     test_claim_guardrail_report()
     test_closing_report()
     test_closing_readers()
+    test_answers_and_customers()
     print(f"\n{len(PASS)} passed, {len(FAIL)} failed")
     for f in FAIL:
         print(f"  FAILED: {f}")
