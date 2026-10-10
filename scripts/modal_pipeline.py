@@ -149,10 +149,11 @@ def _run(cmd: list[str], cwd: Path) -> None:
 
 # Settings exported where `modal run` starts, passed on to the job: the models
 # (both paths read the same variables), SGLang flags after an OOM, and the
-# knobs gpu_pipeline.sh documents (repetitions, epochs, turn length).
+# knobs gpu_pipeline.sh documents (repetitions, epochs, turn length, the
+# simulated customer's rules).
 PASSED_ON = ("AGENT_MODEL", "SIM_MODEL", "SGLANG_ARGS", "PASAR_K", "PASAR_COLLECT_K",
-             "PASAR_EPOCHS", "PASAR_TRAIN_MAX_LEN", "PASAR_GPU", "PASAR_AGENT_POOL_GB",
-             "PASAR_RESERVE_GB", "PASAR_USD_PER_HOUR")
+             "PASAR_EPOCHS", "PASAR_TRAIN_MAX_LEN", "PASAR_CUSTOMER", "PASAR_GPU",
+             "PASAR_AGENT_POOL_GB", "PASAR_RESERVE_GB", "PASAR_USD_PER_HOUR")
 
 
 @app.function(volumes={VOL: volume}, cpu=4, memory=16384, timeout=4 * 3600,
