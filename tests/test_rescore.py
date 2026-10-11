@@ -79,7 +79,8 @@ def _no_tracking(patch):
 def test_pre_v19_world():
     print("\n=== the world a pre-v19 trace ran in is rebuilt exactly ===")
     ref = json.loads((Path(__file__).parent / "fixtures" / "pre_v19_worlds.json").read_text())
-    tasks = all_tasks()
+    from pasarbench.rescore import suite_tasks
+    tasks = suite_tasks()          # the second edition never ran before v19
     bad = [tid for tid, t in tasks.items() if _no_tracking(pre_v19_patch(t)) != ref.get(tid)]
     check(f"all {len(tasks)} worlds match the v18 generator's, tracking numbers aside",
           not bad and set(ref) == set(tasks), bad[:5])
