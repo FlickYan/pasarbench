@@ -93,6 +93,11 @@ re-scored by replaying their tool calls (`scripts/rescore.py`).
   with 1j's note unchanged and a write that repeats one already made not run
   after it, 20 second tickets became none, the rescues stayed at 24, and nothing
   took the refused call's place ([RUNBOOK 1o](docs/RUNBOOK.md)).
+  Where it was not built for, on the other 158 tasks, it broke no case and
+  stopped the one repeat it met — but three times refused the shipping credit
+  P4.6 asks for after a credit for the item: it compares a payment without its
+  amount ([RUNBOOK 1p](docs/RUNBOOK.md),
+  [WHAT_FAILED #39](docs/WHAT_FAILED.md)).
 - **The checks were blind where that second look walked.** Cancelling a card
   order, the agent told the customer her money would go back — 42 times in 42 in
   the last control, in every language — and nothing in the world did it: no
