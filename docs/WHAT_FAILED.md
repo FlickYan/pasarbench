@@ -1345,6 +1345,8 @@ escalation, the same category — and verifications with digits the customer
 never gave, and `compare_cells.py` counts both and lists every episode. The
 rule for the next run (RUNBOOK 1k) counts them from the start, beside
 forbidden calls.
+On new tasks (1m, v33) it was the note's only cost: 22 escalations made a second
+time in 186 episodes, against 25 rescues; the conversations alone made 2 in 372.
 
 **Lesson.** Count an intervention's cost in what it does, not in what the
 checks forbid. The checks were written for the agent's mistakes before the
@@ -1461,9 +1463,13 @@ request, not a guarantee, so 1l checked it (2026-10-11): none of customer 2's
 252 conversations ended on her yes to an offer, or with one unanswered, where
 customer 1, the same day and under the same tools, ended 7 of the voucher trap's
 that way; with customer 2 the trap went from 0.81 to 1.00, every voucher offered
-issued, and the comparison by task was 14 better, 8 worse, p = 0.29. The second
-fix — a turn on her last message — is not built: with a customer who stays until
-it is done, there is nothing left for it to act on.
+issued, and the comparison by task was 14 better, 8 worse, p = 0.29. It is a
+request all the same. 1m found two such endings in 372 conversations — in
+Indonesian and Malay she accepted a voucher and left before the agent had
+verified her — so 2 in 624 with customer 2 so far. The second fix — a turn on
+her last message — is not built: with a customer who stays until it is done
+there is little left for it to act on, and it would not have saved those two,
+whose voucher needed digits she had not given.
 
 **Lesson.** Who ends a simulated conversation, and on what, is part of what it
 measures. Read the last message of every failure: half of one trap's were saying
