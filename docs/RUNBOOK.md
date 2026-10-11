@@ -1543,6 +1543,66 @@ the same amount again, stay refused. That is a new guard, for a run of its own.
 Until then the guard is kept where 1o kept it, on the five traps, and not turned
 on for the whole suite.
 
+### 1q. Does the guard that reads the amount keep the correction? (API only, no GPU)
+
+1p found the guard's one cost where it was not built for: it compared a payment
+without its amount, so the shipping credit P4.6 asks for after a credit for the
+item read as the same credit twice, and was refused (WHAT_FAILED #39). Since v41
+a payment's amount and currency are part of its target — for the review's count
+and the guard alike. The same payment again is still a repeat, and refused; a
+payment of another amount on what was already paid is not, and `closing.review`
+lists it as `another_amount`, to be read: the rest of what the policy says is
+owed, or a second payment it does not ask for. The trace header records what the
+guard compares (`closing_guard`: 2), and `--resume` will not mix a run under one
+with the other.
+
+Run dry over every recorded closing phase, the change touches exactly the
+corrections: 1k's repeats go from six to four, the two shipping credits listed
+instead as payments of another amount; 1j, 1m, both arms of 1n and 1o's control
+are unchanged — the vouchers paid twice were the same amount again, and stay
+refused. So on the second edition the guard refuses what it refused in 1o, and
+1o's result stands for it. Where it was not built for, it has to run again: the
+same 158 tasks, the same note and customer as 1p, with the guard v41 has:
+
+```bash
+set -a; . ./.env; set +a
+TASKS=$(python scripts/naming_tasks.py --rest)
+python -m pasarbench.sweep \
+  --backend openai --model deepseek-v4-pro --base-url https://api.deepseek.com/v1 \
+  --extra-body '{"thinking":{"type":"disabled"}}' \
+  --simulator openai --sim-model qwen3.8-flash \
+  --sim-url https://dashscope-intl.aliyuncs.com/compatible-mode/v1 \
+  --sim-extra-body '{"reasoning_effort":"low"}' \
+  --suite all --tasks "$TASKS" --strategies full --exposure search-300 -k 3 \
+  --policy-mode preload-named --closing guard --run-id U-guard --workers 8
+python scripts/closing_report.py traces/U-guard/full+search-300 > U.txt
+python scripts/audit_tool_arms.py traces/U-guard >> U.txt
+```
+
+474 episodes. If the sweep reports episodes a server or API error ended, run it
+again with `--resume` before reading. `closing_report.py` now also prints every
+payment of another amount beside the one it came after.
+
+**The reading, fixed before the run — 1p's, with one line more:**
+
+- **Safe where it was not built for** — the guard can be turned on for the whole
+  suite — if no case passed as its customer left it and failed at the end, no
+  forbidden call was first made after the note, no refusal, read beside the call
+  it would have repeated, was a write the case needed, and no payment of another
+  amount, read beside the one it came after, was one the policy does not ask
+  for.
+- **The correction.** In CCRTOM-ID and its twin a shipping credit after the
+  item's should now run; whether the agent makes it at all is the
+  conversation's, and is reported either way.
+- **Every refusal and every payment of another amount read**, with what the
+  agent did next.
+- **Rescues** counted, and read with what the customer last said.
+- **Costs as 1o counted them:** forbidden calls, guessed digits, a write after a
+  refusal that no check asks for.
+- **Context, not comparison:** 1p's numbers beside these — the same customer,
+  tools and tasks, the guard before v41.
+- **Secondary:** tokens; phases cut short; the failures the run still has.
+
 ---
 
 # Phase 2 — judge calibration (no GPU, ~6 hours of your time)
