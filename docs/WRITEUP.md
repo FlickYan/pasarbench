@@ -659,8 +659,12 @@ the note, a write that repeats one already made isn't run, and the agent is told
 it was already done. On the same 62 tasks that took the second tickets from 20
 to none and left the rescues at 24 each; after every refusal the agent just
 wrote its case note, nearly always naming the ticket that stood. That's the
-version I'd keep.
-<!-- RUNBOOK 1j, 1k; traces/M-* 2026-10-09, traces/N-* 2026-10-10; compare_cells.py (v30): 1j pass^1 0.848 -> 0.959, 11 better 2 worse, p=0.022; 1k 0.964 -> 0.951, 6 better 10 worse, p=0.454; as left -> at end 21 -> 0 and 6 -> 0 (171, 472); as left, paired: 2 better 3 worse p=1.000, 6 better 15 worse p=0.078; rescued 21 + 6 (1j: 18 DRE let go, IVF-VN__r1 let go, IVF-MY.zh-MY__r2 said yes and left, T13__r1 promise; 1k: HRWR-ID.id__r2, LCOW-SG.zh-SG__r0, PRWR-MY.zh-MY__r0, __r1 said yes and left, CCNRD-MY__r0, IVF-SG.sg-en__r1 promises); costs 17 + 6 (repeated 15 + 6, of 1k's 6 two CCRTOM shipping credits P4.6 asks for; guessed 2); repeated writes before the note 0 of 1,290 conversations ; 1m (Q-off vs Q-check, edition 2, 62 tasks, customer 2, 2026-10-11): pass^1 0.833 -> 0.935, 15 better 5 worse p=0.041; as left 6 better 12 worse p=0.238; rescued 25 (21 DRE2, 4 IVF2), all passed; repeated escalations 22 (13 IVF2, 7 OOWDE2, 2 CHE2); forbidden 0, guessed 0; unscored 2 (OOWOV2-ID.id__r0, OOWOV2-MY.ms__r2: yes to a voucher before verification, failed); repeated writes before the note 2 of 372 (Q-off CHE2-MY__r0, OOWDE2-MY.zh-MY__r0); DRE2 0.38 -> 0.82 ; 1n (R-check vs R-record, 2026-10-12): pass^1 0.973 -> 0.962, 2 better 5 worse p=0.453; repeats 26 -> 24, 9 tasks more 12 fewer p=0.664, all 24 at the first closing step with the first call in the record as done; at the first step, all runs: M 15/15, N 5/6, Q 22/22, R 25/26 and 24/24; rescues 27 -> 21 p=0.180; second voucher OOWOV2-SG.zh-SG__r1 ; 1o (S-check vs S-guard, 2026-10-12): pass^1 0.973 -> 0.946, 2 better 5 worse p=0.453 (as left the same -0.027, 5 better 10 worse p=0.302); costs 20 -> 0, 0 more 15 fewer p<0.001; refused 23, all at the first step, 22 notes name ESC0001; substitutes 0; rescues 24 -> 24 p=1.000; control repeats incl. 2 vouchers; dry run S-check 20/20 -->
+version I'd keep on the traps it was built for. On the 158 tasks it wasn't, it
+broke nothing and stopped the one repeat it met, but three times it refused the
+shipping credit the policy asks for after a credit for a broken item, and one
+agent said exactly why: "the amounts differ." It had been deciding what counts
+as the same payment without looking at the amount.
+<!-- RUNBOOK 1j, 1k; traces/M-* 2026-10-09, traces/N-* 2026-10-10; compare_cells.py (v30): 1j pass^1 0.848 -> 0.959, 11 better 2 worse, p=0.022; 1k 0.964 -> 0.951, 6 better 10 worse, p=0.454; as left -> at end 21 -> 0 and 6 -> 0 (171, 472); as left, paired: 2 better 3 worse p=1.000, 6 better 15 worse p=0.078; rescued 21 + 6 (1j: 18 DRE let go, IVF-VN__r1 let go, IVF-MY.zh-MY__r2 said yes and left, T13__r1 promise; 1k: HRWR-ID.id__r2, LCOW-SG.zh-SG__r0, PRWR-MY.zh-MY__r0, __r1 said yes and left, CCNRD-MY__r0, IVF-SG.sg-en__r1 promises); costs 17 + 6 (repeated 15 + 6, of 1k's 6 two CCRTOM shipping credits P4.6 asks for; guessed 2); repeated writes before the note 0 of 1,290 conversations ; 1m (Q-off vs Q-check, edition 2, 62 tasks, customer 2, 2026-10-11): pass^1 0.833 -> 0.935, 15 better 5 worse p=0.041; as left 6 better 12 worse p=0.238; rescued 25 (21 DRE2, 4 IVF2), all passed; repeated escalations 22 (13 IVF2, 7 OOWDE2, 2 CHE2); forbidden 0, guessed 0; unscored 2 (OOWOV2-ID.id__r0, OOWOV2-MY.ms__r2: yes to a voucher before verification, failed); repeated writes before the note 2 of 372 (Q-off CHE2-MY__r0, OOWDE2-MY.zh-MY__r0); DRE2 0.38 -> 0.82 ; 1n (R-check vs R-record, 2026-10-12): pass^1 0.973 -> 0.962, 2 better 5 worse p=0.453; repeats 26 -> 24, 9 tasks more 12 fewer p=0.664, all 24 at the first closing step with the first call in the record as done; at the first step, all runs: M 15/15, N 5/6, Q 22/22, R 25/26 and 24/24; rescues 27 -> 21 p=0.180; second voucher OOWOV2-SG.zh-SG__r1 ; 1o (S-check vs S-guard, 2026-10-12): pass^1 0.973 -> 0.946, 2 better 5 worse p=0.453 (as left the same -0.027, 5 better 10 worse p=0.302); costs 20 -> 0, 0 more 15 fewer p<0.001; refused 23, all at the first step, 22 notes name ESC0001; substitutes 0; rescues 24 -> 24 p=1.000; control repeats incl. 2 vouchers; dry run S-check 20/20 ; 1p (T-guard, 158 tasks, 474 episodes, 2026-10-12): pass^1 0.970; 465 closing phases, 0 passes broken, 4 rescues, 0 forbidden/guessed/substituted; refused 4 calls in 3 episodes: LCOW-TH__r2 same message again, CCRTOM-ID.id__r0 and CCRTOM-ID__r1 (x2) the IDR 37,000 shipping credit after 700,000; with amount and currency in a payment's target the dry run changes only N-check 6 -> 4 -->
 
 **"What did the second look find about the benchmark?"** Two holes. Cancelling a
 card order, the agent told the customer her money would go back — 42 times in 42
@@ -714,18 +718,17 @@ a run from before an ID format change. Then I read the conversations the fix
 had promoted — a replay proves the state, not that the state means what the
 check assumes.
 
-**"What would you do next?"** Run the guarded closing check where it wasn't
-built for — the 158 other tasks, as 1k did for the note — since the one thing
-the guard could break is a second write that's right, like a shipping credit
-that corrects one made without it (set up as RUNBOOK 1p). Replace the
-guardrail's phrase list with a model that reads what the customer was told would
-happen, and keep the check against the tool log mechanical: what got past the
-list was wording — "flagged", "will be reviewed", a promise — and wording is a
-language question. Then test the language lead the closing check turned up — the
-duplicate-refund case failing far more often outside English, on new tasks too —
-on a run built for it. A second fine-tune on trap-balanced data built with the
-corrected checks. Get the Thai and Vietnamese translations reviewed. Then
-serving cost.
+**"What would you do next?"** Put a payment's amount in what the guard compares
+and run it again on the 158 tasks it wasn't built for: the one thing it broke
+was a shipping credit that corrected one made without it (RUNBOOK 1p,
+WHAT_FAILED #39). Replace the guardrail's phrase list with a model that reads
+what the customer was told would happen, and keep the check against the tool log
+mechanical: what got past the list was wording — "flagged", "will be reviewed",
+a promise — and wording is a language question. Then test the language lead the
+closing check turned up — the duplicate-refund case failing far more often
+outside English, on new tasks too — on a run built for it. A second fine-tune on
+trap-balanced data built with the corrected checks. Get the Thai and Vietnamese
+translations reviewed. Then serving cost.
 
 ### One thing not to do
 
