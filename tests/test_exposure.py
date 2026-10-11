@@ -1252,8 +1252,9 @@ def test_closing_report_one_cell():
     customer has left, so its effect is each case as she left it against the
     case at the end, and needs no control. closing_report.py prints that
     section for one cell, then every call the guard refused beside the call
-    it would have repeated -- the same call again, or a different write of the
-    same kind, which only reading tells apart."""
+    it would have repeated -- and, since v41, every payment of another amount
+    beside the one it came after: no repeat, and only reading tells a
+    correction from a second payment."""
     print("\n=== closing_report reads one run's closing phase ===")
     import contextlib
     import io
@@ -1270,30 +1271,41 @@ def test_closing_report_one_cell():
                                      "reason": "broken pumps", "order_id": "O1001"})
     shipping = ("issue_store_credit", {"user_id": "U001", "amount_minor": 1200, "currency": "MYR",
                                        "reason": "shipping, P4.6", "order_id": "O1001"})
-    _closing_cell(tmp, "G", "guard", [[ver2, credit, "Credited.", shipping, "Shipping too."]],
+    _closing_cell(tmp, "G", "guard", [[ver2, credit, "Credited.", shipping, "Shipping too."],
+                                      [ver2, credit, "Credited.", credit, "Credited again."]],
                   task_id="T02")
     rep = _load_script("closing_report")
     out = io.StringIO()
     with contextlib.redirect_stdout(out):
         rep.main([str(g)])
     text = out.getvalue()
-    check("one cell: its setup and pass rate, then the closing section compare_cells prints",
-          re.search(r"closing\s+guard", text) is not None and "pass^1" in text
-          and "closing check in G/full: the customer left and the agent got the note in 3 "
+    check("one cell: its setup -- the guard and what it compares -- and pass rate, then the "
+          "closing section compare_cells prints",
+          re.search(r"closing\s+guard v2", text) is not None and "pass^1" in text
+          and "closing check in G/full: the customer left and the agent got the note in 4 "
               "episodes" in text
           and re.search(r"a repeat the guard did not run\s+2 episodes, 2 of them the first "
                         r"step after the note", text) is not None
-          and "1 failed -> passed, 0 passed -> failed, of 3" in text, text[:2500])
-    check("…then every refusal beside the call it would have repeated: the same escalation "
-          "again, and a credit of another amount -- the correction only reading tells apart",
+          and re.search(r"a payment of another amount after one made\s+1 episodes -- a "
+                        r"correction or a second payment; read them", text) is not None
+          and "1 failed -> passed, 0 passed -> failed, of 4" in text, text[:2800])
+    check("…then every refusal beside the call it would have repeated: the same escalation, "
+          "and the same credit, again",
           "every call the guard refused, beside the call it would have repeated -- 2;" in text
           and re.search(r'T14__r1 +refused escalate_to_human\(order_id="O1009", '
                         r'category="duplicate_refund", reason="refund already issued"\)\n +after '
                         r'+escalate_to_human\(order_id="O1009", category="duplicate_refund"', text)
           is not None
-          and re.search(r'T02__r0 +refused issue_store_credit\(user_id="U001", amount_minor=1200'
+          and re.search(r'T02__r1 +refused issue_store_credit\(user_id="U001", amount_minor=17800'
                         r'.*\n +after +issue_store_credit\(user_id="U001", amount_minor=17800',
-                        text) is not None, text[-2500:])
+                        text) is not None, text[-2800:])
+    check("…and every payment of another amount beside the one it came after: the shipping "
+          "after the item ran, and is read -- the correction only reading tells apart",
+          "every payment of another amount after one already made, beside the one it came "
+          "after -- 1;" in text
+          and re.search(r'T02__r0 +paid +issue_store_credit\(user_id="U001", amount_minor=1200'
+                        r'.*\n +after +issue_store_credit\(user_id="U001", amount_minor=17800',
+                        text) is not None, text[-2800:])
     check("…and the pass rate by trap",
           re.search(r"pass\^1 by trap:\n(  .+\n)+", text) is not None
           and "duplicate_refund_escalate" in text.split("pass^1 by trap:")[1], text[-800:])
