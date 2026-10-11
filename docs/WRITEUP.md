@@ -358,6 +358,24 @@ baseline by 5 points, at p = 0.13 (6 points, p = 0.06, recorded). I can't tell
 it from re-running.
 <!-- RESULTS.md "Noise floor"; §1 paired table (window8 +0.052, p=0.125; recorded +0.062, p=0.062) -->
 
+The null is the suite's, though, and one rule is not in it. Pooled over sixteen
+traps, a gap on one moves a language's mean by a few points. P10 asks for an
+escalation when a customer chases a refund already paid, "even if you have
+explained the existing refund and the customer accepts it" — the one escalation
+that goes against the obvious service move. Read back over every recorded run,
+deepseek-v4-pro made it in 59% of English conversations and in 2–8% of Malay and
+Chinese ones; all 14 local-language tasks made it less often than their English
+twin, by 38 points on average (p = 0.0001), in the runs recorded before anyone
+looked as well as on new tasks. It decides when it reads the refund. In English
+it writes "Since a refund has already been issued for this order, I need to
+escalate this for review", and does; in Vietnamese it lists the same refund,
+asks the customer to check her card statement, and stops. On the policy's three
+other escalations the languages are level; trap by trap, this is the only gap
+that stands once sixteen are counted; and Qwen3.8-27B shows no gap. What
+recorded runs can't separate is the language from everything else that differs
+between two conversations; that takes a run that changes only the language.
+<!-- RUNBOOK 1r; python scripts/language_lead.py traces, deepseek-v4-pro, the 16 cells that ran the trap on both sides, 778 episodes: en 223/378, sg-en 37/60, id 30/60, vi 22/60, th 21/60, zh-SG 4/50, ms 4/60, zh-MY 1/50; twins 14 of 14 below, mean -38 points, sign test p=0.0001; the 7 runs before the lead (B, C, D, F, G, K-preload, P-ref) 7/7, -21, p=0.016; second edition (Q, R, S) 7/7, -47, p=0.016; 341 of 342 escalations in the turn of the first get_order; customs hold, identity, out-of-window dispute twins level 8, 3, 11 of 14, mean gaps 0, +3, -1; P-base (Qwen3.8-27B) 38/40 vs 26/30, P-ref 25/40 vs 12/30; Q-off DRE2-VN 3/3 escalated, DRE2-VN.vi 0/3; every trap on the recorded verdicts, cells without a closing phase: DRE 12 of 14 below, -34 points, p=0.0005 against 0.05/16=0.0031, next below -5 to -8, livestream +12 p=0.031, identity +14 p=0.227 -->
+
 ### Result 4: my fine-tune learned my verifier
 
 Then I trained on it. Qwen3.8-27B with LoRA, rejection-sampling fine-tuning:
@@ -697,7 +715,9 @@ has been flagged", and the docs report them beside its counts.
 **"How do you know the language null isn't just low power?"** It is partly low
 power, and I'd say so: 13–16 twin pairs per language rule out large gaps, not
 small ones. What makes it believable is that it held across two independent
-runs, and that the one "significant" gap traced to a bug.
+runs, and that the one "significant" gap traced to a bug. And it is the suite's
+null, not every rule's: on the duplicate refund the gap is 38 points, and the
+pooled test averages it away (Result 3).
 
 **"Is 3 points of run-to-run noise normal?"** It's what I measured for this
 agent and simulator at 32 tasks. It's why every comparison in the report is a
@@ -727,9 +747,9 @@ in the last run, 3 of them cases that were failing (RUNBOOK 1q). Replace the
 guardrail's phrase list with a model that reads what the customer was told would
 happen, and keep the check against the tool log mechanical: what got past the
 list was wording — "flagged", "will be reviewed", a promise — and wording is a
-language question. Then test the language lead the closing check turned up — the
-duplicate-refund case failing far more often outside English, on new tasks too —
-on a run built for it. A second fine-tune on trap-balanced data built with the
+language question. Then the run the language finding needs: hold a conversation
+fixed at the moment the agent reads the refund, and change only its language
+(RUNBOOK 1r). A second fine-tune on trap-balanced data built with the
 corrected checks. Get the Thai and Vietnamese translations reviewed. Then
 serving cost.
 
