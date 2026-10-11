@@ -1004,9 +1004,145 @@ it stops. Re-run with `--resume`, both passed; the table is after it. Since v32
 the sweep reports every such episode, and `compare_cells.py` flags them.
 
 **Next:** customer 2 is the customer from here on. The closing check's
-confirmation — 1j's note, on new tasks of its traps — is measured with her; so,
-separately, is a note that tells the agent to read its own calls before making
-one.
+confirmation — 1j's note, on new tasks of its traps — is measured with her (1m);
+so, separately, is a note that tells the agent to read its own calls before
+making one.
+
+### 1m. Does the closing check hold on tasks it has not seen? (API only, no GPU)
+
+1j's closing check rescued 21 episodes on the 57 tasks that suggested it — 18
+duplicate refunds and 3 identity failures the agent let go once the customer was
+satisfied — and 1j called that a first test: a hypothesis is confirmed on tasks
+that did not produce it. Every task of those five traps in the suite has since
+run with the note (1j, 1k), so v33 adds new ones: a second edition of the five
+traps, 62 tasks, never part of the suite (`generate(edition=2)`, `--suite
+edition2`). Each keeps its trap's checks, so the same policy decides it, with a
+new customer in every market, a new product and a new story — a lamp smaller
+than its photos (the voucher), a backpack strap that tore (the dispute), a
+birthday speaker stuck in customs, running shoes cancelled by a caller who
+cannot verify, a teapot refund already paid. The same markets, languages and
+twins; every task solved by its reference solution, and by neither an agent that
+does nothing nor one that calls every tool (`tests/test_generated.py`). The
+suite itself is byte for byte what it was. And the customer is customer 2, who
+waits, so no rescue can be a turn the episode owed the agent (#38). The note is
+1j's, unchanged.
+
+```bash
+set -a; . ./.env; set +a
+for C in off check; do
+  python -m pasarbench.sweep \
+    --backend openai --model deepseek-v4-pro --base-url https://api.deepseek.com/v1 \
+    --extra-body '{"thinking":{"type":"disabled"}}' \
+    --simulator openai --sim-model qwen3.8-flash \
+    --sim-url https://dashscope-intl.aliyuncs.com/compatible-mode/v1 \
+    --sim-extra-body '{"reasoning_effort":"low"}' \
+    --suite edition2 --strategies full --exposure search-300 -k 3 \
+    --policy-mode preload-named --closing $C --run-id Q-$C --workers 8
+done
+python scripts/compare_cells.py traces/Q-off/full+search-300 traces/Q-check/full+search-300 > Q.txt
+python scripts/audit_tool_arms.py traces/Q-check >> Q.txt
+```
+
+186 episodes an arm, 372 in all: about 1j's size. If either sweep reports
+episodes a server or API error ended, run it again with `--resume` before
+comparing.
+
+**The reading, fixed before the run:**
+
+- **Confirmed** if `compare_cells.py`'s paired line over the 62 tasks says
+  BETTER (p < 0.05) and its closing section shows required actions first made
+  after the customer left, in episodes that passed. A gain without those is not
+  this effect. INCONCLUSIVE or WORSE is reported as it comes, and the README's
+  sentence on the closing check changes to say so.
+- **Not a turn owed.** Every rescue is read with what the customer last said,
+  which `compare_cells.py` prints under it: one after a yes the agent had not
+  yet acted on would be #38, not the note. 1l found no such ending in 252; any
+  here is reported and not counted as the note's.
+- **Cost, as 1j and 1k counted it:** forbidden calls first made after she left,
+  writes repeating one already made, verifications with digits she never gave —
+  each episode once, every one listed and read. Worth keeping, as before, if the
+  rescues outnumber the episodes with a cost, here on these 62 tasks.
+- **The conversations alone.** The paired line with each case as its customer
+  left it compares the arms before any note (1k): it should show no difference.
+  If it does, the arms drew different conversations, and the note's effect is
+  the line at the end beside it.
+- **Secondary:** tokens; phases cut short; and, by language, the
+  duplicate-refund trap, which in 1j failed far more often outside English — a
+  lead to read, not a test.
+- **Not a test of a new note.** One that tells the agent to read its own calls
+  before making one (1k) is a new intervention, for a run of its own.
+
+**Run on 2026-10-11, v33** (`Q-off`, `Q-check`, back to back): confirmed, by the
+reading fixed before the run — and its cost is the one 1k named.
+
+| | control | closing check |
+|---|---|---|
+| pass^1 (pass^k) | 0.833 (0.710) | 0.935 (0.855) |
+| paired by task | | 15 tasks better, 5 worse, p = 0.041: BETTER |
+| the same, each case as its customer left it | | 6 better, 12 worse, p = 0.24 |
+| the case as she left it → at the end | | 25 failed → passed, 0 passed → failed, of 186 |
+| a required action first made after she left | | 25 episodes, all 25 passed |
+| a forbidden call first made then | | none |
+| an escalation made a second time (same order, same category) | | 22 episodes |
+| a verification with digits she never gave | | none |
+| tokens per episode | 48,419 | 57,318 (+18%) |
+
+**The mechanism is the gain, and it is 1j's.** Twenty-one of the 25 rescues are
+duplicate refunds: the agent showed the refund already paid, the customer —
+often saying she had not checked her statement — thanked it and left, and the
+escalation P10 requires "even if you have explained the existing refund and the
+customer accepts it" came only after she had gone. The trap went from 0.38 to
+0.82. The other four are identity failures: two callers who gave up, and two
+told a human would follow up — an escalation announced and not made, which the
+note names. No rescue followed a yes to something the agent had offered: every
+customer's last words were thanks, giving up, or nothing. The conversations
+alone showed no difference, as the reading required (each case as its customer
+left it: 6 tasks better, 12 worse, p = 0.24); the note turned 25 failures into
+passes and no pass into a failure.
+
+**The cost is a second ticket.** In 22 episodes — 13 identity cases, 7 disputes,
+2 customs holds — the conversation had already escalated the case, and after the
+note the agent escalated it again: the same order, under the same category. No
+forbidden call, and no guessed digits. By the rule, worth keeping: 25 rescues
+against 22 episodes with a cost, and read one by one the count stands — no
+rescue was a turn the customer owed, and each cost is a real second ticket.
+Nearly even, as in 1k, and every cost the one thing 1k named: a call made again,
+which the conversations made too, but in 2 of 372 (both in the control). One
+case in eight escalated twice is what a recommendation of this note has to
+state.
+
+**Customer 2 is not perfect.** Two voucher conversations, in Indonesian and
+Malay, ended on her yes — "Ya, voucher goodwill boleh deh. Makasih ya." — to a
+voucher offered before the agent had verified her; after she left it escalated,
+a write no check scores, and both failed, so neither is counted for or against
+the note. With 1l, 2 such endings in 624 episodes with customer 2 (WHAT_FAILED
+#38). A turn on her last message would not have helped them: unverified, she
+could be issued no voucher — as in 1j, where three such customers left before
+verifying.
+
+**The language lead held, on new tasks.** As each customer left it, the
+duplicate-refund trap failed in 32 of the 36 conversations outside English and
+Singlish, both arms together, and in 20 of the 42 in them (1j's control: 16 of
+18, and 4 of 15). The note's rescues came where the conversations let go most:
+16 of its 21 outside English and Singlish; after it, 2 of 18 failed there and 5
+of 21 in them. Still a lead, as the reading fixed: a test of it needs a run of
+its own.
+
+**Secondary.** Tokens +8,899 an episode, 52 tasks costlier and 10 cheaper; one
+closing phase cut short, by its cap of six steps. Twelve episodes failed with
+the note: seven duplicate refunds, two identity cases, three vouchers (the two
+above, and one escalated in the conversation instead of a voucher). In each of
+the seven duplicate refunds, three of them DRE2-PH, which failed in both arms,
+the agent made no call after the note and filed notes like "No further write
+action is required — the refund was already completed": P10 read, and let go a
+second time, as in 1j's English failures.
+
+**What it means.** The closing check holds where it was built: on 62 tasks it
+had not seen, with a customer who waits, BETTER at p = 0.041, by the review the
+note asks for — escalations the policy requires after a customer is satisfied.
+It is not free: one case in eight is escalated twice. Recommend it with that
+cost stated; the next run (1n) is a note that reads the calls already made
+before it makes one.
 
 ---
 
