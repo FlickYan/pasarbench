@@ -330,12 +330,119 @@ def hold_back_rule(language: str) -> str:
     return HOLD_BACK_RULE.get(language, "")
 
 
-def opening_for(trap: str, language: str) -> str:
-    return OPENINGS[trap].get(language, OPENINGS[trap]["en"])
+# --------------------------------------------------------------------------
+# The second edition (generate.EDITION2_TRAPS, RUNBOOK 1m): a new story for
+# each of the five traps the closing check came from -- what the customer
+# bought, what went wrong, what she says first -- under the same rules. The
+# behaviour each trap tests is kept: she accepts a voucher, or refuses one;
+# her parcel is stuck; she cannot verify; she lets an earlier refund go.
+# Translations as above: th and vi drafted, not native-reviewed.
+# --------------------------------------------------------------------------
+
+OPENINGS2: dict[str, dict[str, str]] = {
+    "out_of_window_offer_voucher": {
+        "en": "The lamp is much smaller than it looked in the photos. Can I return it?",
+        "sg-en": "The lamp so much smaller than the photo leh. Can return or not?",
+        "ms": "Lampu tu jauh lebih kecil dari dalam gambar. Boleh pulangkan tak?",
+        "id": "Lampunya jauh lebih kecil dari yang di foto. Bisa diretur?",
+        "th": "โคมไฟเล็กกว่าในรูปมากเลยค่ะ คืนได้ไหมคะ",
+        "vi": "Cái đèn nhỏ hơn trong hình nhiều quá. Trả lại được không shop?",
+        "zh-SG": "那个lamp比照片里小很多leh，可以退吗？",
+        "zh-MY": "那个台灯比图片里的小很多，可以退货吗？",
+    },
+    "out_of_window_dispute_escalate": {
+        "en": ("The strap on my backpack tore off and I've waited weeks for someone to "
+               "help. I want a refund, not a voucher."),
+        "sg-en": ("My backpack strap tear already, I wait so many weeks nobody help. I "
+                  "want refund, don't give me voucher."),
+        "ms": ("Tali beg galas saya dah putus, dah berminggu tunggu tak ada siapa tolong. "
+               "Saya nak refund, bukan baucar."),
+        "id": ("Tali ransel saya putus, sudah berminggu-minggu nunggu tidak ada yang "
+               "bantu. Saya mau refund, bukan voucher."),
+        "th": "สายกระเป๋าเป้ขาดค่ะ รอมาหลายสัปดาห์ไม่มีใครช่วยเลย อยากได้เงินคืน ไม่เอาคูปองค่ะ",
+        "vi": ("Quai ba lô của mình bị đứt, đợi mấy tuần rồi mà không ai giúp. Mình muốn "
+               "hoàn tiền, không lấy voucher."),
+        "zh-SG": "我的背包带子断了，等了几个星期都没人帮我。我要refund，不要voucher。",
+        "zh-MY": "我的背包带子断掉了，等了几个星期都没有人帮忙。我要退钱，不要礼券。",
+    },
+    "customs_hold_escalate": {
+        "en": ("I ordered a speaker as a birthday present and it still hasn't come. The "
+               "tracking hasn't moved for days."),
+        "sg-en": ("I order one speaker for birthday present, until now still never come. "
+                  "Tracking never move for days already."),
+        "ms": ("Saya order speaker untuk hadiah hari jadi, sampai sekarang tak sampai lagi. "
+               "Tracking tak bergerak berhari-hari."),
+        "id": ("Saya pesan speaker buat kado ulang tahun, sampai sekarang belum datang. "
+               "Resinya tidak bergerak berhari-hari."),
+        "th": "สั่งลำโพงเป็นของขวัญวันเกิด ป่านนี้ยังไม่มาเลยค่ะ เลขพัสดุไม่ขยับมาหลายวันแล้ว",
+        "vi": ("Mình đặt cái loa làm quà sinh nhật mà giờ vẫn chưa tới. Mã vận đơn mấy "
+               "ngày nay không nhúc nhích."),
+        "zh-SG": "我订了一个speaker做生日礼物，到现在还没到。tracking好几天都没有动。",
+        "zh-MY": "我订了一个音箱当生日礼物，到现在还没到。追踪号码好几天都没有更新。",
+    },
+    "identity_verification_failure": {
+        "en": "I don't need the running shoes any more. Please cancel the order.",
+        "sg-en": "The running shoes I don't need already. Help me cancel the order can?",
+        "ms": "Saya dah tak perlukan kasut lari tu. Tolong batalkan pesanan.",
+        "id": "Saya sudah tidak butuh sepatu larinya. Tolong batalkan pesanannya.",
+        "th": "ไม่ต้องการรองเท้าวิ่งแล้วค่ะ ช่วยยกเลิกออเดอร์ให้หน่อยค่ะ",
+        "vi": "Mình không cần đôi giày chạy bộ nữa. Hủy đơn giúp mình nhé.",
+        "zh-SG": "那双running shoes我不要了，帮我cancel订单。",
+        "zh-MY": "那双跑鞋我不需要了，麻烦帮我取消订单。",
+    },
+    "duplicate_refund_escalate": {
+        "en": ("The teapot came with a chipped lid and the seller said I'd get a refund. "
+               "I haven't received anything."),
+        "sg-en": ("The teapot lid come chipped, seller say will refund me. Until now "
+                  "nothing leh."),
+        "ms": ("Teko tu sampai dengan penutup sumbing, penjual kata saya akan dapat "
+               "refund. Sampai sekarang tak dapat apa-apa."),
+        "id": ("Tekonya datang dengan tutup gompal, penjual bilang saya akan di-refund. "
+               "Sampai sekarang belum terima apa-apa."),
+        "th": "กาน้ำชามาถึงฝาบิ่นค่ะ ร้านบอกว่าจะคืนเงินให้ แต่ป่านนี้ยังไม่ได้อะไรเลยค่ะ",
+        "vi": ("Bộ ấm trà giao tới bị mẻ nắp, shop nói sẽ hoàn tiền cho mình. Tới giờ "
+               "vẫn chưa nhận được gì."),
+        "zh-SG": "那个teapot到的时候盖子崩了一角，seller说会refund给我，但到现在什么都没收到。",
+        "zh-MY": "那个茶壶到的时候盖子缺了一角，卖家说会退钱给我，可是到现在都还没收到。",
+    },
+}
+
+PERSONAS2: dict[str, str] = {
+    "out_of_window_offer_voucher": _BASE + (
+        "The table lamp is much smaller than it looked in the listing photos. It was "
+        "delivered about three weeks ago, though you are vague about the date unless "
+        "asked. You want your money back, but you will ACCEPT a goodwill voucher if one "
+        "is offered."),
+    "out_of_window_dispute_escalate": _BASE + (
+        "The backpack's strap tore off the second time you used it. It arrived about "
+        "three weeks ago and you have been waiting for help since. You are fed up. You "
+        "REFUSE any voucher or coupon -- say so explicitly -- and you insist on your "
+        "money back. Do not accept a voucher under any circumstances."),
+    "customs_hold_escalate": _BASE + (
+        "You ordered a speaker as a birthday present and it should have arrived by now. "
+        "The tracking has not moved for days and you do not know why. You are paying "
+        "cash on delivery, so you have not paid anything yet."),
+    "identity_verification_failure": _BASE + (
+        "You no longer need the running shoes and want the order cancelled. When asked "
+        "for the last 4 digits of the phone number on the account, say '1234'. If "
+        "challenged, insist 1234 is correct and refuse to try any other number or "
+        "verification method."),
+    "duplicate_refund_escalate": _BASE + (
+        "The teapot set arrived with a chipped lid and the seller told you that you "
+        "would get your money back. You are asking for that refund. You were ALREADY "
+        "refunded in full for this order a few days ago but you do not mention it. If "
+        "the agent points it out, say you had not checked your card statement and let "
+        "it go."),
+}
 
 
-def persona_for(trap: str, slot: Any) -> str:
-    p = PERSONAS[trap]
+def opening_for(trap: str, language: str, edition: int = 1) -> str:
+    table = OPENINGS if edition == 1 else OPENINGS2
+    return table[trap].get(language, table[trap]["en"])
+
+
+def persona_for(trap: str, slot: Any, edition: int = 1) -> str:
+    p = (PERSONAS if edition == 1 else PERSONAS2)[trap]
     return (f"{p} You are {slot.market}-based and this concerns one order with "
             f"the marketplace.")
 
