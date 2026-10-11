@@ -825,6 +825,97 @@ def test_closing_check():
         check("--resume will not add episodes without the closing check to a cell run with it",
               again.returncode != 0 and "closing 'check'" in again.stdout + again.stderr,
               (again.stdout + again.stderr)[-400:])
+        r = subprocess.run(sweep[:-2] + ["--trace-root", d, "--run-id", "y", "--closing",
+                                          "record"], capture_output=True, text=True, cwd=cwd)
+        heads = [json.loads(f.read_text().splitlines()[0]) for f in Path(d).glob("y/*/*.jsonl")]
+        check("…and --closing record does too",
+              r.returncode == 0 and heads and all(h.get("closing") == "record" for h in heads),
+              r.stderr[-500:] or str(heads))
+
+    # The record note (RUNBOOK 1n): the case record, then 1j's note.
+    import hashlib
+    check("1j's note is the one 1j, 1k and 1m ran, byte for byte: a reworded note is a new "
+          "intervention, and the record note is a mode of its own",
+          hashlib.sha1(cl.NOTE.encode()).hexdigest() == "a2e1b28dfc023e9bfe85e78699c2e11c5379d90c"
+          and cl.note("check") == cl.NOTE and cl.MODES == ("off", "check", "record"))
+    res, cust, rec, db, seen = run(plan, "record")
+    r = cl.review(rec.recs, task)
+    given = seen.seen[2][-1][1]
+    check("record: the agent gets the case record and the note, makes the call the policy "
+          "requires, and the review reads it as it reads 1j's",
+          res.stop_reason == StopReason.DONE and verify(task, db).passed
+          and rec.meta.get("closing") == "record" and cl.is_note(given) and given != cl.NOTE
+          and seen.seen[2][-2] == ("user", bye) and cl.started(res.state.messages) is not None
+          and r["first"] == ["escalate_to_human"] and r["at_note"] is False
+          and r["at_end"] is True, str((r, given)))
+    check("…a conversation that only read is an empty record, and says so",
+          cl.NO_RECORD in given and "get_order" not in given, given)
+    check("…the customer never sees it",
+          len(cust.views) == 1 and not any(cl.HEAD in v for vs in cust.views for v in vs))
+    event = [x for x in rec.recs if x.get("kind") == "closing_check"]
+    _, _, rec1j, _, _ = run(plan, "check")
+    check("…and the trace keeps the note this episode got, which 1j's never needed: it is "
+          "the same in every episode",
+          len(event) == 1 and event[0].get("note") == given
+          and all("note" not in x for x in rec1j.recs if x.get("kind") == "closing_check"),
+          str(event))
+    _, _, rec, _, seen = run([look, ver, esc, explain, "Nothing more is needed."], "record")
+    given = seen.seen[-1][-1][1]
+    lines = given.split("\n")
+    check("the record lists the identity check and the escalation the conversation made, "
+          "in order, each with what came of it -- and not the read",
+          lines[2] == f'1. verify_identity(user_id="{task.user_id}", phone_last4="4567") -- verified'
+          and lines[3] == ('2. escalate_to_human(order_id="O1009", category="duplicate_refund", '
+                           'reason="refund already issued for this order") -- done')
+          and "get_order" not in given and lines[4].startswith("Before this case closes"),
+          given)
+    check("…and the note after it is 1j's, with the record in place of \"no tool call\" and "
+          "one sentence more",
+          "no call in the record made" in given
+          and "A call the record shows as done is done: do not make it again." in given
+          and given.endswith("write a one-line note for the case file."), given)
+    r = cl.review(rec.recs, task)
+    check("…an agent that heeds it makes no second call: nothing repeated, nothing written",
+          r["noted"] and r["ran"] and not r["writes"] and not r["repeated"]
+          and r["at_note"] is True and r["at_end"] is True, str(r))
+    wrong4 = ("verify_identity", {"user_id": task.user_id, "phone_last4": "0000"})
+    long = ("escalate_to_human", {"order_id": "O1009", "category": "duplicate_refund",
+                                  "reason": "the customer says she was never refunded " * 4})
+    _, _, rec, _, seen = run([look, wrong4, refund, ("escalate_to_human", {"order_id": "O0000",
+                              "category": "other", "reason": "x"}), long, explain,
+                              "Nothing more."], "record")
+    lines = seen.seen[-1][-1][1].split("\n")
+    check("a check that said no, a refund the tools refused and an escalation of an order "
+          "that does not exist are in the record as such: tried, not done",
+          lines[2] == (f'1. verify_identity(user_id="{task.user_id}", phone_last4="0000") -- '
+                       'not verified: the digits did not match')
+          and lines[3].startswith('2. issue_refund(order_id="O1009", amount_minor=4700, '
+                                  'method="card", reason="customer asked") -- not done: '
+                                  'identity not verified')
+          and lines[4].startswith('3. escalate_to_human(order_id="O0000"')
+          and lines[4].endswith("-- not done: no such order"), "\n".join(lines[:6]))
+    check(f"…and a long value is cut at {cl.SHOWN} characters: the record tells one call from "
+          "another, it does not repeat them",
+          lines[5].startswith('4. escalate_to_human(') and '..."' in lines[5]
+          and len(lines[5]) < 200 and lines[5].endswith("-- done"), lines[5])
+    try:
+        cl.note("off")
+        no_note = False
+    except ValueError:
+        no_note = True
+    check("there is no note with the check off", no_note)
+
+    backend, cust = ScriptedBackend(list(plan)), Customer()
+    sim = LLMUser(cust, persona="a customer", facts={})
+    db = Database.fresh(task.db_patch)
+    first = run_episode(task, db, backend, simulator=sim, closing="record",
+                        interrupt_after_steps=3)
+    state2, db2 = restore(snapshot(first.state, db))
+    second = run_episode(task, db2, backend, simulator=sim, closing="record", state=state2)
+    check("an episode interrupted after the record note resumes in its closing phase",
+          first.stop_reason == StopReason.INTERRUPTED and second.stop_reason == StopReason.DONE
+          and db2.t("escalations") == done_db.t("escalations") and verify(task, db2).passed
+          and sum(cl.is_note(m.content) for m in second.state.messages) == 1)
 
 
 def test_context_keeps_the_closing_note():
@@ -846,30 +937,34 @@ def test_context_keeps_the_closing_note():
         def chat(self, messages, tools):
             return ModelResponse(content='{"customer_goal": "a refund"}', usage=Usage(1, 1))
 
-    msgs = [Message("system", "policy"), Message("user", "I want a refund for O1009")]
-    msgs += cycle(0, "write_note") + cycle(1)
-    msgs += [Message("assistant", "A refund was already issued."), Message("user", "Bye"),
-             Message("user", cl.NOTE)]
-    for i in range(2, 8):
-        msgs += cycle(i)
-    strategies = [FullContext(), SlidingWindow(4), SlidingWindow(8), ToolResultTrim(3),
-                  Summarize(Summary(), keep_recent=4, trigger_units=8), NoteTaking(4)]
-    built = {}
-    for strat in strategies:
-        state = EpisodeState(task_id="T14")
-        state.messages = list(msgs)
-        built[strat.name] = strat.build(state)
-    kept = {n: sum(m.content == cl.NOTE for m in b) for n, b in built.items()}
-    check("after six calls in the closing phase, every strategy still sends the note, once",
-          all(v == 1 for v in kept.values()), str(kept))
-    whole = {n: all(any(p.role == "assistant" and any(tc.id == m.tool_call_id
-                                                      for tc in p.tool_calls)
-                        for p in b[:i]) for i, m in enumerate(b) if m.role == "tool")
-             for n, b in built.items()}
-    check("…without orphaning a tool result", all(whole.values()), str(whole))
-    order = {n: [m.content for m in b].index(cl.NOTE) < max(
-        i for i, m in enumerate(b) if m.role == "tool") for n, b in built.items()}
-    check("…and before the calls that answered it", all(order.values()), str(order))
+    from pasarbench.db import Action
+    record = cl.note("record", [Action("escalate_to_human", {"order_id": "O1009",
+                                                             "category": "other"}, True)])
+    for which, note in (("1j's", cl.NOTE), ("the record", record)):
+        msgs = [Message("system", "policy"), Message("user", "I want a refund for O1009")]
+        msgs += cycle(0, "write_note") + cycle(1)
+        msgs += [Message("assistant", "A refund was already issued."), Message("user", "Bye"),
+                 Message("user", note)]
+        for i in range(2, 8):
+            msgs += cycle(i)
+        strategies = [FullContext(), SlidingWindow(4), SlidingWindow(8), ToolResultTrim(3),
+                      Summarize(Summary(), keep_recent=4, trigger_units=8), NoteTaking(4)]
+        built = {}
+        for strat in strategies:
+            state = EpisodeState(task_id="T14")
+            state.messages = list(msgs)
+            built[strat.name] = strat.build(state)
+        kept = {n: sum(m.content == note for m in b) for n, b in built.items()}
+        check(f"after six calls in the closing phase, every strategy still sends {which} "
+              "note, once", all(v == 1 for v in kept.values()), str(kept))
+        whole = {n: all(any(p.role == "assistant" and any(tc.id == m.tool_call_id
+                                                          for tc in p.tool_calls)
+                            for p in b[:i]) for i, m in enumerate(b) if m.role == "tool")
+                 for n, b in built.items()}
+        check("…without orphaning a tool result", all(whole.values()), str(whole))
+        order = {n: [m.content for m in b].index(note) < max(
+            i for i, m in enumerate(b) if m.role == "tool") for n, b in built.items()}
+        check("…and before the calls that answered it", all(order.values()), str(order))
 
 
 def test_cancellation_settles():
