@@ -7,6 +7,13 @@
 #     ...read logs/sim_audit.txt, logs/check-A.txt, data/rft/stats.json...
 #   bash scripts/gpu_pipeline.sh stage2   # two LoRAs, held-out eval (+ reference if keyed)
 #
+# PASAR_ROUND=2 runs the same stages again as round 2 (v44): the second
+# fine-tune, its data balanced by trap (WHAT_FAILED #31), under today's customer
+# and tools, with the base model also run on the 62 newer tasks of the five
+# hardest traps. Its runs, files and adapters have names of their own (P2-*,
+# data/rft2, checkpoints/rft2-*, logs/r2-*, data/run2_settings.env), so round
+# 1's stay as they are, here and on the laptop (RUNBOOK phase 4, round 2).
+#
 # Run inside tmux (or a notebook cell, or a Modal job). After a crash, an
 # eviction or a dropped connection, run the same stage again: sweeps resume per
 # episode, training resumes from its last checkpoint, and finished steps are
@@ -27,6 +34,14 @@ if [ -f .pasar_env ]; then set +u; source .pasar_env; set -u; fi   # activate is
 mkdir -p logs
 PY="${PYTHON:-python}"
 STAGE="${1:-}"
+ROUND="${PASAR_ROUND:-1}"
+case "$ROUND" in
+  1) P=P;  RFT=rft;  LP="";    SETTINGS=data/run_settings.env ;;
+  2) P=P2; RFT=rft2; LP="r2-"; SETTINGS=data/run2_settings.env ;;
+  *) echo "!! PASAR_ROUND is 1 or 2, not $ROUND" >&2; exit 1 ;;
+esac
+# The adapters serve_sglang.sh's rft mode loads: checkpoints/$RFT-A and -B.
+export RFT_NAME="$RFT"
 # One agent and one customer for every run: the servers, the sweeps, training
 # and the reference row all read these, so overriding them here changes every
 # step together.
@@ -37,8 +52,8 @@ export SIM_MODEL="${SIM_MODEL:-RedHatAI/gemma-4-31B-it-FP8-Dynamic}"
 # data/run_settings.env and later stages read them from there, so a new
 # terminal cannot quietly change them: runs compared task by task must use the
 # same repetitions. Epochs and the training length cap may still be overridden
-# in stage 2 (the second is the way out of a CUDA OOM).
-SETTINGS=data/run_settings.env
+# in stage 2 (the second is the way out of a CUDA OOM). Each round has its own
+# file ($SETTINGS, set above).
 saved() {
   if [ -f "$SETTINGS" ]; then
     local v; v="$(sed -n "s/^$1=//p" "$SETTINGS" | tail -1)"
@@ -54,11 +69,12 @@ if [ -f "$SETTINGS" ] && ! grep -q '^PASAR_CUSTOMER=' "$SETTINGS" && [ "$STAGE" 
   echo "!! stage 1 ran before v31 ($SETTINGS records no customer): its runs had the" >&2
   echo "   simulated customer and the tools from before WHAT_FAILED #37 and #38 were" >&2
   echo "   fixed, and nothing run now would be compared with like. Move data/ and" >&2
-  echo "   traces/P-* aside and run stage 1 again." >&2
+  echo "   traces/P-* aside and run stage 1 again -- or keep them, and run round 2," >&2
+  echo "   which has files of its own: PASAR_ROUND=2 (docs/GPU_GUIDE.md, round 2)." >&2
   exit 1
 fi
 if [ -f "$SETTINGS" ]; then
-  for v in PASAR_K PASAR_COLLECT_K PASAR_CUSTOMER; do
+  for v in PASAR_K PASAR_COLLECT_K PASAR_CUSTOMER PASAR_PER_TRAP; do
     if [ -n "${!v:-}" ] && [ "${!v}" != "$(saved "$v")" ]; then
       echo "!! $v=${!v}, but stage 1 ran with $v=$(saved "$v") ($SETTINGS)." >&2
       echo "   Runs compared task by task must use the same value: unset $v." >&2
@@ -74,6 +90,10 @@ export PASAR_CUSTOMER="$CUSTOMER"
 COLLECT_K="${PASAR_COLLECT_K:-$(saved PASAR_COLLECT_K)}"; COLLECT_K="${COLLECT_K:-8}"   # rollouts per task to learn from
 EPOCHS="${PASAR_EPOCHS:-$(saved PASAR_EPOCHS)}";          EPOCHS="${EPOCHS:-2}"         # LoRA epochs per fold
 TRAIN_MAX_LEN="${PASAR_TRAIN_MAX_LEN:-$(saved PASAR_TRAIN_MAX_LEN)}"; TRAIN_MAX_LEN="${TRAIN_MAX_LEN:-16384}"   # longest training turn
+# Training episodes per trap and fold, balanced across the trap's tasks; 0 is
+# round 1's recipe, at most three a task (WHAT_FAILED #31).
+PER_TRAP="${PASAR_PER_TRAP:-$(saved PASAR_PER_TRAP)}"
+if [ -z "$PER_TRAP" ]; then if [ "$ROUND" = 1 ]; then PER_TRAP=0; else PER_TRAP=20; fi; fi
 
 # How the servers share this machine (scripts/gpu_plan.py): two or more GPUs,
 # one server each; one large GPU (B200, H200), both on it, the agent first.
@@ -237,33 +257,41 @@ EOF
   stage1)
     mkdir -p data
     if [ ! -f "$SETTINGS" ]; then
-      printf 'PASAR_K=%s\nPASAR_COLLECT_K=%s\nPASAR_EPOCHS=%s\nPASAR_TRAIN_MAX_LEN=%s\nPASAR_CUSTOMER=%s\n' \
-        "$K" "$COLLECT_K" "$EPOCHS" "$TRAIN_MAX_LEN" "$CUSTOMER" > "$SETTINGS"
+      printf 'PASAR_K=%s\nPASAR_COLLECT_K=%s\nPASAR_EPOCHS=%s\nPASAR_TRAIN_MAX_LEN=%s\nPASAR_CUSTOMER=%s\nPASAR_PER_TRAP=%s\n' \
+        "$K" "$COLLECT_K" "$EPOCHS" "$TRAIN_MAX_LEN" "$CUSTOMER" "$PER_TRAP" > "$SETTINGS"
     fi
-    echo "settings ($SETTINGS): $(tr '\n' ' ' < "$SETTINGS")"
+    echo "round $ROUND, settings ($SETTINGS): $(tr '\n' ' ' < "$SETTINGS")"
     layout
     $PY -m pasarbench.rl.split
     serve agent
-    $PY scripts/train_rft.py baseline -k "$K" 2>&1 | tee -a logs/baseline.log
-    $PY scripts/inspect_trace.py traces/P-base/full --leaks-only > logs/sim_audit.txt
-    $PY scripts/train_rft.py collect -k "$COLLECT_K" 2>&1 | tee -a logs/collect.log
-    $PY scripts/train_rft.py build --server http://localhost:8000 2>&1 | tee logs/build.log
+    $PY scripts/train_rft.py baseline -k "$K" --run-id "$P-base" 2>&1 | tee -a "logs/${LP}baseline.log"
+    if [ "$ROUND" != 1 ]; then
+      # The 62 newer tasks of the five hardest traps, outside the folds: where
+      # the base model fails some of the time is where GRPO can learn.
+      $PY scripts/train_rft.py baseline -k "$K" --suite edition2 --run-id "$P-base-e2" \
+        2>&1 | tee -a "logs/${LP}baseline.log"
+    fi
+    $PY scripts/inspect_trace.py "traces/$P-base/full" --leaks-only > "logs/${LP}sim_audit.txt"
+    $PY scripts/train_rft.py collect -k "$COLLECT_K" --run-id "$P-collect" 2>&1 | tee -a "logs/${LP}collect.log"
+    build=(--server http://localhost:8000 --run "traces/$P-collect/full" --out-dir "data/$RFT")
+    if [ "$PER_TRAP" -gt 0 ]; then build+=(--per-trap "$PER_TRAP" --max-per-task "$COLLECT_K"); fi
+    $PY scripts/train_rft.py build "${build[@]}" 2>&1 | tee "logs/${LP}build.log"
     failed=""
     for F in A B; do
-      $PY scripts/train_rft.py check --data "data/rft/train-$F.jsonl" \
-        --server http://localhost:8000 2>&1 | tee "logs/check-$F.txt" || failed="$failed $F"
+      $PY scripts/train_rft.py check --data "data/$RFT/train-$F.jsonl" \
+        --server http://localhost:8000 2>&1 | tee "logs/${LP}check-$F.txt" || failed="$failed $F"
     done
     if [ -n "$failed" ]; then
       echo
       echo "!! CHECK FAILED for fold(s)$failed. Running stage 1 again will not change it:"
-      echo "   read logs/check-A.txt and logs/check-B.txt (GPU_GUIDE.md, step R) and ask."
+      echo "   read logs/${LP}check-A.txt and logs/${LP}check-B.txt (GPU_GUIDE.md, step R) and ask."
       exit 1
     fi
     echo
     echo "Stage 1 done. Before stage 2, read:"
-    echo "  logs/sim_audit.txt    leaks and unanswered requests by language (WHAT_FAILED #26)"
-    echo "  logs/check-A.txt      what one example trains on, and the server comparison"
-    echo "  data/rft/stats.json   per-fold traps with nothing to learn from"
+    echo "  logs/${LP}sim_audit.txt    leaks and unanswered requests by language (WHAT_FAILED #26)"
+    echo "  logs/${LP}check-A.txt      what one example trains on, and the server comparison"
+    echo "  data/$RFT/stats.json   per-fold traps with nothing to learn from, and episodes by trap"
     ;;
 
   stage2)
@@ -276,40 +304,41 @@ EOF
     if [ "$NGPU" -gt 1 ]; then launch=(accelerate launch --num_processes "$NGPU" --multi_gpu)
     else launch=("$PY"); fi
     for F in A B; do
-      if [ -f "checkpoints/rft-$F/adapter_config.json" ]; then
-        echo "checkpoints/rft-$F already trained; skipping"; continue
+      if [ -f "checkpoints/$RFT-$F/adapter_config.json" ]; then
+        echo "checkpoints/$RFT-$F already trained; skipping"; continue
       fi
       "${launch[@]}" scripts/train_rft.py train \
-        --data "data/rft/train-$F.jsonl" --out "checkpoints/rft-$F" --resume \
+        --data "data/$RFT/train-$F.jsonl" --out "checkpoints/$RFT-$F" --resume \
         --epochs "$EPOCHS" --max-len "$TRAIN_MAX_LEN" --grad-accum "$ACCUM" \
-        2>&1 | tee -a "logs/train-$F.log"
+        2>&1 | tee -a "logs/${LP}train-$F.log"
     done
     serve rft
     REF=""
     if [ -n "${DEEPSEEK_API_KEY:-}" ]; then
       # Same customer, API agent: the reference row. It shares the customer's
       # GPU with the evaluation, so run them together.
-      echo "reference run (deepseek-v4-pro through its API) in the background -> logs/reference.log"
+      echo "reference run (deepseek-v4-pro through its API) in the background -> logs/${LP}reference.log"
       $PY -m pasarbench.sweep --backend openai --model deepseek-v4-pro \
         --base-url https://api.deepseek.com/v1 --extra-body '{"thinking":{"type":"disabled"}}' \
         --simulator openai --sim-model "$SIM_MODEL" \
         --sim-url http://localhost:8001/v1 --sim-extra-body '{}' --suite all -k "$K" --temperature 0 \
         --customer "$CUSTOMER" \
-        --strategies full --workers 8 --run-id P-ref --resume > logs/reference.log 2>&1 &
+        --strategies full --workers 8 --run-id "$P-ref" --resume > "logs/${LP}reference.log" 2>&1 &
       REF=$!
     else
       echo "(no DEEPSEEK_API_KEY: skipping the reference row; RESULTS.md prints its command)"
     fi
-    $PY scripts/train_rft.py eval -k "$K" 2>&1 | tee -a logs/eval.log
-    if [ -n "$REF" ]; then wait "$REF" || echo "!! reference run failed; see logs/reference.log"; fi
+    $PY scripts/train_rft.py eval -k "$K" --adapter-prefix "pasar-$RFT-" --run-id "$P-rft" \
+      2>&1 | tee -a "logs/${LP}eval.log"
+    if [ -n "$REF" ]; then wait "$REF" || echo "!! reference run failed; see logs/${LP}reference.log"; fi
     echo
     echo "Stage 2 done. Copy back to your laptop and regenerate RESULTS.md there:"
-    echo "  traces/P-base traces/P-rft traces/P-ref traces/P-collect data/splits data/rft/stats.json"
+    echo "  traces/$P-base traces/$P-rft traces/$P-ref traces/$P-collect data/splits data/$RFT/stats.json"
     ;;
 
   settings)
-    echo "agent $AGENT_MODEL | customer $SIM_MODEL"
-    echo "PASAR_K=$K PASAR_COLLECT_K=$COLLECT_K PASAR_EPOCHS=$EPOCHS PASAR_TRAIN_MAX_LEN=$TRAIN_MAX_LEN PASAR_CUSTOMER=$PASAR_CUSTOMER" \
+    echo "agent $AGENT_MODEL | customer $SIM_MODEL | round $ROUND: runs $P-*, adapters checkpoints/$RFT-A and -B"
+    echo "PASAR_K=$K PASAR_COLLECT_K=$COLLECT_K PASAR_EPOCHS=$EPOCHS PASAR_TRAIN_MAX_LEN=$TRAIN_MAX_LEN PASAR_CUSTOMER=$PASAR_CUSTOMER PASAR_PER_TRAP=$PER_TRAP" \
          "($([ -f "$SETTINGS" ] && echo "stage 1 recorded in $SETTINGS" || echo "stage 1 not run yet"))"
     "$PY" scripts/gpu_plan.py show
     ;;
