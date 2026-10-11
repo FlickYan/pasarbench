@@ -5,6 +5,7 @@
 #   ./scripts/serve_sglang.sh agent       # GPU 0, port 8000: Qwen3.8-27B, the model under training
 #   ./scripts/serve_sglang.sh sim         # GPU 1, port 8001: the simulated customer, Gemma 4 31B
 #   ./scripts/serve_sglang.sh rft         # GPU 0, port 8000: Qwen3.8-27B with both RFT adapters
+#                                         #   (RFT_NAME=rft2: round 2's, checkpoints/rft2-A and -B)
 #   ./scripts/serve_sglang.sh probe       # GPU 0: Qwen3.8-27B with a probe adapter (the smoke stage's LoRA check)
 #   ./scripts/serve_sglang.sh agent-fp8   # GPU 0: FP8 weights and KV cache, for the serving comparison
 #
@@ -148,11 +149,13 @@ case "$MODE" in
     # <base>:<adapter> (Qwen/Qwen3.8-27B:pasar-rft-A); a request naming the bare
     # adapter is answered by the BASE model, without an error, so the sweep
     # checks every fold model against the server's list before it starts.
-    for f in checkpoints/rft-A checkpoints/rft-B; do
+    # RFT_NAME picks the round: rft (round 1) or rft2 (round 2, gpu_pipeline.sh).
+    name="${RFT_NAME:-rft}"
+    for f in "checkpoints/$name-A" "checkpoints/$name-B"; do
       [ -f "$f/adapter_config.json" ] || { echo "no adapter in $f -- train it first" >&2; exit 1; }
     done
     run "${agent[@]}" --enable-lora --max-loras-per-batch 2 \
-      --lora-paths pasar-rft-A=checkpoints/rft-A pasar-rft-B=checkpoints/rft-B \
+      --lora-paths "pasar-$name-A=checkpoints/$name-A" "pasar-$name-B=checkpoints/$name-B" \
       ${share[@]+"${share[@]}"} ${extra[@]+"${extra[@]}"}
     ;;
   probe)
