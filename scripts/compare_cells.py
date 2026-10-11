@@ -48,7 +48,8 @@ cost, for each. Since v36 the repeats are also counted by when they came: in
 every run so far nearly all were the agent's first answer to the note (RUNBOOK
 1n). Under the guard (1o) it counts the repeats the guard did not run, and any
 write after a refusal that no check asks for -- the same ticket made another
-way, a cost.
+way, a cost. Since v41 a payment of another amount on what was already paid is
+no repeat, and is listed to be read: a correction, or a second payment.
 
 For every cell it lists the failures the customer ended -- the agent's last
 reply, then her last words, or that she said nothing more -- and with
@@ -94,6 +95,16 @@ def _head(cell: Path) -> dict:
         return {}
     return next((json.loads(l) for l in f.read_text(encoding="utf-8").splitlines()
                  if l.strip() and json.loads(l).get("type") == "header"), {})
+
+
+def _shown_head(head: dict, key: str, default=None) -> str:
+    """A header field as the comparison prints it. The guard is shown with
+    what it compares: v1 before v41, a payment without its amount; v2 with it
+    (WHAT_FAILED #39)."""
+    value = head.get(key, default)
+    if key == "closing" and value == "guard":
+        return f"guard v{head.get('closing_guard', 1)}"
+    return str(value)
 
 
 def _reviews(cell: Path, ids: set[str]) -> dict[str, dict]:
@@ -296,6 +307,12 @@ def _print_closing(name: str, cv: dict[str, dict], show: int = 40,
               f"{f', {at_once} of them the first step after the note' if refused else ''}")
         print(f"  {'a write after a refusal no check asks for':42s} {len(swapped):>4d} episodes"
               f"{' -- the repeat made another way, a cost; read them' if swapped else ''}")
+    # Since v41 (WHAT_FAILED #39) a payment of another amount on what was
+    # already paid is no repeat: a correction the policy asks for, or a second
+    # payment it does not. Only reading tells, so each is listed.
+    topped = [t for t in noted if cv[t].get("another_amount")]
+    print(f"  {'a payment of another amount after one made':42s} {len(topped):>4d} episodes"
+          f"{' -- a correction or a second payment; read them' if topped else ''}")
     blind = [t for t in noted if cv[t]["unscored"]]
     print(f"  {'a write no check asks for or forbids':42s} {len(blind):>4d} episodes"
           f"{' -- the checks cannot say; read them' if blind else ''}")
@@ -303,7 +320,7 @@ def _print_closing(name: str, cv: dict[str, dict], show: int = 40,
     # check needed -- is the mechanism too, and nothing else names it.
     other = [t for t in fixed if not cv[t]["first"]]
     paid = sorted(set(cost) | set(again) | set(guess) | set(broke) | set(blind) | set(other)
-                  | set(refused) | set(swapped))
+                  | set(refused) | set(swapped) | set(topped))
     rest = sorted(set(first) - set(paid))
     for t in paid + rest[:show]:
         r = cv[t]
@@ -317,6 +334,8 @@ def _print_closing(name: str, cv: dict[str, dict], show: int = 40,
                 if r.get("refused") else []) + \
                ([f"SUBSTITUTE: {', '.join(tool for tool, _ in r['substituted'])}"]
                 if r.get("substituted") else []) + \
+               ([f"ANOTHER AMOUNT: {', '.join(tool for tool, _ in r['another_amount'])}"]
+                if r.get("another_amount") else []) + \
                ([f"UNSCORED: {', '.join(tool for tool, _ in r['unscored'])}"]
                 if r["unscored"] else []) + \
                (["BROKE A PASS"] if r["at_note"] and r["at_end"] is False else []) + \
@@ -349,6 +368,7 @@ def _closing_metrics(eps: list[dict], cv: dict[str, dict]) -> list[dict]:
                "forbidden": int(noted and bool(r.get("forbidden"))),
                "guessed": int(noted and bool(r.get("guessed"))),
                "refused": int(noted and bool(r.get("refused"))),
+               "another_amount": int(noted and bool(r.get("another_amount"))),
                "substituted": int(noted and bool(r.get("substituted")))}
         row["cost"] = int(row["repeated"] or row["forbidden"] or row["guessed"]
                           or row["substituted"])
@@ -363,6 +383,7 @@ CLOSING_LINES = (("rescued", "failed as she left it, passed at the end"),
                  ("guessed", "a verification with digits never given"),
                  ("refused", "a repeat the guard did not run"),
                  ("substituted", "a write after a refusal no check asks for"),
+                 ("another_amount", "a payment of another amount after one made"),
                  ("cost", "an episode with a cost"))
 
 
@@ -488,8 +509,8 @@ def main(argv: list[str] | None = None) -> int:
     for key in ("policy_mode", "exposure", "guardrail", "closing", "tool_checks",
                 "requested_model", "simulator"):
         default = defaults.get(key)
-        print(f"{key:12s} {str(heads[0].get(key, default)):>34s} "
-              f"{str(heads[1].get(key, default)):>34s}")
+        print(f"{key:12s} {_shown_head(heads[0], key, default):>34s} "
+              f"{_shown_head(heads[1], key, default):>34s}")
     if heads[0].get("tool_checks", 1) != heads[1].get("tool_checks", 1):
         print("!! the two cells ran under different tool checks (WHAT_FAILED #35, #37): "
               "a difference between them is partly the tools'. Re-run the older one.")
