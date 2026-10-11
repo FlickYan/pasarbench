@@ -88,10 +88,12 @@ irrelevant results" — and passed it, 4 out of 5.
 <!-- RESULTS.md §4, DRE-PH__r2, "+ tool results + policy": naive 4 → accepted; full reason in …__payloads__policy.jsonl -->
 
 This post is about the distance between what an agent says and what it does,
-and what it takes to measure it. Four results: what happens when an agent has
+and what it takes to measure it. Five results: what happens when an agent has
 to *search* for its tools; whether an LLM judge can tell a solved case from an
-unsolved one; a language effect that turned out to be my own regex; and a
-fine-tune that learned my verifier instead of my policy.
+unsolved one; a language effect that turned out to be my own regex, and one
+that didn't; a fine-tune that learned my verifier instead of my policy; and a
+second look after the customer leaves, which rescued what the agent let go and
+then did things twice.
 
 ### The benchmark
 
@@ -444,9 +446,45 @@ become the model's habits. The replay that caught this cost seconds. Without
 it, the headline would have been a fine-tune that "improved" and an API model
 ranked above the one it trails.
 
+### Result 5: a second look after the customer leaves
+
+That escalation is the one agents let go in any language. The customer chases
+a refund, the agent finds it was already paid and says so, the customer says
+thanks, and the conversation ends with nothing filed — though the policy calls
+a duplicate claim a fraud or system-error signal that must be recorded.
+
+So when the customer ends the conversation, the agent now gets one more turn
+she never sees: check the case against the policy and make any call it
+requires. Under a rule written before the run, on the tasks that suggested it,
+pass^1 went from 0.85 to 0.96 (11 tasks better, 2 worse, p = 0.02). On 62 new
+tasks, with a simulated customer who waits for what she agreed to, it went from
+0.83 to 0.94 (15 better, 5 worse, p = 0.04), and 21 of its 25 rescues were that
+escalation.
+<!-- RUNBOOK 1j (traces/M-off, M-check), 1m (Q-off, Q-check): compare_cells.py, closing.review as left vs at end -->
+
+The cost was the interesting part. In 22 of 186 conversations the agent
+escalated a case it had already escalated — something the conversations alone
+did twice in 372. Nearly every second ticket was its first move after the note,
+made with the first one in plain view. So I showed it the record of its own
+calls and told it not to repeat one: 26 repeats in 186 conversations became 24.
+Then I stopped asking. With the note unchanged, a write that repeats one already
+made is not run after the customer leaves: the 20 second tickets became none,
+and all 24 rescues stayed.
+<!-- RUNBOOK 1m (22/186 vs 2/372), 1n (R-check 26 vs R-record 24 of 186, p=0.66; 90 of 91 second calls the first move after the note, v41 count), 1o (S-check 20 repeats vs S-guard 0, rescues 24 and 24) -->
+
+The first version of that refusal compared a payment without its amount. On the
+rest of the suite it refused the shipping credit the policy asks for after a
+credit for the item — a correction it read as a repeat. With the amount in what
+it compares, it broke no case on the other 158 tasks, both of its refusals were
+the same call again, and the correction went through.
+<!-- RUNBOOK 1p (T-guard: 3 shipping credits refused, WHAT_FAILED #39), 1q (U-guard, v41: 456 closing phases, none broken, 2 refusals DRE-PH__r2 and LCOW-MY.ms__r0, CCRTOM-ID.id__r2's IDR 37,000 credit through) -->
+
+A note in the prompt found what the agent let go. Only the harness could stop it
+doing it twice.
+
 ### What failed
 
-`docs/WHAT_FAILED.md` has 38 entries. Most were found by running experiments
+`docs/WHAT_FAILED.md` has 40 entries. Most were found by running experiments
 and refusing a number that couldn't be right. Three more:
 
 **The ceiling was below the floor.** The oracle arm — by design the best case —
@@ -499,7 +537,7 @@ recipe; a second, with training data balanced across traps, is designed but not
 run. Serving cost is built but not measured.
 <!-- RESULTS.md §3 paired table (pairs 13–16); audit_tool_arms.py §3 header; traces/J-preload OOWDE-VN.vi__r2: "Trường hợp của bạn đã được chuyển lên bộ phận xử lý khiếu nại", escalate_to_human never searched for, never called; traces/L2-claims OOWOV-VN__r1, DRE-PH__r1, HPRR-PH__r2 (RUNBOOK 1i, v25) -->
 
-The code, the trace generators, and all 38 failures are in the repo.
+The code, the trace generators, and all 40 failures are in the repo.
 
 ---
 
@@ -544,7 +582,20 @@ One line each, a number, and the mechanism. Pick three.
 > episodes are flagged, all English. The same blind spot had produced the
 > project's only significant language gaps.
 
-> **Documented 38 defects**, most caught by refusing implausible results —
+> **Built a check that runs after the customer leaves**: the agent gets one hidden
+> turn to test the case against the policy. Under rules written before each run
+> it raised pass^1 from 0.85 to 0.96, and from 0.83 to 0.94 on 62 new tasks
+> (p = 0.04), mostly escalations the policy requires after a satisfied customer;
+> its cost, a case escalated twice, went from 20 to none once the harness refused
+> repeats, with no case broken on 158 other tasks.
+
+> **Found a language effect a suite-wide null hid**: no language differed from
+> English overall, but deepseek-v4-pro made one counter-intuitive escalation in
+> 59% of English conversations and 2–8% of Malay and Chinese ones; all 14
+> local-language tasks fell below their English twin (p = 0.0001), and the
+> decision came the moment it read the refund.
+
+> **Documented 40 defects**, most caught by refusing implausible results —
 > including a "ceiling" arm that scored below baseline, a judge evaluated
 > without the evidence it was judging, a fine-tune rewarded for a checker's
 > quirk, a guardrail graded by its own detector, a tool that took what its
@@ -572,7 +623,7 @@ One line each, a number, and the mechanism. Pick three.
 > gain was almost all my checker's quirk — which I measured by replaying nearly
 > 9,000 recorded conversations instead of paying for a GPU re-run.
 
-### Six stories worth having ready
+### Eight stories worth having ready
 
 **1. "I've escalated your case."** State versus text, told through two
 transcripts: a reply that reads perfectly over an empty table, and a judge that
@@ -606,6 +657,19 @@ every recorded episode measured it for free; the same quirk had ranked the API
 model above the base model on pass^1. Then read what the fix promoted, because
 the first version of it was too loose. Lands: a verifier is a reward function
 once you train on it — read what its passes have in common before you do.
+
+**7. Asking versus refusing.** A hidden note after the customer leaves rescued
+the escalations the agent let go, and made it escalate some cases twice — its
+first move after the note, with the first ticket in view. Telling it not to
+repeat itself changed nothing; refusing the repeat removed it and kept every
+rescue. Then the refusal refused a correction, because it compared a payment
+without its amount. Lands: enforce in the harness what a prompt can only ask,
+and define "the same call" the way the policy does.
+
+**8. The null that hid a rule.** Two runs, no language beyond noise — and one
+trap where the agent made the escalation in 59% of English conversations and
+2% of Malaysian Chinese ones, every twin pointing the same way. Lands: a null
+over an average is a null for the average; keep a table by trap beside it.
 
 ### Questions you will be asked
 
@@ -741,17 +805,19 @@ a run from before an ID format change. Then I read the conversations the fix
 had promoted — a replay proves the state, not that the state means what the
 check assumes.
 
-**"What would you do next?"** Give the closing phase room in the token budget:
-on the longest tasks it runs out before the phase begins — 27 of 456 cut short
-in the last run, 3 of them cases that were failing (RUNBOOK 1q). Replace the
-guardrail's phrase list with a model that reads what the customer was told would
-happen, and keep the check against the tool log mechanical: what got past the
-list was wording — "flagged", "will be reviewed", a promise — and wording is a
-language question. Then the run the language finding needs: hold a conversation
-fixed at the moment the agent reads the refund, and change only its language
-(RUNBOOK 1r). A second fine-tune on trap-balanced data built with the
-corrected checks. Get the Thai and Vietnamese translations reviewed. Then
-serving cost.
+**"What would you do next?"** Make the suite harder. Strong models pass 91–98%
+of it, and their failures sit in a handful of traps, so a table of frontier
+models would bunch at the top; the next edition combines traps in one case — a
+duplicate refund on a cash-on-delivery livestream order, two orders in one
+chat, a customer who changes her request. Then run models from several labs on
+it, against one customer. The second fine-tune, its data balanced by trap, is
+ready to run (RUNBOOK phase 4, round 2), and GRPO goes where the model fails
+some of the time. Along the way: the run the language finding needs — hold a
+conversation fixed at the moment the agent reads the refund and change only its
+language (RUNBOOK 1r); room for the closing phase in the token budget (27 of
+456 cut short in the last run, RUNBOOK 1q); and a model that reads what the
+customer was told in place of the guardrail's phrase list, with the check
+against the tool log kept mechanical. Then serving cost.
 
 ### One thing not to do
 
