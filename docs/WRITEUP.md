@@ -718,9 +718,9 @@ a run from before an ID format change. Then I read the conversations the fix
 had promoted — a replay proves the state, not that the state means what the
 check assumes.
 
-**"What would you do next?"** Put a payment's amount in what the guard compares
-and run it again on the 158 tasks it wasn't built for: the one thing it broke
-was a shipping credit that corrected one made without it (RUNBOOK 1p,
+**"What would you do next?"** Run the guard that reads a payment's amount (built
+in v41) on the 158 tasks it wasn't built for: the one thing the first guard
+broke was a shipping credit that corrected one made without it (RUNBOOK 1p, 1q;
 WHAT_FAILED #39). Replace the guardrail's phrase list with a model that reads
 what the customer was told would happen, and keep the check against the tool log
 mechanical: what got past the list was wording — "flagged", "will be reviewed",
