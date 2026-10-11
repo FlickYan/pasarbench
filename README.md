@@ -122,13 +122,18 @@ re-scored by replaying their tool calls (`scripts/rescore.py`).
   of 15 failed episodes. It caught one of three false claims and noticed another
   but passed it; on its first run, given the same evidence, it had credited the
   one it caught.
-- **No language differed from English beyond noise**, in two independent runs.
-  The only significant gaps in the project came from a fact-gating bug, and the
-  simulator "leaks" behind it were the detector's ([WHAT_FAILED #26](docs/WHAT_FAILED.md)).
-  One lead since, on one trap: with the tools named, the duplicate-refund case
-  failed far more often outside English in both runs — in English the agent
-  escalates right after the lookup, elsewhere it explains and stops. Found after
-  the fact, and not yet tested ([RUNBOOK 1j](docs/RUNBOOK.md)).
+- **No language differed from English beyond noise overall**, in two independent
+  runs. The only significant gaps in that comparison came from a fact-gating
+  bug, and the simulator "leaks" behind it were the detector's
+  ([WHAT_FAILED #26](docs/WHAT_FAILED.md)). One rule does differ, and the
+  suite-wide number hides it: P10's escalation of a refund already paid, "even
+  if … the customer accepts it". Read back over every recorded run,
+  deepseek-v4-pro made it in 59% of English conversations and in 2–8% of Malay
+  and Chinese ones, and all 14 local-language tasks made it less often than
+  their English twin — 38 points on average, p = 0.0001 — in the runs recorded
+  before anyone looked as on new tasks. It decides when it reads the refund; on
+  the policy's three other escalations the languages are level, and Qwen3.8-27B
+  shows no gap ([RUNBOOK 1j, 1r](docs/RUNBOOK.md)).
 
 ---
 
@@ -151,7 +156,7 @@ python -m tests.test_generated    # 119 checks over all 199 generated tasks and 
 python -m tests.test_rescore      # 29 re-scoring invariants: the pre-v19 world, replay by digest and by length, the same tool errors on every Python, nothing re-scored on a guess
 python -m tests.test_context      # 39 context-strategy + analysis invariants
 python -m tests.test_judge        # 83 judge + agreement-statistics invariants, judged against today's checks
-python -m tests.test_exposure     # 182 tool-scaling + diagnosis invariants, the tool-naming experiment and its confirmation tasks, the guardrail's report and dry run, the closing check's report, its costs, two closing notes compared by task and the record each episode was given, the closing guard's refusals and its dry run, one run's closing phase read on its own, each case before and after it and what each customer last said, a write a database check needs told from one no check sees, readers that skip its case note, how episodes ended and what cancellations settled, listed, cells compared across tool versions or customers flagged, and episodes a server error ended
+python -m tests.test_exposure     # 189 tool-scaling + diagnosis invariants, the tool-naming experiment and its confirmation tasks, the guardrail's report and dry run, the closing check's report, its costs, two closing notes compared by task and the record each episode was given, the closing guard's refusals and its dry run, one run's closing phase read on its own, each case before and after it and what each customer last said, a write a database check needs told from one no check sees, readers that skip its case note, how episodes ended and what cancellations settled, listed, cells compared across tool versions or customers flagged, episodes a server error ended, and the duplicate-refund trap by language, twin against twin
 python -m tests.test_serving      # 54 metrics (SGLang and vLLM), cost and quality-guard invariants
 python -m tests.test_report       # 62 report invariants: paired verdicts, ties, replication, calibration, noise floor, post-training with one customer and one tool version, both scorings in every section, a figure that matches its numbers and drops a title they stop bearing out
 python -m tests.test_training     # 167 checks: split, customer family, collection and resume, examples (Qwen3 and Qwen3.8 formats) against an SGLang-like server, adapter routing, the LoRA probe, serve and Modal scripts, one-GPU memory plans, the notebook helper (progress in place, an interrupt-proof cleanup), the CUDA compiler, run settings, LoRA steps on Qwen3 and Qwen3.8's hybrid architecture, training data picked by today's checks, a push script that keeps runs and keys off GitHub, closing-check runs refused as training data, one simulated customer in every step, kept from stage 1 to stage 2, server errors reported (125 without transformers/torch)
@@ -416,7 +421,7 @@ scripts/    gpu_pipeline.sh gpu_plan.py modal_pipeline.py pasar_notebook.py
             audit_tool_arms.py inspect_trace.py run_judges.py rescore.py
             compare_cells.py naming_tasks.py guardrail_dry_run.py make_figure.py
             slurm_train.sh slurm_sweep.sh modal_vllm.py closing_guard_dry_run.py
-            closing_report.py
+            closing_report.py language_lead.py
 tests/      12 suites, 750+ assertions
 docs/       RUNBOOK.md  GPU_GUIDE.md  WHAT_FAILED.md  WRITEUP.md  BLOG.md  README_weekly.md
             img/  the results figure, light and dark, wide and narrow, and its numbers
