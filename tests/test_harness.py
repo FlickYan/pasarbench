@@ -841,9 +841,22 @@ def test_closing_check():
         r = subprocess.run(sweep[:-2] + ["--trace-root", d, "--run-id", "x", "--closing",
                                           "guard"], capture_output=True, text=True, cwd=cwd)
         heads = [json.loads(f.read_text().splitlines()[0]) for f in Path(d).glob("x/*/*.jsonl")]
-        check("…and --closing guard",
-              r.returncode == 0 and heads and all(h.get("closing") == "guard" for h in heads),
+        check("…and --closing guard, with what the guard compares",
+              r.returncode == 0 and heads and all(h.get("closing") == "guard"
+                                                  and h.get("closing_guard") == 2 for h in heads),
               r.stderr[-500:] or str(heads))
+        for f in Path(d).glob("x/*/*.jsonl"):
+            lines = f.read_text().splitlines()
+            head = json.loads(lines[0])
+            head.pop("closing_guard", None)
+            f.write_text("\n".join([json.dumps(head)] + lines[1:]) + "\n")
+        again = subprocess.run(sweep[:-2] + ["--trace-root", d, "--run-id", "x", "--closing",
+                                              "guard", "--resume"],
+                               capture_output=True, text=True, cwd=cwd)
+        check("…and --resume will not add the guard v41 has to a cell run under the one "
+              "before, which compared a payment without its amount",
+              again.returncode != 0 and "closing 'guard' v1" in again.stdout + again.stderr,
+              (again.stdout + again.stderr)[-400:])
 
     # The record note (RUNBOOK 1n): the case record, then 1j's note.
     import hashlib
@@ -975,7 +988,7 @@ def test_closing_check():
     credit = Action("issue_store_credit", {"user_id": "U1", "amount_minor": 500,
                                            "currency": "SGD", "reason": "x", "order_id": None},
                     True)
-    ask = {"user_id": "U1", "amount_minor": 900, "currency": "SGD", "reason": "y"}
+    ask = {"user_id": "U1", "amount_minor": 500, "currency": "SGD", "reason": "y"}
     check("the guard reads a call's target as the tool would log it: credit with no order "
           "repeats credit with no order, not credit against one; a failed write is no repeat, "
           "and a read never is",
@@ -986,6 +999,39 @@ def test_closing_check():
                            "escalate_to_human",
                            {"order_id": "O1", "category": "other", "reason": "r"}) is None
           and cl.repeat_of([credit], "get_user_profile", {"user_id": "U1"}) is None)
+    check("v41 (WHAT_FAILED #39): a payment of another amount, or in another currency, is "
+          "no repeat -- the shipping after the item is the rest of what is owed -- while "
+          "500.0 is the 500 the tool would log",
+          cl.repeat_of([credit], "issue_store_credit", {**ask, "amount_minor": 900}) is None
+          and cl.repeat_of([credit], "issue_store_credit", {**ask, "currency": "MYR"}) is None
+          and cl.repeat_of([credit], "issue_store_credit", {**ask, "amount_minor": 500.0})
+          is credit
+          and cl.paid_before([credit], "issue_store_credit", {**ask, "amount_minor": 900})
+          is credit
+          and cl.paid_before([credit], "issue_store_credit", ask) is None)
+    n02 = len(Database.fresh(t02.db_patch).t("store_credit_grants"))
+    ship = ("issue_store_credit", {"user_id": "U001", "amount_minor": 1200, "currency": "MYR",
+                                   "reason": "shipping, P4.6", "order_id": "O1001"})
+    _, _, rec, db, _ = run(cod + [ship, "Shipping too."], "guard", task=t02)
+    r = cl.review(rec.recs, t02)
+    check("…so under the guard the shipping credit after the item's runs, and the review "
+          "lists it as a payment of another amount, to be read -- not a repeat, not refused",
+          len(db.t("store_credit_grants")) == n02 + 2 and not r["refused"] and not r["repeated"]
+          and [a.get("amount_minor") for _, a in r["another_amount"]] == [1200]
+          and rec.meta.get("closing_guard") == cl.GUARD_VERSION == 2, str(r))
+    _, _, rec, db, _ = run(cod + [cod[2], "Credited again."], "guard", task=t02)
+    r = cl.review(rec.recs, t02)
+    check("…while the same credit again is refused, and is no payment of another amount",
+          len(db.t("store_credit_grants")) == n02 + 1
+          and [t for t, _ in r["refused"]] == ["issue_store_credit"]
+          and not r["another_amount"], str(r))
+    _, _, rec, _, _ = run(cod + [ship, "Shipping too."], "check", task=t02)
+    r = cl.review(rec.recs, t02)
+    check("…and under 1j's note alone the review reads the shipping credit the same way, "
+          "where before v41 it counted it a repeat (1k's two)",
+          not r["repeated"] and [a.get("amount_minor") for _, a in r["another_amount"]] == [1200]
+          and "closing_guard" not in rec.meta, str(r))
+
     # What the guard refuses, a correct agent never needs: no reference solution
     # makes a write that repeats one it already made.
     from pasarbench.rescore import all_tasks
