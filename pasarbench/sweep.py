@@ -548,14 +548,16 @@ def main() -> None:
                     help="claims: hold back a reply that claims a write action no "
                          "tool call has done, and tell the agent instead "
                          "(pasarbench/harness/guardrail.py; docs/RUNBOOK.md, 1i)")
-    ap.add_argument("--closing", default="off", choices=["off", "check", "record"],
+    ap.add_argument("--closing", default="off", choices=["off", "check", "record", "guard"],
                     help="check: when the customer leaves, give the agent one note "
                          "to go over the case against the policy and make any call "
                          "it requires that was not made "
                          "(pasarbench/harness/closing.py; docs/RUNBOOK.md, 1j). "
                          "record: the same note after the case record -- every "
                          "identity check and action the conversation attempted, "
-                         "and what came of each (RUNBOOK 1n)")
+                         "and what came of each (RUNBOOK 1n). guard: 1j's note, and "
+                         "in the closing phase a write that repeats one already "
+                         "made is not run (RUNBOOK 1o)")
     ap.add_argument("-k", type=int, default=1)
     ap.add_argument("--suite", default="core", choices=["core", "generated", "all", "edition2"],
                     help="edition2: new tasks of the closing check's five traps, outside "
