@@ -1247,6 +1247,65 @@ def test_closing_guard_report():
           is not None, text[-1800:])
 
 
+def test_closing_report_one_cell():
+    """RUNBOOK 1p reads one run on its own: the closing phase acts after the
+    customer has left, so its effect is each case as she left it against the
+    case at the end, and needs no control. closing_report.py prints that
+    section for one cell, then every call the guard refused beside the call
+    it would have repeated -- the same call again, or a different write of the
+    same kind, which only reading tells apart."""
+    print("\n=== closing_report reads one run's closing phase ===")
+    import contextlib
+    import io
+    import re
+    import tempfile
+    from pathlib import Path
+
+    look, explain, esc = T14_LOOK, T14_EXPLAIN, T14_ESC
+    tmp = Path(tempfile.mkdtemp())
+    g = _closing_cell(tmp, "G", "guard", [[look, explain, esc, "Escalated."],
+                                          [look, esc, explain, esc, "Escalated again."]])
+    ver2 = ("verify_identity", {"user_id": "U001", "phone_last4": "6789"})
+    credit = ("issue_store_credit", {"user_id": "U001", "amount_minor": 17800, "currency": "MYR",
+                                     "reason": "broken pumps", "order_id": "O1001"})
+    shipping = ("issue_store_credit", {"user_id": "U001", "amount_minor": 1200, "currency": "MYR",
+                                       "reason": "shipping, P4.6", "order_id": "O1001"})
+    _closing_cell(tmp, "G", "guard", [[ver2, credit, "Credited.", shipping, "Shipping too."]],
+                  task_id="T02")
+    rep = _load_script("closing_report")
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out):
+        rep.main([str(g)])
+    text = out.getvalue()
+    check("one cell: its setup and pass rate, then the closing section compare_cells prints",
+          re.search(r"closing\s+guard", text) is not None and "pass^1" in text
+          and "closing check in G/full: the customer left and the agent got the note in 3 "
+              "episodes" in text
+          and re.search(r"a repeat the guard did not run\s+2 episodes, 2 of them the first "
+                        r"step after the note", text) is not None
+          and "1 failed -> passed, 0 passed -> failed, of 3" in text, text[:2500])
+    check("…then every refusal beside the call it would have repeated: the same escalation "
+          "again, and a credit of another amount -- the correction only reading tells apart",
+          "every call the guard refused, beside the call it would have repeated -- 2;" in text
+          and re.search(r'T14__r1 +refused escalate_to_human\(order_id="O1009", '
+                        r'category="duplicate_refund", reason="refund already issued"\)\n +after '
+                        r'+escalate_to_human\(order_id="O1009", category="duplicate_refund"', text)
+          is not None
+          and re.search(r'T02__r0 +refused issue_store_credit\(user_id="U001", amount_minor=1200'
+                        r'.*\n +after +issue_store_credit\(user_id="U001", amount_minor=17800',
+                        text) is not None, text[-2500:])
+    check("…and the pass rate by trap",
+          re.search(r"pass\^1 by trap:\n(  .+\n)+", text) is not None
+          and "duplicate_refund_escalate" in text.split("pass^1 by trap:")[1], text[-800:])
+    a = _closing_cell(tmp, "A", "off", [[look, explain, esc, "Escalated."]])
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out):
+        rep.main([str(a)])
+    check("a run without the closing phase says so, and lists no refusals",
+          "no closing phase in this cell" in out.getvalue()
+          and "the guard refused" not in out.getvalue(), out.getvalue()[:1500])
+
+
 def test_closing_readers():
     """A case note is written after the customer left: no reader of what the
     customer was told may count it, and a judge must be told the customer had
@@ -1497,6 +1556,7 @@ def main() -> int:
     test_closing_report()
     test_closing_compared()
     test_closing_guard_report()
+    test_closing_report_one_cell()
     test_closing_readers()
     test_answers_and_customers()
     print(f"\n{len(PASS)} passed, {len(FAIL)} failed")
