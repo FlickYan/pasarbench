@@ -38,7 +38,12 @@ fixed -- the paired comparison with every case as she left it, which is the
 conversations' difference alone, the writes no check scores either way, and
 under each episode listed what she last said. Read all of them before the
 pass rate: a rescue after "yes, go ahead, thanks" is the turn the episode's
-end never gave the agent (WHAT_FAILED #38), not a second look.
+end never gave the agent (WHAT_FAILED #38), not a second look. Two cells that
+both gave the note -- two notes, as 1n compares 1j's with the one that carries
+the case record -- are also compared on what each did after the customer
+left, paired by task as the pass rate is: the cases each turned from a fail
+into a pass, the episodes with each cost, and 1j's rule, rescues minus the
+episodes with a cost, for each.
 
 For every cell it lists the failures the customer ended -- the agent's last
 reply, then her last words, or that she said nothing more -- and with
@@ -302,6 +307,74 @@ def _print_closing(name: str, cv: dict[str, dict], show: int = 40) -> None:
         print(f"    ... and {len(rest) - show} more with a required action first made then")
 
 
+def _closing_metrics(eps: list[dict], cv: dict[str, dict]) -> list[dict]:
+    """Each episode as 0/1 fields that paired_episodes can average by task:
+    whether the note reached it, whether it turned a fail as the customer left
+    the case into a pass at the end -- a rescue -- and each of 1j's costs. An
+    episode the note never reached did none of them."""
+    out = []
+    for e in eps:
+        r = cv.get(e["transcript_id"], {})
+        noted = bool(r.get("noted"))
+        row = {"task_id": e["task_id"], "transcript_id": e["transcript_id"],
+               "passed": e["passed"], "noted": int(noted),
+               "rescued": int(noted and r.get("at_note") is False and bool(r.get("at_end"))),
+               "broke": int(noted and bool(r.get("at_note")) and r.get("at_end") is False),
+               "repeated": int(noted and bool(r.get("repeated"))),
+               "forbidden": int(noted and bool(r.get("forbidden"))),
+               "guessed": int(noted and bool(r.get("guessed")))}
+        row["cost"] = int(row["repeated"] or row["forbidden"] or row["guessed"])
+        out.append(row)
+    return out
+
+
+CLOSING_LINES = (("rescued", "failed as she left it, passed at the end"),
+                 ("broke", "passed as she left it, failed at the end"),
+                 ("repeated", "a write repeating one already made"),
+                 ("forbidden", "a forbidden call first made then"),
+                 ("guessed", "a verification with digits never given"),
+                 ("cost", "an episode with any of the three costs"))
+
+
+def _print_closings_compared(names: list[str], eps_pair, cvs) -> None:
+    """Two cells that both gave the note, compared on what it did (RUNBOOK
+    1n): each line the episodes in each cell, then the sign test over the
+    tasks where the two differ -- the task is the unit, as for the pass rate,
+    since the k episodes of a task are not k independent draws. The last line
+    is 1j's rule for each cell: rescues minus the episodes with a cost."""
+    from pasarbench.diagnose import paired_episodes
+    ma, mb = (_closing_metrics(eps, cv) for eps, cv in zip(eps_pair, cvs))
+    if not any(r["noted"] for r in ma) or not any(r["noted"] for r in mb):
+        return
+    print(f"\nthe two closing notes compared, {names[0]} -> {names[1]}, episodes (the note "
+          f"reached {sum(r['noted'] for r in ma)} -> {sum(r['noted'] for r in mb)}), "
+          f"then paired by task:")
+    # The verdicts as she left the case are today's checks on replayed calls;
+    # beside recorded verdicts there are none, and no rescue to count.
+    scored = all(any(r.get("at_note") is not None for r in cv.values()) for cv in cvs)
+    for key, label in CLOSING_LINES:
+        if key in ("rescued", "broke") and not scored:
+            print(f"  {label:42s} not scored: the verdicts here are not today's checks "
+                  f"on replayed calls")
+            continue
+        na, nb = sum(r[key] for r in ma), sum(r[key] for r in mb)
+        g = paired_episodes(ma, mb, metric=key)
+        if g is None:
+            tail = "fewer than 5 shared tasks -- not testable"
+        elif not (g["better"] or g["worse"]):
+            tail = "no task differs"
+        else:
+            word = (("MORE" if g["diff"] > 0 else "FEWER") if g["resolved"]
+                    else "INCONCLUSIVE")
+            tail = (f"{g['better']} tasks more, {g['worse']} fewer, sign test "
+                    f"p={g['p']:.3f}  ->  {word}")
+        print(f"  {label:42s} {na:>4d} -> {nb:<4d} {tail}")
+    if scored:
+        net = [sum(r["rescued"] for r in m) - sum(r["cost"] for r in m) for m in (ma, mb)]
+        print(f"  {'rescues minus episodes with a cost (1j)':42s} {net[0]:>+4d} -> "
+              f"{net[1]:+d}")
+
+
 def _audit_claims(cell: Path, eps: list[dict], tasks: dict) -> tuple[int, int]:
     """(failed English episodes read, of them claiming a required action the
     database never saw) -- scripts/audit_tool_arms.py's section 3, which reads
@@ -473,6 +546,7 @@ def main(argv: list[str] | None = None) -> int:
 
     for name, cv in zip(names, cvs):
         _print_closing(name, cv)
+    _print_closings_compared(names, (ea, eb), cvs)
     for name, cell, eps in zip(names, cells, (ea, eb)):
         _print_endings(name, _endings(cell, eps, every=a.endings), every=a.endings)
         _print_settlements(name, *_settlements(cell, eps))
