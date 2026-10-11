@@ -1603,6 +1603,48 @@ payment of another amount beside the one it came after.
   tools and tasks, the guard before v41.
 - **Secondary:** tokens; phases cut short; the failures the run still has.
 
+**Run on 2026-10-12, v41** (`U-guard`): safe where it was not built for, by the
+reading fixed before the run. Every condition held: no case broken, no forbidden
+call, both refusals the same call again, and the one payment of another amount
+the shipping credit P4.6 asks for.
+
+| the 158 tasks, 474 episodes | 1q, `U-guard` (guard v2) | 1p, `T-guard` (guard v1), for context |
+|---|---|---|
+| pass^1 (pass^k) | 0.973 (0.943) | 0.970 (0.930) |
+| closing phases (the note given) | 456 | 465 |
+| passed as she left it, failed at the end | none | none |
+| failed as she left it, passed at the end | 1 | 4 |
+| refused | 2: the same escalation, the same message to the seller | 4 calls in 3 episodes, 3 of them the shipping credit |
+| a payment of another amount | 1: the shipping credit after the item's | — |
+| forbidden calls, guessed digits, writes after a refusal | none | none |
+| cut short by the token budget | 27 — 17 before a step, 3 failing as left | 16 — 9, 1 |
+| tokens per episode | 68,717 | 68,030 |
+
+**The correction runs.** In CCRTOM-ID and its Indonesian twin, five of the six
+conversations credited the item and its shipping together, IDR 737,000. The
+sixth credited the item; after the customer left the agent credited the IDR
+37,000 of shipping, and the guard let it through as a payment of another amount
+(CCRTOM-ID.id__r2). All six ended with what P4.6 says is owed. The two refusals
+were the guard working, each the agent's first move after the note: an
+escalation of the same order under the same category (DRE-PH__r2), and the same
+message to the seller again (LCOW-MY.ms__r0).
+
+**Everything else as before.** One rescue — T14__r1, a duplicate refund
+escalated after the customer said goodbye — and no case broken in 456 closing
+phases. The token budget cut more phases short than in 1p: 27, 17 of them before
+the agent took a step, and 3 failing as their customer left them (CCRTOM-MY__r0,
+LCOW-MY.zh-MY__r0, LCOW-MY__r2), rescues the budget may have hidden. Eighteen
+episodes ran out of it before the customer left. Thirteen failed, nine of them
+the livestream trap.
+
+**What it means.** With the amount in what it compares, the guard has cost
+nothing measured on any task. On the five traps it removed every second ticket
+and kept the rescues (1o, which the dry run says stands for v41); on the other
+158 it broke no case, refused only the same call again, and let the correction
+through. The guarded closing check can be turned on for the whole suite. What is
+left is not the guard's: on the longest tasks the episode's token budget runs
+out before the closing phase begins.
+
 ---
 
 # Phase 2 — judge calibration (no GPU, ~6 hours of your time)
