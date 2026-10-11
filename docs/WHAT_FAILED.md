@@ -1401,9 +1401,11 @@ in `refunds`, which several checks count; the action log gets a line of its own
 guardrail. A run records the version it ran under and replays under it
 (`tool_checks`, #35), so no recorded verdict moved: all 11,974 recorded episodes
 re-score as they did. A new run is a new world, and `compare_cells.py` flags one
-set against an old one. The other fix — a policy rule the checks require — would
-have failed every recorded cancellation of a captured order but the eight that
-refunded its total.
+set against an old one. In 1l's 84 cancellations each settled as designed, the
+agent's replies said what the tool's note said, and no agent tried to refund one
+again. The other fix — a policy rule the checks require — would have failed
+every recorded cancellation of a captured order but the eight that refunded its
+total.
 
 **Lesson.** A world defines what its checks need and no more. The money after a
 cancellation was in no check, so it was in no rule and no tool — and the agent
@@ -1455,10 +1457,13 @@ report sees two customers where two ran, `--resume` will not mix them, and
 every cell, the failures she ended — the agent's last reply, then her last
 words, or that she said nothing more — and with `--endings` every episode she
 ended, so a run shows whether she waited (RUNBOOK 1l). A rule in a prompt is a
-request, not a guarantee: until that run, the fix is a change, not a result. The
-second fix — a turn on her last message — is not built: with a customer who
-stays until it is done, there should be nothing left for it to act on. If 1l
-shows she still leaves on a yes, it is next.
+request, not a guarantee, so 1l checked it (2026-10-11): none of customer 2's
+252 conversations ended on her yes to an offer, or with one unanswered, where
+customer 1, the same day and under the same tools, ended 7 of the voucher trap's
+that way; with customer 2 the trap went from 0.81 to 1.00, every voucher offered
+issued, and the comparison by task was 14 better, 8 worse, p = 0.29. The second
+fix — a turn on her last message — is not built: with a customer who stays until
+it is done, there is nothing left for it to act on.
 
 **Lesson.** Who ends a simulated conversation, and on what, is part of what it
 measures. Read the last message of every failure: half of one trap's were saying
