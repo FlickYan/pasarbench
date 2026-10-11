@@ -51,12 +51,16 @@ from types import SimpleNamespace
 
 
 GEN_TASKS, GEN_SOLUTIONS = generate()
-ALL_SOLUTIONS = {**SOLUTIONS, **GEN_SOLUTIONS}
+# New tasks of the closing check's five traps, to confirm it on tasks that did
+# not produce it (RUNBOOK 1m). Never in `all`: the suite stays the suite.
+EDITION2_TASKS, EDITION2_SOLUTIONS = generate(edition=2)
+ALL_SOLUTIONS = {**SOLUTIONS, **GEN_SOLUTIONS, **EDITION2_SOLUTIONS}
 ALL_TASKS = CORE_TASKS + GEN_TASKS
 
 
 def select_tasks(args) -> list[Task]:
-    pool = {"core": CORE_TASKS, "generated": GEN_TASKS, "all": ALL_TASKS}[args.suite]
+    pool = {"core": CORE_TASKS, "generated": GEN_TASKS, "all": ALL_TASKS,
+            "edition2": EDITION2_TASKS}[args.suite]
     if args.languages:
         want = set(args.languages.split(","))
         pool = [t for t in pool if t.language in want]
@@ -550,7 +554,9 @@ def main() -> None:
                          "it requires that was not made "
                          "(pasarbench/harness/closing.py; docs/RUNBOOK.md, 1j)")
     ap.add_argument("-k", type=int, default=1)
-    ap.add_argument("--suite", default="core", choices=["core", "generated", "all"])
+    ap.add_argument("--suite", default="core", choices=["core", "generated", "all", "edition2"],
+                    help="edition2: new tasks of the closing check's five traps, outside "
+                         "the suite (RUNBOOK 1m)")
     ap.add_argument("--sample", type=int, default=0,
                     help="stratified: N tasks PER TRAP. Use while iterating; "
                          "run the full suite only for final numbers.")
