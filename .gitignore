@@ -14,6 +14,7 @@ venv/
 traces/
 data/
 checkpoints/
+hf-dataset/
 *.jsonl
 !tests/**/*.jsonl
 
