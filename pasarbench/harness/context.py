@@ -75,9 +75,9 @@ def closing_note(rest: list[Unit], kept_from: int) -> list[Unit]:
     rest[kept_from:]. The note is the agent's whole instruction once the
     customer has left, and the phase can run past a short window: window4
     lost it after four tool calls. So it stays, like the opening."""
-    from .closing import NOTE
+    from .closing import is_note
     return [u for u in rest[:max(kept_from, 0)]
-            if u.kind == "user" and u.messages[0].content == NOTE][:1]
+            if u.kind == "user" and is_note(u.messages[0].content)][:1]
 
 
 class ContextStrategy(Protocol):
