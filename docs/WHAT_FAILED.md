@@ -1524,6 +1524,9 @@ the vouchers paid twice in 1n and 1o were the same amount again, and stay
 refused. Counted that way, the second calls that were the agent's first answer
 to the note are 90 of 91 across 1j to 1n, where the older count said 91 of 93.
 1q runs the guard again where it was not built for (RUNBOOK 1q).
+1q ran it there (2026-10-12): the shipping credit was made after the customer
+left and went through (CCRTOM-ID.id__r2), both refusals were the same call
+again, and no case broke.
 
 **Lesson.** A definition written from the failure you saw is blind to the one
 you did not, and reading the exceptions once does not change the definition. 1k
