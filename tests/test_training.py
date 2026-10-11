@@ -172,6 +172,13 @@ def test_sweep_collection():
         cwd=Path(__file__).resolve().parent.parent)
     check("a run the server never answered exits non-zero and says what to do",
           dead.returncode == 3 and "server or API error" in dead.stdout, dead.stdout[-400:])
+    from pasarbench.sweep import _server_errors
+    few = _server_errors([{"stop_reasons": {"done": 250, "backend_error": 2}}])
+    check("…and a few such episodes are reported too, without stopping a pipeline: two of "
+          "252 once went unsaid and were counted as the agent's failures (RUNBOOK 1l)",
+          few[0] is not None and "2 of 252 episodes" in few[0] and few[1] is False
+          and _server_errors([{"stop_reasons": {"done": 245, "backend_error": 5}}])[1] is True
+          and _server_errors([{"stop_reasons": {"done": 252}}]) == (None, False), str(few))
 
     head = json.loads((cell / "T01__r0.jsonl").read_text().splitlines()[0])
     lines = (cell / "T01__r0.jsonl").read_text().splitlines()
