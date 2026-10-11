@@ -126,6 +126,9 @@ def run_episode(
         # Only when on, so the headers of every run before it stay as they were.
         **({"guardrail": guardrail} if guardrail != "off" else {}),
         **({"closing": closing} if closing != "off" else {}),
+        # What the guard compares (closing.GUARD_VERSION): a run under one is
+        # not another's. Absent from runs before v41, which compared version 1.
+        **({"closing_guard": closing_check.GUARD_VERSION} if closing == "guard" else {}),
         # What the tools checked and did (tools.CHECKS): their arguments since
         # v27, the payment a cancellation settles since v31. A replay runs the
         # calls under the same version; a header without this ran before v27,
