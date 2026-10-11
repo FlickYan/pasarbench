@@ -939,7 +939,8 @@ def test_closing_report():
     # scripted customer never gave: from the trace, that is a guess as well.
     check("…and the two costs 1j found: an escalation made a second time, and a "
           "verification with digits the customer never gave, each episode listed",
-          re.search(r"a write repeating one already made\s+1 episodes", text) is not None
+          re.search(r"a write repeating one already made\s+1 episodes, 1 of them the first "
+                    r"step after the note", text) is not None
           and "REPEATED: escalate_to_human" in text
           and re.search(r"a verification with digits never given\s+2 episodes", text) is not None
           and "GUESSED: verify_identity 0000" in text
