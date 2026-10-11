@@ -95,6 +95,14 @@ def sequence(e: dict) -> None:
             # The closing check (harness/closing.py): what follows ran after the
             # customer had gone, and no one read its text.
             print("  --- the customer has left: closing check ---")
+            # The record note (RUNBOOK 1n) differs by episode: show the record
+            # this one was given -- a call made again after a record that shows
+            # the first as done is the note read and not followed.
+            given = next((ev.get("note") for ev in e["events"]
+                          if ev.get("kind") == "closing_check" and ev.get("note")), None)
+            if given:
+                for line in given.split("\n")[1:-1]:
+                    print(f"      {line}")
             closing_shown = True
         if st.get("guardrail"):
             # Held back by the claim guardrail: the customer never saw it, and
