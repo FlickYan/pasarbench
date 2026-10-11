@@ -30,25 +30,106 @@ The phase runs inside the episode's budget for steps, tool calls, tokens and
 time, with MAX_STEPS of its own; the cap on customer turns does not apply, as
 no customer is left to take one. Context strategies that drop old messages
 keep the note (context.py): it is the agent's whole instruction for the phase.
+
+Two notes. "check" is 1j's, unchanged since the run that fixed it. Its one
+cost in every run since has been a call made again -- 22 escalations in 1m's
+186 episodes, of cases the conversation had already escalated -- and 1k named
+the fix: have the agent read its own calls before it makes one. Asking it to
+list them would end the phase, which ends on the agent's first reply without
+a call. So "record" (v35, RUNBOOK 1n) carries the list itself: the case
+record, every identity check and every action the conversation attempted,
+each with what came of it, read off the database's action log as a support
+system's case history would show it -- then 1j's note, with one sentence
+more. It reads nothing about the task either. The trace's closing_check
+event carries the note it gave.
 """
 
 from __future__ import annotations
 
 from typing import Any, Iterable
 
-MODES = ("off", "check")
+MODES = ("off", "check", "record")
 # The closing phase's own cap, inside the episode's budget: enough to look a
 # tool up, call it and write the note, not enough to start the case again.
 MAX_STEPS = 6
+# The first line of every closing note, and how a note is told from any other
+# message -- by a resumed episode, and by a context strategy that must keep it.
+HEAD = ("[Support system: the customer has left the conversation and will not see "
+        "anything you write from now on.]")
 # Fixed before any run (RUNBOOK 1j). A reworded note is a new intervention and
 # needs tasks it was not tuned on.
-NOTE = ("[Support system: the customer has left the conversation and will not see "
-        "anything you write from now on.]\n"
+NOTE = (HEAD + "\n"
         "Before this case closes, check what you did against the policy. If the policy "
         "requires an action in this case that no tool call has made -- including one you "
         "told the customer was done or under way -- make that call now. Take no action "
         "the policy does not require. When you are finished, write a one-line note for "
         "the case file.")
+# Fixed before any run (RUNBOOK 1n): the case record, then 1j's note with the
+# record in place of "no tool call" and one sentence more.
+RECORD_NOTE = (HEAD + "\n"
+               "The case record -- every identity check and every action attempted in "
+               "this conversation, in order:\n"
+               "{record}\n"
+               "Before this case closes, check what you did against the policy. If the "
+               "policy requires an action in this case that no call in the record made -- "
+               "including one you told the customer was done or under way -- make that "
+               "call now. A call the record shows as done is done: do not make it again. "
+               "Take no action the policy does not require. When you are finished, write a "
+               "one-line note for the case file.")
+NO_RECORD = "(nothing: no identity check or action was attempted)"
+# A value longer than this is cut in the record: a reason can run to a
+# paragraph, and the record is for telling one call from another.
+SHOWN = 60
+
+
+def note(mode: str, log: Iterable[Any] = ()) -> str:
+    """The note the agent gets when the customer leaves, in this mode: 1j's,
+    or the case record (`record`) and the note after it."""
+    if mode == "check":
+        return NOTE
+    if mode == "record":
+        return RECORD_NOTE.replace("{record}", "\n".join(record(log)) or NO_RECORD)
+    raise ValueError(f"no closing note in mode {mode!r}")
+
+
+def record(log: Iterable[Any]) -> list[str]:
+    """The case record: every identity check and every write the conversation
+    attempted, in order, each with what came of it -- from the database's
+    action log, which every tool call that reached the tools wrote to. A read
+    changes nothing and is left out; so is a call that never reached the
+    tools (an unknown tool, arguments that were not JSON), which did nothing.
+    What the agent did, and nothing about the task."""
+    from ..tools import WRITE_TOOLS
+    out = []
+    for a in log:
+        if a.tool not in WRITE_TOOLS and a.tool != "verify_identity":
+            continue
+        args = ", ".join(f"{k}={_shown(v)}" for k, v in (a.args or {}).items() if v is not None)
+        if not a.ok:
+            what = f"not done: {_cut(str(a.error or 'refused'), 2 * SHOWN)}"
+        elif a.tool == "verify_identity":
+            what = "not verified: the digits did not match" if a.denied else "verified"
+        else:
+            what = "done"
+        out.append(f"{len(out) + 1}. {a.tool}({args}) -- {what}")
+    return out
+
+
+def _cut(text: str, limit: int) -> str:
+    text = " ".join(text.split())
+    return text if len(text) <= limit else text[:limit - 3].rstrip() + "..."
+
+
+def _shown(value: Any) -> str:
+    import json
+    if isinstance(value, str):
+        value = _cut(value, SHOWN)
+    return json.dumps(value, ensure_ascii=False, default=str)
+
+
+def is_note(content: str | None) -> bool:
+    """Whether a message is a closing note, in either mode."""
+    return (content or "").startswith(HEAD + "\n")
 
 
 def started(messages: Iterable[Any]) -> int | None:
@@ -56,7 +137,7 @@ def started(messages: Iterable[Any]) -> int | None:
     messages, not kept in a variable, so an episode interrupted in its closing
     phase resumes in it."""
     for i, m in enumerate(messages):
-        if getattr(m, "role", None) == "user" and (getattr(m, "content", "") or "") == NOTE:
+        if getattr(m, "role", None) == "user" and is_note(getattr(m, "content", "")):
             return i
     return None
 
