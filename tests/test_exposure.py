@@ -1073,6 +1073,110 @@ def test_closing_report():
           and "... and 1 more with a required action first made then" in text, text)
 
 
+def test_closing_compared():
+    """RUNBOOK 1n compares two notes -- 1j's and the one that carries the case
+    record -- so both cells gave one. compare_cells sets them side by side on
+    what each did after the customer left: the cases each rescued, the
+    episodes with each cost, paired by task as the pass rate is, and 1j's rule
+    for each. A cell without the note is not compared this way."""
+    print("\n=== compare_cells sets two closing notes side by side ===")
+    import contextlib
+    import io
+    import re
+    import tempfile
+    from pathlib import Path
+
+    t = BY_ID["T14"]
+    look, explain, esc = T14_LOOK, T14_EXPLAIN, T14_ESC
+    guess = ("verify_identity", {"user_id": t.user_id, "phone_last4": "0000"})
+    tmp = Path(tempfile.mkdtemp())
+    # 1j's note: one rescue, one escalation made again, one guess.
+    b = _closing_cell(tmp, "B", "check", [[look, explain, esc, "Escalated."],
+                                          [look, esc, explain, esc, "Escalated again."],
+                                          [look, explain, guess, "Could not verify."]])
+    # The record's: the same rescue, no second call, nothing guessed.
+    r = _closing_cell(tmp, "R", "record", [[look, explain, esc, "Escalated."],
+                                           [look, esc, explain, "Nothing more to do."],
+                                           [look, explain, "Nothing to do."]])
+    a = _closing_cell(tmp, "A", "off", [[look, explain, esc, "Escalated."]] * 3)
+    cc = _load_script("compare_cells")
+
+    def shown(cells):
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            cc.main([str(c) for c in cells])
+        return out.getvalue()
+
+    text = shown([b, r])
+    check("the header says which note each cell gave",
+          re.search(r"closing\s+check\s+record", text) is not None, text[:900])
+    check("…both closing sections are printed, then the two compared",
+          text.count("closing check in") == 2
+          and "the two closing notes compared, B/full -> R/full, episodes (the note reached "
+              "3 -> 3), then paired by task:" in text, text[-2500:])
+    check("…the rescues each made, with the conversation held fixed",
+          re.search(r"failed as she left it, passed at the end\s+1 -> 1 ", text) is not None,
+          text[-1500:])
+    check("…each cost, episode by episode, the record's fewer",
+          re.search(r"a write repeating one already made\s+1 -> 0 ", text) is not None
+          and re.search(r"a verification with digits never given\s+1 -> 0 ", text) is not None
+          and re.search(r"an episode with any of the three costs\s+2 -> 0 ", text) is not None,
+          text[-1500:])
+    check("…and 1j's rule for each: rescues minus the episodes with a cost",
+          re.search(r"rescues minus episodes with a cost \(1j\)\s+-1 -> \+1", text) is not None,
+          text[-800:])
+    check("…with one task, too few to pair, each line says so rather than test",
+          text.count("fewer than 5 shared tasks -- not testable") >= 6, text[-1500:])
+    check("a cell that never gave the note is not compared this way",
+          "the two closing notes compared" not in shown([a, r]), "")
+
+    import pasarbench.diagnose as dg
+    real, seen = dg.paired_episodes, []
+
+    def spy(x, y, metric="passed"):
+        seen.append(metric)
+        if metric in ("repeated", "cost", "guessed"):
+            return {"unit": "task", "n": 20, "diff": -0.2, "better": 1, "worse": 14,
+                    "p": 0.001, "resolved": True}
+        return real(x, y, metric)
+    dg.paired_episodes = spy
+    try:
+        text = shown([b, r])
+    finally:
+        dg.paired_episodes = real
+    check("the sign test is over tasks, one per line, as for the pass rate -- and a cost "
+          "the second note cut says FEWER",
+          all(m in seen for m in ("rescued", "broke", "repeated", "forbidden", "guessed", "cost"))
+          and re.search(r"a write repeating one already made\s+1 -> 0\s+1 tasks more, 14 "
+                        r"fewer, sign test p=0\.001  ->  FEWER", text) is not None,
+          text[-1500:])
+    it = _load_script("inspect_trace")
+    seq = io.StringIO()
+    with contextlib.redirect_stdout(seq):
+        it.sequence(it.load(str(r / "T14__r1.jsonl")))
+    lines = seq.getvalue().splitlines()
+    at = lines.index("  --- the customer has left: closing check ---")
+    check("inspect_trace shows, where the customer left, the record that episode was given",
+          lines[at + 1].startswith("      The case record -- every identity check")
+          and lines[at + 2] == ('      1. escalate_to_human(order_id="O1009", '
+                                'category="duplicate_refund", reason="refund already issued") '
+                                '-- done'), "\n".join(lines[at - 2:at + 4]))
+    seq = io.StringIO()
+    with contextlib.redirect_stdout(seq):
+        it.sequence(it.load(str(b / "T14__r1.jsonl")))
+    check("…and nothing more for 1j's note, the same in every episode",
+          "The case record" not in seq.getvalue()
+          and "--- the customer has left: closing check ---" in seq.getvalue(), seq.getvalue())
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out):
+        cc.main([str(b), str(r), "--checker", "recorded"])
+    check("beside the runs' recorded verdicts no rescue is counted, nor 1j's rule, rather "
+          "than mixing two scorings",
+          out.getvalue().count("not scored: the verdicts here are not today's checks on "
+                               "replayed calls") >= 4
+          and "rescues minus episodes with a cost" not in out.getvalue(), out.getvalue()[-1500:])
+
+
 def test_closing_readers():
     """A case note is written after the customer left: no reader of what the
     customer was told may count it, and a judge must be told the customer had
@@ -1321,6 +1425,7 @@ def main() -> int:
     test_naming_confirmation_tasks()
     test_claim_guardrail_report()
     test_closing_report()
+    test_closing_compared()
     test_closing_readers()
     test_answers_and_customers()
     print(f"\n{len(PASS)} passed, {len(FAIL)} failed")
