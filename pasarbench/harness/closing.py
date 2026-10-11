@@ -52,6 +52,14 @@ definition (`repeat_of`): the agent is told it was already done and that
 nothing new was filed (`refusal`), and the trace records a closing_refused
 event. The call never reaches the tools, so a replay reproduces it from the
 recorded error (replay.NO_DISPATCH), as it does an unknown tool.
+
+Where it was not built for (1p) it refused a correction: the shipping credit
+P4.6 asks for after a credit for the item, read as the same credit twice,
+because a target without the amount cannot tell the two apart (WHAT_FAILED
+#39). Since v41 a payment's amount and currency are part of its target, for
+the review's count and the guard alike (GUARD_VERSION 2, in the trace header
+as closing_guard): the same payment again is still a repeat, and refused; one
+of another amount is not, and is listed to be read (`another_amount`).
 """
 
 from __future__ import annotations
@@ -140,19 +148,26 @@ def _shown(value: Any) -> str:
 # How the guard's refusal begins: replay.NO_DISPATCH knows it, so a replay
 # reproduces the refused call from its recorded error instead of running it.
 REFUSED = "already done in this case: "
+# What the guard compares, by version: 1 (v37-v40) a payment without its
+# amount; 2 (v41) with it. Recorded in the trace header, so a run under one is
+# not resumed under the other.
+GUARD_VERSION = 2
 
 
 def repeat_of(log: Iterable[Any], tool: str, args: Any) -> Any:
     """The successful write in the log that a call of `tool` with `args`
     would repeat -- the same tool on the same order, item or customer and, for
-    an escalation, the same category, as `review` counts a repeat -- or None.
-    The call's target is read from the keys the tool would log: every write
-    logs all its parameters, an optional one as None when it is not given."""
-    from ..tools import TOOLS, WRITE_TOOLS
+    an escalation, the same category, for a payment the same amount and
+    currency, as `review` counts a repeat -- or None. The call's target is
+    read from the keys the tool would log: every write logs all its
+    parameters, an optional one as None when it is not given; an amount sent
+    as 4700.0 is the 4700 the tool would log."""
+    from ..tools import TOOLS, WRITE_TOOLS, _integers
     if tool not in WRITE_TOOLS or not isinstance(args, dict):
         return None
     params = TOOLS[tool]["schema"]["function"]["parameters"]["properties"]
-    target = (tool,) + tuple((k, args.get(k)) for k in _TARGET if k in params)
+    args = _integers(params, args)
+    target = (tool,) + tuple((k, args.get(k)) for k in _keys(tool) if k in params)
     return next((a for a in reversed(list(log))
                  if a.ok and a.tool in WRITE_TOOLS and _target(a) == target), None)
 
@@ -230,8 +245,15 @@ def review(recs: list[dict[str, Any]], task=None) -> dict[str, Any]:
                its cost
     repeated   [(tool, args)] writes after the note that repeat one already
                made: the same tool on the same order, item or customer and,
-               for an escalation, the same category -- a second ticket for
-               one case. No check forbids it; a person handles it twice.
+               for an escalation, the same category, for a payment the same
+               amount and currency (since v41, WHAT_FAILED #39) -- a second
+               ticket for one case, a payment made twice. No check forbids
+               it; a person handles it twice.
+    another_amount  [(tool, args)] payments after the note on an order, item or
+               customer already paid, of another amount or currency: the
+               shipping P4.6 refunds after the item, say -- a correction the
+               policy asks for, or a second payment it does not. Not a
+               repeat, not counted: listed, to be read.
     repeated_at  [step] for each of those, the step of the closing phase that
                made it: 1 is the agent's first answer to the note. None where
                the calls and the log do not pair up. 1n found nearly every
@@ -291,7 +313,8 @@ def review(recs: list[dict[str, Any]], task=None) -> dict[str, Any]:
         "ran": any(st.get("closing") for st in steps),
         "cut": [e.get("reason") for e in events if e.get("kind") == "closing_cut_short"],
         "writes": [], "first": [], "forbidden": [], "repeated": [], "repeated_at": [],
-        "guessed": [], "refused": [], "refused_at": [], "substituted": [],
+        "another_amount": [], "guessed": [], "refused": [], "refused_at": [],
+        "substituted": [],
         "unscored": [], "at_note": None, "at_end": None,
         "left_saying": next((str(e.get("text") or "").strip() for e in reversed(events)
                              if e.get("kind") == "user_turn" and e.get("ended")), None),
@@ -360,16 +383,21 @@ def review(recs: list[dict[str, Any]], task=None) -> dict[str, Any]:
         return (v.passed, sorted(v.failures)) != (v_end.passed, sorted(v_end.failures))
 
     made = {_target(a) for a in before if a.tool in WRITE_TOOLS and a.ok}
+    paid = {_payee(a) for a in before if a.tool in _PAYMENTS and a.ok}
     checks = task.checks
     for k, a in enumerate(wrote):
         if _target(a) in made:
             out["repeated"].append((a.tool, a.args))
             out["repeated_at"].append(calls[k][0] - at + 1 if paired else None)
+        elif a.tool in _PAYMENTS and _payee(a) in paid:
+            out["another_amount"].append((a.tool, a.args))
         elif not any(spec.via(a.tool, a.args) for spec in checks.required_actions) \
                 and not any(spec.matches(a) for spec in checks.forbidden_actions) \
                 and not seen(k):
             out["unscored"].append((a.tool, a.args))
         made.add(_target(a))
+        if a.tool in _PAYMENTS:
+            paid.add(_payee(a))
     if refusals and paired:
         # After the first refusal, a write no check asks for -- one that is
         # forbidden, or that no check sees -- is the same ticket made another way.
@@ -393,8 +421,39 @@ def review(recs: list[dict[str, Any]], task=None) -> dict[str, Any]:
 _TARGET = ("order_id", "order_item_id", "user_id", "category")
 
 
+# A payment's amount and currency are part of what it is (v41, WHAT_FAILED
+# #39): a credit for the shipping after one for the item is the rest of what is
+# owed, not the same credit twice. The same amount again still is.
+_PAYMENTS = ("issue_refund", "issue_store_credit", "issue_goodwill_voucher")
+_AMOUNT = ("amount_minor", "currency")
+
+
+def _keys(tool: str) -> tuple[str, ...]:
+    return _TARGET + (_AMOUNT if tool in _PAYMENTS else ())
+
+
 def _target(a) -> tuple:
+    return (a.tool,) + tuple((k, a.args.get(k)) for k in _keys(a.tool) if k in a.args)
+
+
+def _payee(a) -> tuple:
+    """Who and what a payment is for, without how much: the target before v41."""
     return (a.tool,) + tuple((k, a.args.get(k)) for k in _TARGET if k in a.args)
+
+
+def paid_before(log: Iterable[Any], tool: str, args: Any) -> Any:
+    """The successful payment in the log on the same order, item or customer
+    as a payment of `tool` with `args`, of another amount or currency -- what
+    a payment `review` lists as `another_amount` came after -- or None."""
+    from ..tools import TOOLS, _integers
+    if tool not in _PAYMENTS or not isinstance(args, dict):
+        return None
+    params = TOOLS[tool]["schema"]["function"]["parameters"]["properties"]
+    args = _integers(params, args)
+    payee = (tool,) + tuple((k, args.get(k)) for k in _TARGET if k in params)
+    amount = tuple(args.get(k) for k in _AMOUNT if k in params)
+    return next((a for a in log if a.ok and a.tool == tool and _payee(a) == payee
+                 and tuple(a.args.get(k) for k in _AMOUNT if k in a.args) != amount), None)
 
 
 _CJK = dict(zip("〇零一二三四五六七八九", "00123456789"))
