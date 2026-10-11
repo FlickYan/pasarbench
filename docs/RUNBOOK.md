@@ -1424,6 +1424,70 @@ a correction P4.6 asks for, it would have refused — since none of the second
 edition's tasks needs one. That is what 1k measured for the note on the 158
 tasks it was not built for, and what the next run would measure for the guard.
 
+### 1p. Does the guard cost anything where it was not built for? (API only, no GPU)
+
+1o kept the guard on the tasks of the five traps it was built for: no second
+ticket, the rescues where they were. What it could not say is what the guard
+does where a second write of a kind is right. It refuses a write with the same
+tool on the same order, item or customer — and, for an escalation, the same
+category — as one already made: a second ticket, nearly always, but now and then
+a correction. 1k's shipping credits are the case on record: the conversation
+credited a defective item without its shipping, and after the customer left the
+agent credited the shipping P4.6 refunds. The guard would have refused them —
+its dry run over 1k's closing phases refuses six calls, 1k's four second tickets
+and those two credits. The other 158 tasks of the suite, eleven more traps and
+10 tasks of the five, are where a second write like that could be right.
+
+One arm is enough. The closing phase acts only after the customer has left, so
+its whole effect on a case is the case as she left it against the case at the
+end — one episode, the conversation held fixed — and that needs no control. 1k's
+paired line said 10 tasks worse, and the cases as each customer left them showed
+every one had done so before the note: the control arm told only that two sets
+of conversations differ. v39's `scripts/closing_report.py` prints that section
+for one cell and, beside every call the guard refused, the call it would have
+repeated, so a correction can be told from a second ticket by reading. The note
+and the guard as 1o kept them, with customer 2, on the 158:
+
+```bash
+set -a; . ./.env; set +a
+TASKS=$(python scripts/naming_tasks.py --rest)
+python -m pasarbench.sweep \
+  --backend openai --model deepseek-v4-pro --base-url https://api.deepseek.com/v1 \
+  --extra-body '{"thinking":{"type":"disabled"}}' \
+  --simulator openai --sim-model qwen3.8-flash \
+  --sim-url https://dashscope-intl.aliyuncs.com/compatible-mode/v1 \
+  --sim-extra-body '{"reasoning_effort":"low"}' \
+  --suite all --tasks "$TASKS" --strategies full --exposure search-300 -k 3 \
+  --policy-mode preload-named --closing guard --run-id T-guard --workers 8
+python scripts/closing_report.py traces/T-guard/full+search-300 > T.txt
+python scripts/audit_tool_arms.py traces/T-guard >> T.txt
+python scripts/closing_guard_dry_run.py traces/N-check >> T.txt
+```
+
+474 episodes, half of 1k. If the sweep reports episodes a server or API error
+ended, run it again with `--resume` before reading.
+
+**The reading, fixed before the run:**
+
+- **Safe where it was not built for** — the guarded closing check can be turned
+  on for the whole suite — if no case passed as its customer left it and failed
+  at the end, no forbidden call was first made after the note, and no refusal,
+  read beside the call it would have repeated, was a write the case needed. A
+  refused correction counts against it even where no check sees it: the customer
+  is owed what the policy says.
+- **Every refusal read**, and what the agent did after it: the same call again
+  is the guard working; another amount, a message with something new in it, an
+  address corrected, is its cost.
+- **Rescues** — failed as she left it, passed at the end — counted, and read
+  with what she last said. 1k found 6 in 472 under customer 1, four of them a
+  turn the episode owed the agent (#38); with customer 2 there should be few of
+  those.
+- **Costs as 1o counted them:** forbidden calls, guessed digits, a write after a
+  refusal that no check asks for — each read.
+- **Context, not comparison:** 1k's numbers beside these, under another customer
+  and other tools, and the dry run over 1k's recorded closing phases.
+- **Secondary:** tokens; phases cut short; the failures the run still has.
+
 ---
 
 # Phase 2 — judge calibration (no GPU, ~6 hours of your time)
