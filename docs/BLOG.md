@@ -24,10 +24,12 @@ escalating this for further investigation". The judge wrote that the agent
 irrelevant results" — and passed it, 4 out of 5.
 
 This post is about the distance between what an agent says and what it does,
-and what it takes to measure it. Four results: what happens when an agent has
+and what it takes to measure it. Five results: what happens when an agent has
 to search for its tools; whether an LLM judge can tell a solved case from an
-unsolved one; a language effect that turned out to be my own regex; and a
-fine-tune that learned my verifier instead of my policy.
+unsolved one; a language effect that turned out to be my own regex, and one
+that didn't; a fine-tune that learned my verifier instead of my policy; and a
+second look after the customer leaves, which rescued what the agent let go and
+then did things twice.
 
 <picture>
   <source media="(max-width: 600px) and (prefers-color-scheme: dark)" srcset="img/results-narrow-dark.svg">
@@ -286,6 +288,20 @@ scored 89/96 and 92/96 — 3 points, p = 0.38. The best context-management
 strategy I tested beat the baseline by 5 points, at p = 0.13. I can't tell it
 from re-running.
 
+The null is the suite's, though, and one rule isn't in it. Averaged over
+sixteen traps, a gap on one moves a language by a few points. One rule in the
+policy goes against the obvious service move: when a customer chases a refund
+that was already paid, escalate "even if you have explained the existing refund
+and the customer accepts it". Read back over every recorded run, the agent made
+that escalation in 59% of English conversations and in 2–8% of Malay and Chinese
+ones. All 14 local-language tasks made it less often than their English twin,
+by 38 points on average (p = 0.0001), in runs recorded before anyone looked as
+well as on new tasks. In English it reads the refund and writes "Since a refund
+has already been issued for this order, I need to escalate this for review" —
+and does. In Vietnamese it reads the same refund, asks the customer to check
+her card statement, and stops. On the policy's three other escalations the
+languages are level, and a second model, Qwen3.8-27B, shows no such gap.
+
 ## Result 4: my fine-tune learned my verifier
 
 Then I trained on it. Qwen3.8-27B with LoRA, rejection-sampling fine-tuning:
@@ -347,6 +363,39 @@ become the model's habits. The replay that caught this cost seconds. Without
 it, the headline would have been a fine-tune that "improved", and an API model
 ranked above the one it trails.
 
+## Result 5: a second look after the customer leaves
+
+That escalation is the one agents let go in any language. The customer chases
+a refund, the agent finds it was already paid and says so, the customer says
+thanks, and the conversation ends with nothing filed — though the policy calls
+a duplicate claim a fraud or system-error signal that must be recorded.
+
+So when the customer ends the conversation, the agent now gets one more turn
+she never sees: check the case against the policy and make any call it
+requires. Under a rule written before the run, on the tasks that suggested it,
+pass^1 went from 0.85 to 0.96 (11 tasks better, 2 worse, p = 0.02). On 62 new
+tasks, with a simulated customer who waits for what she agreed to, it went from
+0.83 to 0.94 (15 better, 5 worse, p = 0.04), and 21 of its 25 rescues were that
+escalation.
+
+The cost was the interesting part. In 22 of 186 conversations the agent
+escalated a case it had already escalated — something the conversations alone
+did twice in 372. Nearly every second ticket was its first move after the note,
+made with the first one in plain view. So I showed it the record of its own
+calls and told it not to repeat one: 26 repeats in 186 conversations became 24.
+Then I stopped asking. With the note unchanged, a write that repeats one already
+made is not run after the customer leaves: the 20 second tickets became none,
+and all 24 rescues stayed.
+
+The first version of that refusal compared a payment without its amount. On the
+rest of the suite it refused the shipping credit the policy asks for after a
+credit for the item — a correction it read as a repeat. With the amount in what
+it compares, it broke no case on the other 158 tasks, both of its refusals were
+the same call again, and the correction went through.
+
+A note in the prompt found what the agent let go. Only the harness could stop it
+doing it twice.
+
 ## What I'd tell someone building an agent eval
 
 - **Score state, not text.** Every false claim in this post read well. The
@@ -380,7 +429,13 @@ ranked above the one it trails.
   guardrail did. Graded by the audit, the count of false claims had not moved.
   Graded that way from the start, the second version took it from five to
   none — and reading the failures by hand still found what neither reader could.
-- **Write down what failed.** The project's failure log has 38 entries; most
+- **Keep a table by trap beside every pooled one.** No language differed from
+  English across the suite; one rule differed by 38 points. A null over an
+  average is a null for the average.
+- **Enforce in the harness what a prompt can only ask.** Told not to repeat a
+  call, the agent repeated it; refused, it stopped. And the refusal has to read
+  a call the way the policy does: an amount is part of a payment.
+- **Write down what failed.** The project's failure log has 40 entries; most
   were found by refusing a number that couldn't be right.
 
 ## Limits
@@ -398,5 +453,5 @@ spot, and its live test is one run of 192 conversations. The Thai and
 Vietnamese translations are not native-reviewed. The fine-tune is one run of
 one recipe.
 
-The code, the trace generators, and all 38 failures are in the repo:
+The code, the trace generators, and all 40 failures are in the repo:
 [github.com/FlickYan/pasarbench](https://github.com/FlickYan/pasarbench).
