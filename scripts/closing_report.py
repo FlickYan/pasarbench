@@ -7,7 +7,9 @@ episode, the conversation held fixed (closing.review). Measuring that needs no
 control arm. For one cell this prints its pass rate, what the closing phase did
 and what it cost -- the same section compare_cells.py prints for each of two
 cells -- then every call the guard refused beside the call it would have
-repeated, the failures the customer ended, and the pass rate by trap.
+repeated, every payment of another amount beside the one it came after (since
+v41 no repeat: a correction, or a second payment), the failures the customer
+ended, and the pass rate by trap.
 
     python scripts/closing_report.py traces/T-guard/full+search-300
 
@@ -34,8 +36,11 @@ def refusals(cell: Path, eps: list[dict], tasks: dict) -> list[tuple[str, str, s
     """(transcript, the refused call, the earlier call it would have repeated)
     for every refusal in the cell, as text. The earlier call is read off the
     action log the episode ended with: a write with the same target after the
-    refusal would have been refused too, so the match can only be earlier."""
-    from pasarbench.harness.closing import _shown, repeat_of
+    refusal would have been refused too, so the match can only be earlier. A
+    run under the guard before v41 refused a payment of another amount as well
+    (WHAT_FAILED #39): its refusal is shown beside the payment it was taken
+    for, which today's target no longer calls the same."""
+    from pasarbench.harness.closing import _shown, paid_before, repeat_of
     from pasarbench.harness.replay import replay
 
     def call(tool, args) -> str:
@@ -56,9 +61,39 @@ def refusals(cell: Path, eps: list[dict], tasks: dict) -> list[tuple[str, str, s
             steps = [r for r in recs if r.get("type") == "step"]
             log = replay(head + steps, task).db.action_log
         for r in refused:
-            done = repeat_of(log, r.get("tool"), r.get("args"))
+            done = (repeat_of(log, r.get("tool"), r.get("args"))
+                    or paid_before(log, r.get("tool"), r.get("args")))
             out.append((e["transcript_id"], call(r.get("tool"), r.get("args")),
                         call(done.tool, done.args) if done is not None else "(not found)"))
+    return out
+
+
+def topped_up(cell: Path, eps: list[dict], tasks: dict, cv: dict[str, dict]
+              ) -> list[tuple[str, str, str]]:
+    """(transcript, the payment of another amount, the payment it came after)
+    for every payment closing.review lists as `another_amount` -- since v41 no
+    repeat, and read: the rest of what is owed, or a second payment."""
+    from pasarbench.harness.closing import _shown, paid_before
+    from pasarbench.harness.replay import replay
+
+    def call(tool, args) -> str:
+        return f"{tool}(" + ", ".join(f"{k}={_shown(v)}" for k, v in (args or {}).items()
+                                      if v is not None) + ")"
+
+    out = []
+    for e in eps:
+        r = cv.get(e["transcript_id"], {})
+        if not r.get("another_amount"):
+            continue
+        recs = [json.loads(l) for l in (cell / f"{e['transcript_id']}.jsonl").read_text(
+            encoding="utf-8").splitlines() if l.strip()]
+        head = [x for x in recs if x.get("type") == "header"][:1]
+        steps = [x for x in recs if x.get("type") == "step"]
+        log = replay(head + steps, tasks[e["task_id"]]).db.action_log
+        for tool, args in r["another_amount"]:
+            before = paid_before(log, tool, args)
+            out.append((e["transcript_id"], call(tool, args),
+                        call(before.tool, before.args) if before is not None else "(not found)"))
     return out
 
 
@@ -87,7 +122,7 @@ def main(argv: list[str] | None = None) -> int:
     defaults = {"guardrail": "off", "closing": "off", "tool_checks": 1}
     for key in ("policy_mode", "exposure", "guardrail", "closing", "tool_checks",
                 "requested_model", "simulator"):
-        print(f"{key:16s} {head.get(key, defaults.get(key))}")
+        print(f"{key:16s} {cc._shown_head(head, key, defaults.get(key))}")
     s = cc.summary(eps)
     print(f"{'episodes':16s} {s['episodes']}\n{'tasks':16s} {s['tasks']}\n"
           f"{'pass^1':16s} {s['pass1']:.3f}\n{'pass^k':16s} {s['passk']:.3f}\n"
@@ -111,6 +146,14 @@ def main(argv: list[str] | None = None) -> int:
               f"the policy asks for) is its cost")
         for tid, refused, done in rows:
             print(f"    {tid:24s} refused {refused}\n    {'':24s} after   {done}")
+    more = topped_up(cell, eps, tasks, cv)
+    if more:
+        print(f"\nevery payment of another amount after one already made, beside the one it "
+              f"came after -- {len(more)}; read each: the rest of what the policy says is "
+              f"owed (the shipping P4.6 refunds, say) is right, a second payment it does not "
+              f"ask for is a cost")
+        for tid, made, before in more:
+            print(f"    {tid:24s} paid    {made}\n    {'':24s} after   {before}")
     cc._print_endings(name, cc._endings(cell, eps, every=a.endings), every=a.endings)
     cc._print_settlements(name, *cc._settlements(cell, eps))
 
