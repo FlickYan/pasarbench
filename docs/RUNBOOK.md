@@ -725,7 +725,8 @@ the agent escalates right after looking the order up; in the other languages it
 explains the earlier refund and stops. With the note all 18 passed. One trap,
 found by looking at the one that moved, and the identity trap leans the other
 way (4 of its 18 English conversations failed, 1 of the 18 others): a lead for
-a run built to test it, not a finding.
+a run built to test it, not a finding. (Read back over every recorded run in
+1r: a finding for this rule, and the identity trap level.)
 
 First test, not confirmation: these tasks produced the hypothesis. Only 10 of
 the other 158 tasks are of these five traps — too few to confirm it; that needs
@@ -1126,7 +1127,7 @@ Singlish, both arms together, and in 20 of the 42 in them (1j's control: 16 of
 18, and 4 of 15). The note's rescues came where the conversations let go most:
 16 of its 21 outside English and Singlish; after it, 2 of 18 failed there and 5
 of 21 in them. Still a lead, as the reading fixed: a test of it needs a run of
-its own.
+its own. (1r reads it back over every recorded run.)
 
 **Secondary.** Tokens +8,899 an episode, 52 tasks costlier and 10 cheaper; one
 closing phase cut short, by its cap of six steps. Twelve episodes failed with
@@ -1644,6 +1645,96 @@ and kept the rescues (1o, which the dry run says stands for v41); on the other
 through. The guarded closing check can be turned on for the whole suite. What is
 left is not the guard's: on the longest tasks the episode's token budget runs
 out before the closing phase begins.
+
+### 1r. Why does the duplicate refund fail outside English? (recorded runs, no API spend)
+
+1j found a lead after its run, and 1m saw it hold on new tasks: the
+duplicate-refund trap fails far more often outside English. P10 asks for an
+escalation when a customer chases a refund already paid, "even if you have
+explained the existing refund and the customer accepts it" — the one escalation
+in the policy that goes against the obvious service move. Every run so far
+recorded the trap, so the lead can be tested before anything is spent: 928
+episodes of it from deepseek-v4-pro, 778 of them in the 16 cells that ran it in
+English and in other languages both.
+
+```bash
+python scripts/language_lead.py traces > lang.txt
+# the seven runs recorded before the lead was found, and never read for it
+python scripts/language_lead.py traces/B-multilingual traces/C-clean \
+  traces/D-nozh traces/F-clean-sim traces/G-gated traces/K-preload traces/P-ref
+```
+
+`language_lead.py` asks of each conversation — the closing phase left out: it
+comes after the customer has gone — whether the agent escalated while the
+customer was there, and when: in the turn it found the refund (its first
+`get_order`, whose result lists the refund already paid), or after the customer
+had said more. It compares each local-language task with its English twin — the
+same order, the same refund, the same story told in English — in the cells that
+ran both; splits English from the rest within each thing that differs before the
+decision; asks the same of the policy's three other escalations; and compares
+every trap, twin against twin, on the verdicts the runs recorded.
+
+**Read on 2026-10-12 (v43), over every run to 1q:** a finding, for this model
+and this one rule.
+
+| escalated while the customer was there | en | sg-en | id | vi | th | zh-SG | ms | zh-MY |
+|---|---|---|---|---|---|---|---|---|
+| deepseek-v4-pro, the 16 cells | 59% | 62% | 50% | 37% | 35% | 8% | 7% | 2% |
+| episodes | 378 | 60 | 60 | 60 | 60 | 50 | 60 | 50 |
+
+- **Twin against twin, in every world.** All 14 local-language tasks escalated
+  less often than their English twin in the same cells: a mean gap of 38 points,
+  sign test p = 0.0001 — the two Singlish twins too, one barely (74% against
+  76%). And in each of two sets the lead did not come from: in the seven runs
+  recorded before it was found, never read for it, 7 twins of 7 (21 points,
+  p = 0.016); on the second edition's new worlds (1m to 1q), 7 of 7 (47 points,
+  p = 0.016). English is ahead in all 16 cells — by under 3 points in the first
+  run (B) and 6 in K-preload, where tool search failed and almost nothing was
+  escalated; by 14 to 67 in the others.
+- **Decided when it reads the refund.** 341 of the 342 escalations came in the
+  turn the agent found the refund, before the customer said anything more. Of
+  the 437 conversations that did not escalate then, one did later.
+- **Not the way there.** Within the most common path to the lookup — one
+  customer turn, no identity check first — 57% in English against 21% (394 and
+  252 episodes); with two turns or more and an identity check first, 86% against
+  31% (28 and 72). Under each of the four customer simulators and both tool
+  exposures English is ahead, by 22 to 42 points.
+- **This rule, not escalation.** On the policy's three other escalations — a
+  customs hold, a failed identity check, a disputed refund out of window — the
+  local-language twins escalate as often as their English ones: mean gaps 0, +3
+  and −1 points, and 8, 3 and 11 of 14 twins level. Outside English the agent
+  does not escalate less; it drops the one escalation that goes against the
+  service move.
+- **The one rule that stands.** Trap by trap, on the verdicts the runs recorded
+  in the cells without a closing phase, the duplicate refund is the only gap
+  that stands once sixteen traps are counted: 12 of 14 twins below, none above,
+  34 points, p = 0.0005 against a threshold of 0.003 (0.05 over sixteen). The
+  next largest below English are 5 to 8 points. Two traps lean the other way,
+  their local twins passing more often — the livestream trap, 6 of 7 (12 points,
+  p = 0.03), and the identity check (14 points, p = 0.23) — and neither stands.
+- **This model.** Qwen3.8-27B, with the same tasks and customer as P-ref
+  (P-base), escalated in 95% of English conversations and 87% of the others,
+  with no twin pattern (1 below, 2 above, 4 level); deepseek-v4-pro in P-ref,
+  62% and 40%.
+
+What it looks like, in Q-off's DRE2-VN and its Vietnamese twin, three
+conversations each. In English the agent looks the order up and writes "Since a
+refund has already been issued for this order, I need to escalate this for
+review" — and escalates, all three times. In Vietnamese it looks up the same
+order, lists the same refund — its id, VND 1,157,000, issued 09/11/2026 — asks
+the customer to check her card statement, and stops, all three times. She says
+she hadn't checked it and thanks the agent, and the case stays failed.
+
+**What it means.** On this rule deepseek-v4-pro follows an English policy far
+less often when the conversation is in another language — least in Malay and
+Chinese, where it almost never escalates — and it settles that the moment it
+reads the refund. The suite's pass rates hide it: it is one trap in sixteen, and
+no language differs from English beyond noise overall (1f). The closing check
+already recovers most of these after the customer leaves (1j, 1m). What recorded
+runs cannot separate is the language from what else differs between twin
+conversations — the customer's words, the agent's own earlier replies. That
+needs a run that holds the conversation fixed and changes only its language, at
+the moment the agent reads the refund.
 
 ---
 
