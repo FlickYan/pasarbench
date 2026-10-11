@@ -81,6 +81,12 @@ re-scored by replaying their tool calls (`scripts/rescore.py`).
   two refunds after a cancellation paid back an authorization that was never
   charged ([RUNBOOK 1j, 1k](docs/RUNBOOK.md),
   [WHAT_FAILED #36](docs/WHAT_FAILED.md)).
+  Confirmed on 62 new tasks of the traps that suggested it, with a customer who
+  waits: 0.83 to 0.94, 15 tasks better and 5 worse (p = 0.04), 21 of its 25
+  rescues the escalation P10 requires after a duplicate-refund customer is
+  satisfied — and the same cost, a case escalated twice in 22 of 186 episodes,
+  where the conversations alone did it in 2 of 372
+  ([RUNBOOK 1m](docs/RUNBOOK.md)).
 - **The checks were blind where that second look walked.** Cancelling a card
   order, the agent told the customer her money would go back — 42 times in 42 in
   the last control, in every language — and nothing in the world did it: no
@@ -126,7 +132,7 @@ python -m pasarbench.run          # null agent → 0.0, reference agent → 1.0
 python -m tests.test_traps        # 10 naive solutions, all must be rejected
 python -m tests.test_harness      # 114 harness invariants, the claim guardrail, the closing check and every context strategy keeping its note, tools that refuse what their schemas don't allow and a cancellation that settles the payment once while old runs replay under the tools they ran with, a simulated customer told to wait for what she agreed to
 python -m tests.test_reward       # 30 reward + dataset invariants
-python -m tests.test_generated    # 108 checks over all 199 generated tasks: dates in causal order, the same world in every process, reads of the task's own order, simulator QA
+python -m tests.test_generated    # 119 checks over all 199 generated tasks and the 62 of the second edition (RUNBOOK 1m): dates in causal order, the same world in every process, reads of the task's own order, simulator QA
 python -m tests.test_rescore      # 29 re-scoring invariants: the pre-v19 world, replay by digest and by length, the same tool errors on every Python, nothing re-scored on a guess
 python -m tests.test_context      # 39 context-strategy + analysis invariants
 python -m tests.test_judge        # 83 judge + agreement-statistics invariants, judged against today's checks
