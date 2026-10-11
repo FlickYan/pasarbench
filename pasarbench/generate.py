@@ -181,15 +181,51 @@ TRAP_SPECS: dict[str, dict[str, Any]] = {
 }
 
 
-def build_slot(trap: str, market: str) -> Slot | None:
+# --------------------------------------------------------------------------
+# The second edition (RUNBOOK 1m): new tasks of the five traps the closing
+# check came from (1j), to confirm it on tasks that did not produce it. The
+# same checks, so the same rules decide them; a new customer in every market,
+# a new product and a new story -- persona and opening -- for each trap, and
+# ids of their own. Never part of the suite: `generate()` builds the first
+# edition, as every recorded run had it, and `generate(edition=2)` only these.
+# --------------------------------------------------------------------------
+
+EDITION2_TRAPS = ("out_of_window_offer_voucher", "out_of_window_dispute_escalate",
+                  "customs_hold_escalate", "identity_verification_failure",
+                  "duplicate_refund_escalate")
+EDITION2_PRODUCTS: dict[str, tuple[str, str]] = {
+    "out_of_window_offer_voucher": ("Rattan Table Lamp", "home"),
+    "out_of_window_dispute_escalate": ("Canvas Backpack", "bags"),
+    "customs_hold_escalate": ("Bluetooth Speaker", "electronics"),
+    "identity_verification_failure": ("Trail Running Shoes", "fashion"),
+    "duplicate_refund_escalate": ("Ceramic Teapot Set", "home"),
+}
+EDITION2_CUSTOMERS: dict[str, dict[str, str]] = {
+    "SG": dict(name="Lim Hui Min", phone="+6598765000"),
+    "MY": dict(name="Ahmad Faizal", phone="+60198765000"),
+    "ID": dict(name="Siti Rahmawati", phone="+628198765000"),
+    "TH": dict(name="Nattapong Srisuk", phone="+66898765000"),
+    "PH": dict(name="Jose Santos", phone="+639198765000"),
+    "VN": dict(name="Tran Thu Ha", phone="+84987654000"),
+}
+
+
+def build_slot(trap: str, market: str, edition: int = 1) -> Slot | None:
     spec = TRAP_SPECS[trap]
     m = MARKETS[market]
     if spec.get("cod_only") and not m["cod"]:
         return None                      # SG has no COD rail in this world
+    if edition not in (1, 2) or (edition == 2 and trap not in EDITION2_TRAPS):
+        raise ValueError(f"no edition {edition} of {trap}")
+    # Edition 1's ids hash (trap, market) alone, as every recorded world has
+    # them; edition 2's add its number, so no row of one is a row of the other.
+    ed = () if edition == 1 else (str(edition),)
+    suffix = "" if edition == 1 else str(edition)
 
-    tag = _opaque(trap, market)
-    phone4 = _phone_last4(trap, market)
-    uid, sid = f"GU-{market}", f"GS-{market}"
+    tag = _opaque(trap, market, *ed)
+    phone4 = _phone_last4(trap, market, *ed)
+    uid, sid = f"GU{suffix}-{market}", f"GS{suffix}-{market}"
+    who = m if edition == 1 else {**m, **EDITION2_CUSTOMERS[market]}
     pid = f"GP-{tag}"
     oid, iid = f"GO-{tag}", f"GI-{tag}"
     shid, payid = f"GH-{tag}", f"GY-{tag}"
@@ -203,6 +239,9 @@ def build_slot(trap: str, market: str) -> Slot | None:
     flag = spec.get("flag")
     category = ("grocery" if flag == "perishable"
                 else "electronics" if flag == "hazmat" else "fashion")
+    title = _product_title(flag)
+    if edition == 2:
+        title, category = EDITION2_PRODUCTS[trap]
 
     created, shipped = PLACED[spec["age"]]
     if spec.get("peak"):
@@ -214,8 +253,8 @@ def build_slot(trap: str, market: str) -> Slot | None:
             else delivered if pay == "cod" else created)
 
     rows: dict[str, dict[str, dict[str, Any]]] = {
-        "users": {uid: dict(user_id=uid, name=m["name"], email=f"{uid.lower()}@example.com",
-                            phone=m["phone"], country=market,
+        "users": {uid: dict(user_id=uid, name=who["name"], email=f"{uid.lower()}@example.com",
+                            phone=who["phone"], country=market,
                             language=LANGUAGES_FOR_MARKET[market][0], tier="silver",
                             joined="2024-05-01", store_credit_minor=0,
                             store_credit_currency=m["currency"],
@@ -224,7 +263,7 @@ def build_slot(trap: str, market: str) -> Slot | None:
                               country=market, rating=4.3, cod_enabled=m["cod"],
                               official_store=False)},
         "products": {pid: dict(product_id=pid, seller_id=sid,
-                               title=_product_title(flag), category=category,
+                               title=title, category=category,
                                price_minor=value, currency=m["currency"], stock=50,
                                hazmat=(flag == "hazmat"),
                                perishable=(flag == "perishable"))},
@@ -558,29 +597,33 @@ TEMPLATES: dict[str, Callable[[Slot], Built]] = {
 
 def generate(markets: list[str] | None = None,
              languages: bool = True,
-             traps: list[str] | None = None
+             traps: list[str] | None = None,
+             edition: int = 1
              ) -> tuple[list[Task], dict[str, list[tuple[str, dict[str, Any]]]]]:
-    """Returns (tasks, solutions). Task ids are `<trap-abbrev>-<market>[.<lang>]`."""
+    """Returns (tasks, solutions). Task ids are `<trap-abbrev>-<market>[.<lang>]`,
+    and `<trap-abbrev>2-...` in the second edition (RUNBOOK 1m), which has
+    only its five traps."""
     markets = markets or list(MARKETS)
-    traps = traps or list(TRAP_SPECS)
+    traps = traps or list(TRAP_SPECS if edition == 1 else EDITION2_TRAPS)
     tasks: list[Task] = []
     solutions: dict[str, list[tuple[str, dict[str, Any]]]] = {}
 
     for trap in traps:
         for market in markets:
-            slot = build_slot(trap, market)
+            slot = build_slot(trap, market, edition)
             if slot is None:
                 continue
             checks, solution = TEMPLATES[trap](slot)
             langs = LANGUAGES_FOR_MARKET[market] if languages else [
                 LANGUAGES_FOR_MARKET[market][0]]
             for lang in langs:
-                tid = f"{_abbrev(trap)}-{market}" + ("" if lang == "en" else f".{lang}")
+                tid = (f"{_abbrev(trap)}{'' if edition == 1 else edition}-{market}"
+                       + ("" if lang == "en" else f".{lang}"))
                 tasks.append(Task(
                     task_id=tid, trap=trap, user_id=slot.user_id, market=market,
                     language=lang,
-                    persona=persona_for(trap, slot),
-                    opening=opening_for(trap, lang),
+                    persona=persona_for(trap, slot, edition),
+                    opening=opening_for(trap, lang, edition),
                     checks=checks,
                     hidden_facts={"order_id": slot.order_id,
                                   "phone_last4": ("1234" if trap == "identity_verification_failure"
