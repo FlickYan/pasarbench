@@ -295,8 +295,12 @@ def run_episode(
                 # agent gets one look at the case before it closes.
                 if (reply or "").strip():
                     state.messages.append(Message(role="user", content=reply))
-                state.messages.append(Message(role="user", content=closing_check.NOTE))
-                trace.event("closing_check", turn=state.turn, step=tracker.steps)
+                note = closing_check.note(closing, db.action_log)
+                state.messages.append(Message(role="user", content=note))
+                # The record note differs episode by episode: the trace keeps
+                # what this one said. 1j's is the same in every episode.
+                trace.event("closing_check", turn=state.turn, step=tracker.steps,
+                            **({"note": note} if note != closing_check.NOTE else {}))
                 continue
             stop = StopReason.DONE
             break
