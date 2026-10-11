@@ -1351,6 +1351,11 @@ v35 adds a second note, `--closing record`, which carries the case record —
 every identity check and action the conversation attempted, and what came of
 each — and says a call the record shows as done is done; 1n sets it against 1j's
 (RUNBOOK 1n).
+It did not cut them, 26 to 24. Nearly every second call, in every run with the
+note, was the agent's first answer to it — 91 of 93 — made with the first call
+in front of it, and in 1n's record arm listed in the note itself as done. A note
+cannot stop a call the agent makes as its first answer to the note; a refusal
+could.
 
 **Lesson.** Count an intervention's cost in what it does, not in what the
 checks forbid. The checks were written for the agent's mistakes before the
