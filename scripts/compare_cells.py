@@ -43,7 +43,9 @@ both gave the note -- two notes, as 1n compares 1j's with the one that carries
 the case record -- are also compared on what each did after the customer
 left, paired by task as the pass rate is: the cases each turned from a fail
 into a pass, the episodes with each cost, and 1j's rule, rescues minus the
-episodes with a cost, for each.
+episodes with a cost, for each. Since v36 the repeats are also counted by when
+they came: in every run so far nearly all were the agent's first answer to the
+note (RUNBOOK 1n).
 
 For every cell it lists the failures the customer ended -- the agent's last
 reply, then her last words, or that she said nothing more -- and with
@@ -272,7 +274,11 @@ def _print_closing(name: str, cv: dict[str, dict], show: int = 40) -> None:
               + "; ".join(f"{n}: {why[:60]}" for why, n in lost.most_common(2)) + ")")
     print(f"  {'a forbidden call first made then':42s} {len(cost):>4d} episodes"
           f"{' -- its cost; read them' if cost else ''}")
+    # 1n: under either note, nearly every repeat was the agent's first answer
+    # to it -- before anything the note said could change it.
+    at_once = sum(1 for t in again if (cv[t].get("repeated_at") or [None])[0] == 1)
     print(f"  {'a write repeating one already made':42s} {len(again):>4d} episodes"
+          f"{f', {at_once} of them the first step after the note' if again else ''}"
           f"{' -- one case done twice; read them' if again else ''}")
     print(f"  {'a verification with digits never given':42s} {len(guess):>4d} episodes"
           f"{' -- read them' if guess else ''}")
