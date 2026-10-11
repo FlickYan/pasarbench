@@ -266,14 +266,49 @@ def episode_examples(ep: dict[str, Any], tokenizer, kwargs: dict[str, Any],
     return out, skipped
 
 
+def balance(candidates: dict[str, list], per_trap: int, max_per_task: int
+            ) -> tuple[dict[str, list], int]:
+    """One trap's episodes to train on, balanced across its tasks: round robin
+    over the tasks in order -- each task's first candidate, then each task's
+    second, and so on -- until the trap has `per_trap`, no task giving more than
+    `max_per_task`. Returns the chosen episodes by task and how many candidates
+    were left over.
+
+    The first fine-tune capped episodes per task (WHAT_FAILED #31): every task
+    the model already solves filled its quota, so the traps it solves most
+    filled the training data, and their answers leaked into the traps that look
+    like them. A quota per trap gives a trap the model rarely solves as many
+    episodes as one it always solves, as far as its passing episodes go."""
+    chosen: dict[str, list] = {tid: [] for tid in candidates}
+    taken, rank = 0, 0
+    while taken < per_trap and rank < max_per_task:
+        added = False
+        for tid in sorted(candidates):
+            if taken >= per_trap:
+                break
+            if rank < len(candidates[tid]):
+                chosen[tid].append(candidates[tid][rank])
+                taken += 1
+                added = True
+        if not added:
+            break
+        rank += 1
+    left = sum(len(v) for v in candidates.values()) - taken
+    return chosen, left
+
+
 def build(run_dir: str | Path, tasks: dict[str, Any], folds: dict[str, Any],
           tokenizer, max_per_task: int = 3, max_len: int = 16384,
-          expect_model: str | None = None, server=None, checker: str = "current"
-          ) -> tuple[dict[str, list[dict]], dict[str, Any]]:
+          expect_model: str | None = None, server=None, checker: str = "current",
+          per_trap: int = 0) -> tuple[dict[str, list[dict]], dict[str, Any]]:
     """Examples per fold from a collection run, and the stats to read first.
 
     Fold X's file holds examples from fold X's tasks only; the model trained on
     it is evaluated on the other fold.
+
+    `per_trap` > 0 balances the training episodes by trap instead of by task
+    (`balance`): up to that many a trap and fold, up to `max_per_task` from one
+    task. 0 is the first fine-tune's recipe, at most `max_per_task` a task.
 
     `checker` decides which episodes passed. A trace's footer holds the verdict
     of the checker the day it ran; once a check is corrected that verdict is
@@ -337,12 +372,41 @@ def build(run_dir: str | Path, tasks: dict[str, Any], folds: dict[str, Any],
     skipped: Counter = Counter()
     trap_runs: dict[str, dict[str, list[bool]]] = defaultdict(lambda: defaultdict(list))
     used_eps: Counter = Counter()
-    for tid, group in sorted(by_task.items()):
+    used_by_trap: dict[str, Counter] = defaultdict(Counter)
+
+    def use(tid: str, e: dict) -> None:
         fold = tf[tid]
+        exs, sk = episode_examples(e, tokenizer, kwargs, server)
+        skipped.update(sk)
+        for ex in exs:
+            n_tok = len(tokenize_example(tokenizer, ex)["input_ids"])
+            if n_tok > max_len:
+                skipped["longer than max_len"] += 1
+                continue
+            files[fold].append({"task_id": tid, "trap": tasks[tid].trap,
+                                "family": family_of(tid), "fold": fold,
+                                "tokens": n_tok, **ex})
+        used_eps[fold] += 1
+        used_by_trap[fold][tasks[tid].trap] += 1
+
+    # Distinct passing episodes per task, shortest first.
+    candidates: dict[str, list[dict]] = {}
+    for tid, group in sorted(by_task.items()):
         for e in group:
-            trap_runs[fold][tasks[tid].trap].append(e["passed"])
+            trap_runs[tf[tid]][tasks[tid].trap].append(e["passed"])
         passed = sorted((e for e in group if e["passed"]),
                         key=lambda e: (len(e["steps"]), e["path"]))
+        if per_trap:
+            seen, distinct = set(), []
+            for e in passed:
+                sig = action_signature(e["messages"]["messages"])
+                if sig in seen:
+                    skipped["duplicate episode"] += 1
+                    continue
+                seen.add(sig)
+                distinct.append(e)
+            candidates[tid] = distinct
+            continue
         seen, n = set(), 0
         for e in passed:
             sig = action_signature(e["messages"]["messages"])
@@ -353,21 +417,21 @@ def build(run_dir: str | Path, tasks: dict[str, Any], folds: dict[str, Any],
                 skipped["over max_per_task"] += 1
                 continue
             seen.add(sig)
-            exs, sk = episode_examples(e, tokenizer, kwargs, server)
-            skipped.update(sk)
-            for ex in exs:
-                n_tok = len(tokenize_example(tokenizer, ex)["input_ids"])
-                if n_tok > max_len:
-                    skipped["longer than max_len"] += 1
-                    continue
-                files[fold].append({"task_id": tid, "trap": tasks[tid].trap,
-                                    "family": family_of(tid), "fold": fold,
-                                    "tokens": n_tok, **ex})
+            use(tid, e)
             n += 1
-            used_eps[fold] += 1
+    if per_trap:
+        by_fold_trap: dict[tuple[str, str], dict[str, list[dict]]] = defaultdict(dict)
+        for tid, distinct in candidates.items():
+            by_fold_trap[tf[tid], tasks[tid].trap][tid] = distinct
+        for (fold, trap), cands in sorted(by_fold_trap.items()):
+            chosen, left = balance(cands, per_trap, max_per_task)
+            skipped["over per_trap"] += left
+            for tid in sorted(chosen):
+                for e in chosen[tid]:
+                    use(tid, e)
 
-    per_trap = {fold: {trap: round(sum(v) / len(v), 3) for trap, v in sorted(tr.items())}
-                for fold, tr in trap_runs.items()}
+    pass_by_trap = {fold: {trap: round(sum(v) / len(v), 3) for trap, v in sorted(tr.items())}
+                    for fold, tr in trap_runs.items()}
     stats = {
         "source": str(run_dir),
         "model": next(iter(models)),
@@ -391,14 +455,20 @@ def build(run_dir: str | Path, tasks: dict[str, Any], folds: dict[str, Any],
         "pass_rate_recorded": round(sum(e["passed_recorded"] for e in eps) / len(eps), 4),
         "verdicts_changed": sum(e["passed"] != e["passed_recorded"] for e in eps),
         "episodes_used": dict(used_eps),
+        # How the episodes were picked, and how many each trap gave per fold: with
+        # a quota per trap, a trap below it had fewer passing episodes to give.
+        "selection": ({"per_trap": per_trap, "max_per_task": max_per_task} if per_trap
+                      else {"max_per_task": max_per_task}),
+        "episodes_by_trap": {f: {t: used_by_trap[f][t] for t in sorted(tr)}
+                             for f, tr in sorted(trap_runs.items())},
         "examples": {f: len(v) for f, v in files.items()},
         "tokens": {f: sum(x["tokens"] for x in v) for f, v in files.items()},
         "skipped": dict(skipped),
         # Per fold, because each model trains on one fold: a trap its fold never
         # solved gives that model nothing to learn from, whatever the other
         # fold managed.
-        "per_trap_pass_rate": per_trap,
+        "per_trap_pass_rate": pass_by_trap,
         "traps_with_zero_signal": {f: [t for t, r in pt.items() if r == 0.0]
-                                   for f, pt in per_trap.items()},
+                                   for f, pt in pass_by_trap.items()},
     }
     return files, stats
