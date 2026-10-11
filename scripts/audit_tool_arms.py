@@ -51,12 +51,12 @@ from pasarbench.harness.exposure import (ARG_SOURCES, BASE_LOOKUPS,  # noqa: E40
                                          CORE_VISIBLE, _rank_tools,
                                          build_exposure, needed_tools,
                                          register_distractors, schema_tokens)
-from pasarbench.sweep import ALL_SOLUTIONS, ALL_TASKS                   # noqa: E402
+from pasarbench.sweep import ALL_SOLUTIONS, ALL_TASKS, EDITION2_TASKS   # noqa: E402
 from pasarbench.tools import DEFAULT_TOOLS, TOOLS                       # noqa: E402
 
 from pasarbench.harness.prompts import POLICY_PATH                     # noqa: E402
 
-BY_ID = {t.task_id: t for t in ALL_TASKS}
+BY_ID = {t.task_id: t for t in ALL_TASKS + EDITION2_TASKS}
 
 # The policy the agent reads. A tool it names verbatim can be called without
 # searching; a tool it only describes in prose cannot. In the first real run
