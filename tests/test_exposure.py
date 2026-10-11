@@ -740,8 +740,11 @@ def test_naming_confirmation_tasks():
     with contextlib.redirect_stdout(out):
         nt.main(["--rest"])
     rest = out.getvalue().strip().split(",")
-    check("--rest is every other task of the suite, for the closing check's second run (1k)",
-          len(rest) == 158 and not set(rest) & set(ids) and set(rest) | set(ids) == set(tasks)
+    from pasarbench.rescore import suite_tasks
+    check("--rest is every other task of the suite, for the closing check's second run (1k) "
+          "-- of the suite, not the second edition (1m)",
+          len(rest) == 158 and not set(rest) & set(ids)
+          and set(rest) | set(ids) == set(suite_tasks()) != set(tasks)
           and set(nt.FIRST_RUN) <= set(rest), str(len(rest)))
 
 
