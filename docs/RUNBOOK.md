@@ -1144,6 +1144,80 @@ It is not free: one case in eight is escalated twice. Recommend it with that
 cost stated; the next run (1n) is a note that reads the calls already made
 before it makes one.
 
+### 1n. Does the case record stop the second ticket? (API only, no GPU)
+
+Every run of the closing check has paid one cost above the others: a call made
+again. In 1m, on 62 tasks it had not seen, it rescued 25 cases and, in 22 of its
+186 episodes, escalated after the customer left a case the conversation had
+already escalated — the same order, under the same category; the conversations
+alone did that in 2 of 372. 1k named the fix: have the agent read its own calls
+before it makes one.
+
+Asking it to list them would end the phase: the closing phase ends on the
+agent's first reply without a call, so a list written as a reply would close the
+case before the call it was meant to inform. So v35's `--closing record` carries
+the list itself — the case record: every identity check and every action the
+conversation attempted, in order, each with what came of it ("done", "verified",
+"not verified", or "not done" and the tool's reason), read off the database's
+action log as a support system's case history would show it. Then 1j's note,
+with the record in place of "no tool call" and one sentence more: "A call the
+record shows as done is done: do not make it again." Like 1j's, it reads nothing
+about the task — not its trap, its checks or its answer. 1j's note is unchanged,
+byte for byte (`--closing check`), and the trace keeps the record each episode
+was given (its `closing_check` event).
+
+The note was written from 1k's sentence and fixed before any run: it was tried
+on no task, and 1m's repeats were not read to word it. It runs on the second
+edition's 62 tasks, which did not suggest it — 1k named it before they existed —
+and where 1j's note pays the cost most often. Against 1j's note, back to back,
+with customer 2, as in 1m:
+
+```bash
+set -a; . ./.env; set +a
+for C in check record; do
+  python -m pasarbench.sweep \
+    --backend openai --model deepseek-v4-pro --base-url https://api.deepseek.com/v1 \
+    --extra-body '{"thinking":{"type":"disabled"}}' \
+    --simulator openai --sim-model qwen3.8-flash \
+    --sim-url https://dashscope-intl.aliyuncs.com/compatible-mode/v1 \
+    --sim-extra-body '{"reasoning_effort":"low"}' \
+    --suite edition2 --strategies full --exposure search-300 -k 3 \
+    --policy-mode preload-named --closing $C --run-id R-$C --workers 8
+done
+python scripts/compare_cells.py traces/R-check/full+search-300 traces/R-record/full+search-300 > R.txt
+python scripts/audit_tool_arms.py traces/R-record >> R.txt
+```
+
+186 episodes an arm, 372 in all, as 1m. If either sweep reports episodes a
+server or API error ended, run it again with `--resume` before comparing. With
+two closing cells, `compare_cells.py` prints both closing sections and then the
+two compared: for the cases each turned from a fail into a pass and for each
+cost, the episodes in each arm and a sign test over the tasks where they differ
+— the task is the unit, as for the pass rate — and 1j's rule, rescues minus the
+episodes with a cost, for each.
+
+**The reading, fixed before the run:**
+
+- **Fewer second tickets** if the compared line for a write repeating one
+  already made says FEWER (p < 0.05). INCONCLUSIVE or MORE is reported as it
+  comes.
+- **Taken over** — the record note replaces 1j's as the closing check worth
+  keeping — only if, as well, the paired line over pass^1 does not say WORSE,
+  and its rescues minus its episodes with a cost come out above 1j's note's in
+  the same run. A note that cut the repeats by making fewer calls of every kind
+  would cut the rescues with them; this is where that shows.
+- **1j's note again.** Its arm repeats 1m's measurement on the same tasks: about
+  one episode in eight with a second ticket (1m: 22 of 186), and 25 rescues. A
+  control far from that is reported beside the result, not re-run.
+- **The conversations alone.** The paired line with each case as its customer
+  left it should show no difference: both notes come after she leaves.
+- **Every cost read**, in both arms, with the record the episode was given
+  (`python scripts/inspect_trace.py traces/R-record/full+search-300 --task
+  <episode>` prints it where the customer left): a second ticket after a record
+  that showed the first as done is the note read and not followed.
+- **Secondary:** tokens; phases cut short; guessed digits and writes no check
+  scores, in both arms; and the failures each arm still has, read.
+
 ---
 
 # Phase 2 — judge calibration (no GPU, ~6 hours of your time)
