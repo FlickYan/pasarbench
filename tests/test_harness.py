@@ -838,13 +838,20 @@ def test_closing_check():
         check("…and --closing record does too",
               r.returncode == 0 and heads and all(h.get("closing") == "record" for h in heads),
               r.stderr[-500:] or str(heads))
+        r = subprocess.run(sweep[:-2] + ["--trace-root", d, "--run-id", "x", "--closing",
+                                          "guard"], capture_output=True, text=True, cwd=cwd)
+        heads = [json.loads(f.read_text().splitlines()[0]) for f in Path(d).glob("x/*/*.jsonl")]
+        check("…and --closing guard",
+              r.returncode == 0 and heads and all(h.get("closing") == "guard" for h in heads),
+              r.stderr[-500:] or str(heads))
 
     # The record note (RUNBOOK 1n): the case record, then 1j's note.
     import hashlib
     check("1j's note is the one 1j, 1k and 1m ran, byte for byte: a reworded note is a new "
-          "intervention, and the record note is a mode of its own",
+          "intervention, and the record note is a mode of its own -- the guard gives 1j's",
           hashlib.sha1(cl.NOTE.encode()).hexdigest() == "a2e1b28dfc023e9bfe85e78699c2e11c5379d90c"
-          and cl.note("check") == cl.NOTE and cl.MODES == ("off", "check", "record"))
+          and cl.note("check") == cl.NOTE and cl.note("guard") == cl.NOTE
+          and cl.MODES == ("off", "check", "record", "guard"))
     res, cust, rec, db, seen = run(plan, "record")
     r = cl.review(rec.recs, task)
     given = seen.seen[2][-1][1]
@@ -923,6 +930,82 @@ def test_closing_check():
           first.stop_reason == StopReason.INTERRUPTED and second.stop_reason == StopReason.DONE
           and db2.t("escalations") == done_db.t("escalations") and verify(task, db2).passed
           and sum(cl.is_note(m.content) for m in second.state.messages) == 1)
+
+    # The guard (RUNBOOK 1o): 1j's note, and after it a repeat is not run.
+    n0 = len(Database.fresh(task.db_patch).t("escalations"))
+    again = [look, esc, explain, esc, "Escalated again."]
+    _, _, rec, db, _ = run(again, "check")
+    check("under 1j's note the repeat runs: two tickets for one case",
+          len(db.t("escalations")) == n0 + 2, str(db.t("escalations")))
+    res, _, rec, db, seen = run(again, "guard")
+    r = cl.review(rec.recs, task)
+    told = json.loads(seen.seen[4][-1][1])
+    check("guard: after 1j's note, unchanged, a write that repeats one already made is not "
+          "run -- one ticket, the agent told why, the trace and the review say so",
+          len(db.t("escalations")) == n0 + 1 and verify(task, db).passed
+          and seen.seen[3][-1] == ("user", cl.NOTE) and told["ok"] is False
+          and told["error"].startswith(cl.REFUSED) and "nothing new was filed" in told["error"]
+          and 'order_id="O1009", category="duplicate_refund"' in told["error"]
+          and "closing_refused" in rec.events and r["repeated"] == [] and r["writes"] == []
+          and [t for t, _ in r["refused"]] == ["escalate_to_human"] and r["refused_at"] == [1]
+          and r["not_replayed"] is None and res.stop_reason == StopReason.DONE, str((r, told)))
+    res, _, rec, db, _ = run(plan, "guard")
+    r = cl.review(rec.recs, task)
+    check("…a call the conversation never made runs as under 1j's note: the rescue is untouched",
+          verify(task, db).passed and r["first"] == ["escalate_to_human"] and not r["refused"]
+          and r["at_note"] is False and r["at_end"] is True, str(r))
+    _, _, rec, db, _ = run([look, esc, explain, esc, other, "Filed under other."], "guard")
+    r = cl.review(rec.recs, task)
+    check("…the same order escalated under another category after a refusal is the repeat "
+          "made another way: no check asks for it, and the review counts it",
+          [t for t, _ in r["refused"]] == ["escalate_to_human"]
+          and [a.get("category") for _, a in r["substituted"]] == ["other"]
+          and [t for t, _ in r["unscored"]] == ["escalate_to_human"], str(r))
+    _, _, rec, db, _ = run([look, other, explain, esc, "Escalated as a duplicate refund."],
+                           "guard")
+    r = cl.review(rec.recs, task)
+    check("…while the category the policy names, after one under another, is no repeat: it "
+          "runs, and is the rescue", r["first"] == ["escalate_to_human"] and not r["refused"]
+          and not r["substituted"], str(r))
+    _, _, rec, db, _ = run([look, esc, esc, explain, "Nothing more."], "guard")
+    check("…and before the note nothing is refused: the guard is the closing phase's",
+          len(db.t("escalations")) == n0 + 2 and not cl.review(rec.recs, task)["refused"],
+          str(db.t("escalations")))
+    from pasarbench.db import Action
+    credit = Action("issue_store_credit", {"user_id": "U1", "amount_minor": 500,
+                                           "currency": "SGD", "reason": "x", "order_id": None},
+                    True)
+    ask = {"user_id": "U1", "amount_minor": 900, "currency": "SGD", "reason": "y"}
+    check("the guard reads a call's target as the tool would log it: credit with no order "
+          "repeats credit with no order, not credit against one; a failed write is no repeat, "
+          "and a read never is",
+          cl.repeat_of([credit], "issue_store_credit", ask) is credit
+          and cl.repeat_of([credit], "issue_store_credit", {**ask, "order_id": "O1"}) is None
+          and cl.repeat_of([Action("escalate_to_human", {"order_id": "O1", "category": "other",
+                                                         "reason": "r"}, False)],
+                           "escalate_to_human",
+                           {"order_id": "O1", "category": "other", "reason": "r"}) is None
+          and cl.repeat_of([credit], "get_user_profile", {"user_id": "U1"}) is None)
+    # What the guard refuses, a correct agent never needs: no reference solution
+    # makes a write that repeats one it already made.
+    from pasarbench.rescore import all_tasks
+    from pasarbench.sweep import ALL_SOLUTIONS
+    from pasarbench.tools import WRITE_TOOLS
+    from pasarbench.tools import call as tool_call_
+    every, refused, writes = all_tasks(), [], 0
+    for tid, t in every.items():
+        sdb = Database.fresh(t.db_patch)
+        for st in ALL_SOLUTIONS.get(tid, []):
+            if isinstance(st, str):
+                continue
+            name, args = st
+            if cl.repeat_of(sdb.action_log, name, args) is not None:
+                refused.append((tid, name))
+            writes += name in WRITE_TOOLS
+            tool_call_(sdb, name, args, checks=3)
+    check(f"no reference solution, in all {len(every)} tasks, makes a write the guard would "
+          f"refuse ({writes} writes): what it refuses, a correct agent never needs",
+          len(every) == len(ALL_SOLUTIONS) and writes > 200 and refused == [], str(refused[:5]))
 
 
 def test_context_keeps_the_closing_note():
