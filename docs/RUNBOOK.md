@@ -1367,6 +1367,63 @@ one.
 - **Secondary:** tokens; phases cut short — a refusal costs a step, of six;
   guessed digits; the failures each arm still has, read.
 
+**Run on 2026-10-12, v37** (`S-check`, `S-guard`, back to back): kept, by the
+reading fixed before the run. The guard took the cost away and left the rescues
+where they were.
+
+| | 1j's note | the guard |
+|---|---|---|
+| pass^1 (pass^k) | 0.973 (0.919) | 0.946 (0.903) |
+| paired by task | | 2 tasks better, 5 worse, p = 0.45: INCONCLUSIVE |
+| the same, each case as its customer left it | | 5 better, 10 worse, p = 0.30 |
+| failed as she left it, passed at the end | 24 of 29 | 24 of 34 (6 tasks more, 6 fewer, p = 1.00) |
+| a write repeating one already made | 20 episodes | none |
+| a repeat the guard did not run | — | 23, each the first step after the note |
+| a write after a refusal that no check asks for | — | none |
+| a forbidden call, a guessed verification | none | none |
+| an episode with a cost | 20 | none (15 tasks fewer, 0 more, p < 0.001): FEWER |
+| rescues minus episodes with a cost | +4 | +24 |
+| tokens per episode | 59,349 | 58,625 (−724, p = 0.70) |
+
+**The cost is gone, and nothing took its place.** The guard refused 23 calls,
+each the agent's first move after the note, each an escalation the conversation
+had already made: 12 identity cases, 7 disputes, 4 customs holds. After every
+refusal the agent made no other call — no escalation under another category, no
+guessed digits — and wrote its case note; 22 of the 23 name the ticket that
+stood, ESC0001, and several say what happened in so many words: "Escalation for
+identity_unverified was already completed (ESC0001). No further action required
+by policy." (IVF2-ID.id__r1). Under 1j's note alone the 20 repeats included two
+goodwill vouchers paid twice.
+
+**The rescues are where they were.** 24 and 24 — 17 duplicate refunds and 7
+identity cases under 1j's note, 20 and 4 with the guard. The guard never fired
+in an episode that failed: every refusal was in a case that passed, and no case
+passed as its customer left it and failed at the end. The pass rate's dip,
+−0.027, is the conversations': the same −0.027 with each case as its customer
+left it (5 tasks better, 10 worse, p = 0.30). The guard arm's conversations let
+34 cases go before any note, against 29, and each phase rescued 24 of them.
+
+**The guard's definition held again.** Run dry over the control, it would have
+refused exactly the control's 20 repeats, episode by episode: six runs and 1,379
+closing phases now without a difference between what the guard refuses and what
+the review counts.
+
+**Secondary.** Tokens −724 an episode (p = 0.70): every refused episode's
+closing phase took two steps, the refusal and the note. No phase cut short in
+the guard arm, one in the control (by the token budget). Failures left: 10
+against 5 — nine duplicate refunds the agent never escalated, in the
+conversation or after the note, P10 let go as in every run, and one voucher case
+escalated instead of offered (OOWOV2-SG__r1). The guard touched none of them.
+
+**What it means.** With the guard, the closing check rescues what the agent let
+go and pays nothing this run could find: 24 rescues and no cost, against 1j's
+note's 24 rescues and 20 second tickets. By the rule fixed before the run it is
+the closing check worth keeping. What this run cannot say is whether the guard
+costs anything where a second write of a kind is right — 1k's shipping credits,
+a correction P4.6 asks for, it would have refused — since none of the second
+edition's tasks needs one. That is what 1k measured for the note on the 158
+tasks it was not built for, and what the next run would measure for the guard.
+
 ---
 
 # Phase 2 — judge calibration (no GPU, ~6 hours of your time)
