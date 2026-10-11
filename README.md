@@ -1,7 +1,8 @@
 # PasarBench
 
 A verifiable tool-agent **environment** for Southeast Asian e-commerce customer
-service. 215 tasks (16 hand-written, 199 generated) across 6 markets and 8
+service. 277 tasks — the 215 of the main suite (16 hand-written, 199 generated)
+and a second edition of 62 for its five hardest traps — across 6 markets and 8
 language varieties, 20 tools (303 with distractors), one policy document, and
 verification on final database state rather than text.
 
@@ -137,6 +138,22 @@ re-scored by replaying their tool calls (`scripts/rescore.py`).
 
 ---
 
+## Status
+
+| milestone | state |
+|---|---|
+| Environment: 277 tasks, 16 traps, 6 markets, 8 languages, checks on database state | done |
+| Harness: context strategies, tool exposure, simulated customer, replay, claim guardrail, closing check and its guard | done |
+| API experiments, RUNBOOK 1a–1r: 34 runs, 14,542 episodes | done |
+| The recorded traces as a Hugging Face dataset (`scripts/export_hf.py`) | ready to upload |
+| Judge calibration | labels collected but nearly all "satisfied"; calibration with planted mistakes next |
+| Post-training round 1: RFT on Qwen3.8-27B | done: no gain once the checker was fixed |
+| Post-training round 2: a fine-tune balanced by trap; GRPO | round 2 ready to run (GPU_GUIDE.md); GRPO next |
+| A hard edition of combined cases; a multi-model baseline | planned |
+| Serving cost | paused |
+
+---
+
 ## Quickstart
 
 ```bash
@@ -156,10 +173,10 @@ python -m tests.test_generated    # 119 checks over all 199 generated tasks and 
 python -m tests.test_rescore      # 29 re-scoring invariants: the pre-v19 world, replay by digest and by length, the same tool errors on every Python, nothing re-scored on a guess
 python -m tests.test_context      # 39 context-strategy + analysis invariants
 python -m tests.test_judge        # 83 judge + agreement-statistics invariants, judged against today's checks
-python -m tests.test_exposure     # 189 tool-scaling + diagnosis invariants, the tool-naming experiment and its confirmation tasks, the guardrail's report and dry run, the closing check's report, its costs, two closing notes compared by task and the record each episode was given, the closing guard's refusals and its dry run, one run's closing phase read on its own, each case before and after it and what each customer last said, a write a database check needs told from one no check sees, readers that skip its case note, how episodes ended and what cancellations settled, listed, cells compared across tool versions or customers flagged, episodes a server error ended, and the duplicate-refund trap by language, twin against twin
+python -m tests.test_exposure     # 193 tool-scaling + diagnosis invariants, the tool-naming experiment and its confirmation tasks, the guardrail's report and dry run, the closing check's report, its costs, two closing notes compared by task and the record each episode was given, the closing guard's refusals and its dry run, one run's closing phase read on its own, each case before and after it and what each customer last said, a write a database check needs told from one no check sees, readers that skip its case note, how episodes ended and what cancellations settled, listed, cells compared across tool versions or customers flagged, episodes a server error ended, the duplicate-refund trap by language, twin against twin, and the traces packed as a dataset with nothing in them that must stay on this machine
 python -m tests.test_serving      # 54 metrics (SGLang and vLLM), cost and quality-guard invariants
 python -m tests.test_report       # 62 report invariants: paired verdicts, ties, replication, calibration, noise floor, post-training with one customer and one tool version, both scorings in every section, a figure that matches its numbers and drops a title they stop bearing out
-python -m tests.test_training     # 167 checks: split, customer family, collection and resume, examples (Qwen3 and Qwen3.8 formats) against an SGLang-like server, adapter routing, the LoRA probe, serve and Modal scripts, one-GPU memory plans, the notebook helper (progress in place, an interrupt-proof cleanup), the CUDA compiler, run settings, LoRA steps on Qwen3 and Qwen3.8's hybrid architecture, training data picked by today's checks, a push script that keeps runs and keys off GitHub, closing-check runs refused as training data, one simulated customer in every step, kept from stage 1 to stage 2, server errors reported (125 without transformers/torch)
+python -m tests.test_training     # 180 checks: split, customer family, collection and resume, examples (Qwen3 and Qwen3.8 formats) against an SGLang-like server, adapter routing, the LoRA probe, serve and Modal scripts, one-GPU memory plans, the notebook helper (progress in place, an interrupt-proof cleanup), the CUDA compiler, run settings, LoRA steps on Qwen3 and Qwen3.8's hybrid architecture, training data picked by today's checks, a push script that keeps runs and keys off GitHub, closing-check runs refused as training data, one simulated customer in every step, kept from stage 1 to stage 2, server errors reported, round 2's training data balanced by trap and its runs named apart from round 1's (137 without transformers/torch)
 
 python -m pasarbench.sweep --backend scripted --suite all
 python scripts/make_report.py     # regenerates RESULTS.md; never hand-fill it
@@ -421,7 +438,7 @@ scripts/    gpu_pipeline.sh gpu_plan.py modal_pipeline.py pasar_notebook.py
             audit_tool_arms.py inspect_trace.py run_judges.py rescore.py
             compare_cells.py naming_tasks.py guardrail_dry_run.py make_figure.py
             slurm_train.sh slurm_sweep.sh modal_vllm.py closing_guard_dry_run.py
-            closing_report.py language_lead.py
+            closing_report.py language_lead.py export_hf.py
 tests/      12 suites, 750+ assertions
 docs/       RUNBOOK.md  GPU_GUIDE.md  WHAT_FAILED.md  WRITEUP.md  BLOG.md  README_weekly.md
             img/  the results figure, light and dark, wide and narrow, and its numbers
