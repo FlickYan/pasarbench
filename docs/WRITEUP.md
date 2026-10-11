@@ -717,14 +717,15 @@ check assumes.
 **"What would you do next?"** Run the guarded closing check where it wasn't
 built for — the 158 other tasks, as 1k did for the note — since the one thing
 the guard could break is a second write that's right, like a shipping credit
-that corrects one made without it (RUNBOOK 1o). Replace the guardrail's phrase
-list with a model that reads what the customer was told would happen, and keep
-the check against the tool log mechanical: what got past the list was wording —
-"flagged", "will be reviewed", a promise — and wording is a language question.
-Then test the language lead the closing check turned up — the duplicate-refund
-case failing far more often outside English, on new tasks too — on a run built
-for it. A second fine-tune on trap-balanced data built with the corrected
-checks. Get the Thai and Vietnamese translations reviewed. Then serving cost.
+that corrects one made without it (set up as RUNBOOK 1p). Replace the
+guardrail's phrase list with a model that reads what the customer was told would
+happen, and keep the check against the tool log mechanical: what got past the
+list was wording — "flagged", "will be reviewed", a promise — and wording is a
+language question. Then test the language lead the closing check turned up — the
+duplicate-refund case failing far more often outside English, on new tasks too —
+on a run built for it. A second fine-tune on trap-balanced data built with the
+corrected checks. Get the Thai and Vietnamese translations reviewed. Then
+serving cost.
 
 ### One thing not to do
 
