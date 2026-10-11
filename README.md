@@ -98,6 +98,10 @@ re-scored by replaying their tool calls (`scripts/rescore.py`).
   P4.6 asks for after a credit for the item: it compares a payment without its
   amount ([RUNBOOK 1p](docs/RUNBOOK.md),
   [WHAT_FAILED #39](docs/WHAT_FAILED.md)).
+  With a payment's amount in what it compares (v41) it was safe there too: no
+  case broken, the two refusals the same call again, and the shipping credit it
+  had refused went through after the customer left — the guarded check can be on
+  for the whole suite ([RUNBOOK 1q](docs/RUNBOOK.md)).
 - **The checks were blind where that second look walked.** Cancelling a card
   order, the agent told the customer her money would go back — 42 times in 42 in
   the last control, in every language — and nothing in the world did it: no
