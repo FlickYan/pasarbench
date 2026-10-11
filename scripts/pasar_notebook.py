@@ -17,6 +17,7 @@ and then any of:
     pn.test()           # the test suite, on the CPU
     pn.run("smoke")     # a GPU stage, in this cell: smoke | stage1 | stage2
     pn.launch("stage1") # ...or as a detached Modal job on its own GPU; the notebook may stop
+    pn.run("stage1", round=2)   # round 2: the second fine-tune, files of its own (v44)
     pn.status()         # what is running or done (a notebook sees other containers'
                         # writes as of its start: check a job from a new session)
     pn.read("logs/smoke-projection.txt")    # print a file (head=, tail= for long ones)
@@ -61,7 +62,10 @@ STALE = 15 * 60
 STAGES = ("smoke", "stage1", "stage2")
 # What pack() archives: what the report and the audits read (as modal_pipeline.pull).
 RESULTS = ["logs", "data/splits", "data/rft/stats.json", "data/run_settings.env",
-           "traces/P-smoke", "traces/P-base", "traces/P-rft", "traces/P-ref"]
+           "traces/P-smoke", "traces/P-base", "traces/P-rft", "traces/P-ref",
+           # round 2 (PASAR_ROUND=2): files of its own, round 1's left as they are
+           "data/rft2/stats.json", "data/run2_settings.env", "traces/P2-base",
+           "traces/P2-base-e2", "traces/P2-rft", "traces/P2-ref"]
 WEB_DOWNLOAD_LIMIT = 16 * 2**20    # the Modal web UI downloads files up to 16 MB
 
 _state: dict = {}
@@ -495,23 +499,37 @@ def _release(done: threading.Event) -> None:
         pass
 
 
-def run(stage: str, force: bool = False) -> None:
+def _round(n: int | None) -> dict:
+    """The environment that picks the pipeline's round: 2 runs the second
+    fine-tune under names of its own (gpu_pipeline.sh, PASAR_ROUND)."""
+    if n is None:
+        return {}
+    if n not in (1, 2):
+        raise SystemExit(f"round is 1 or 2, not {n!r}")
+    return {"PASAR_ROUND": str(n)}
+
+
+def run(stage: str, force: bool = False, round: int | None = None) -> None:
     """One stage of gpu_pipeline.sh on this notebook's GPU. Safe to run again
-    after anything goes wrong: it resumes where the last run stopped."""
+    after anything goes wrong: it resumes where the last run stopped. round=2
+    runs round 2's stage (GPU_GUIDE.md, round 2)."""
     if stage not in STAGES:
         raise SystemExit(f"stage is one of {', '.join(STAGES)}")
+    env = _round(round)
     if not _gpus():
         raise SystemExit("this notebook has no GPU: open the compute profile (sidebar), pick "
                          "B200 x1 (or H200 x1), let the kernel restart, run pn.setup() again")
     done = _claim(stage, force)
     try:
-        _stream(["bash", "scripts/gpu_pipeline.sh", stage], f"notebook-{stage}.log")
+        _stream(["bash", "scripts/gpu_pipeline.sh", stage],
+                f"notebook-{'r2-' if env.get('PASAR_ROUND') == '2' else ''}{stage}.log", env)
     finally:
         _release(done)
     _say(f"\n{stage} finished. Next: the guide's reading step for it; pn.status() any time.")
 
 
-def launch(stage: str, wait_min: float = 30, dry_run: bool = False):
+def launch(stage: str, wait_min: float = 30, dry_run: bool = False,
+           round: int | None = None):
     """Start a stage as a detached Modal job -- `modal run --detach
     scripts/modal_pipeline.py --stage <stage>`, the command part A of the guide
     runs from a laptop -- from this notebook, which can then stop: the job runs
@@ -519,9 +537,10 @@ def launch(stage: str, wait_min: float = 30, dry_run: bool = False):
     less per hour than a GPU notebook, and restarts by itself if preempted.
     Waits until the job's stage has begun (the first time, Modal builds the
     image: ~10 min), then returns. Secrets attached to this notebook
-    (DEEPSEEK_API_KEY, HF_TOKEN) are passed on to the job."""
+    (DEEPSEEK_API_KEY, HF_TOKEN) are passed on to the job, and so is round=2."""
     if stage not in STAGES + ("download", "test"):
         raise SystemExit(f"stage is one of {', '.join(STAGES + ('download', 'test'))}")
+    env = _round(round)
     work = paths()["work"]
     cmd = [sys.executable, "-m", "modal", "run", "--detach", "scripts/modal_pipeline.py",
            "--stage", stage]
@@ -533,7 +552,7 @@ def launch(stage: str, wait_min: float = 30, dry_run: bool = False):
     with log.open("a") as fh:
         fh.write(f"\n=== {time.strftime('%Y-%m-%d %H:%M:%S')} $ {' '.join(cmd)}\n")
     proc = subprocess.Popen(cmd, cwd=work, stdout=log.open("a"), stderr=subprocess.STDOUT,
-                            start_new_session=True)
+                            start_new_session=True, env={**os.environ, **env})
     _say(f"launching {stage} as a Modal job (log: logs/{log.name}) ...")
     seen, t0 = 0, time.time()
     while time.time() - t0 < wait_min * 60:
