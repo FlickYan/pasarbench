@@ -1736,6 +1736,27 @@ conversations — the customer's words, the agent's own earlier replies. That
 needs a run that holds the conversation fixed and changes only its language, at
 the moment the agent reads the refund.
 
+### Publishing the traces (v44)
+
+Every recorded run as a Hugging Face dataset: one JSON line per episode, its
+setup and recorded verdict as columns beside the whole trace, one file per run,
+a list of the runs and a dataset card written from what was exported.
+
+```bash
+python scripts/export_hf.py traces --dry-run          # counts, and the checks below
+python scripts/export_hf.py traces --out hf-dataset   # ~160 MB; hf-dataset/ is gitignored
+pip install -U huggingface_hub
+hf auth login                                         # your token, typed there and nowhere else
+hf upload <your-hf-name>/pasarbench-traces hf-dataset . --repo-type dataset
+```
+
+(Older `huggingface_hub`: `huggingface-cli login` and `huggingface-cli upload`
+with the same arguments.) Before writing anything the export reads every trace
+for API keys, access tokens and home-directory paths, and stops on the first,
+naming the file. Email addresses are replaced with `[email]`: in the runs to 1q,
+two, one of them an address the simulated customer made up. A later run goes up
+the same way, into the same dataset, as a new commit.
+
 ---
 
 # Phase 2 — judge calibration (no GPU, ~6 hours of your time)
@@ -1872,6 +1893,51 @@ checks as well (`--checker recorded` reproduces a pre-v19 build).
 python scripts/rescore.py traces/P-base traces/P-rft traces/P-ref --changed
 python scripts/make_report.py --checker recorded --out RESULTS-recorded.md   # as the runs scored it
 ```
+
+### Round 2: the second fine-tune, balanced by trap (v44)
+
+The first fine-tune gained nothing measurable once the checker was fixed, and
+moved answers between traps: the traps the model always solved filled its
+training data, and their answers leaked into the traps that look like them
+(WHAT_FAILED #31). Its fix was written down then and is run now: training
+episodes balanced by trap, not by task, picked by today's checks. Round 1's
+runs had the customer and the tools from before v31 (#37, #38), so round 2
+runs everything again under today's — the base model, the collection, two LoRAs
+and the evaluation — in names of its own (`P2-*`, `data/rft2`,
+`checkpoints/rft2-*`, `logs/r2-*`); round 1's files stay as they are. Its stage
+1 also runs the base model on the 62 newer tasks of the five hardest traps
+(`P2-base-e2`): the tasks it fails some of the time are where GRPO can learn,
+since on the 215 it passes 98%.
+
+The quota is 20 episodes a trap and fold, round robin over the trap's tasks, up
+to all eight distinct passing episodes of one task: round 1's total (about 310
+episodes a fold) spread evenly over the sixteen traps. `PASAR_PER_TRAP` changes
+it before stage 1. Every step is in GPU_GUIDE.md, round 2; about 6–7 hours of
+one B200.
+
+```bash
+PASAR_ROUND=2 bash scripts/gpu_pipeline.sh stage1   # or pn.run("stage1", round=2)
+PASAR_ROUND=2 bash scripts/gpu_pipeline.sh stage2
+python scripts/compare_cells.py traces/P2-base/full traces/P2-rft/full > R2.txt
+python scripts/audit_tool_arms.py traces/P2-rft >> R2.txt
+```
+
+**The reading, fixed before the run:**
+
+- **The trap shift (primary).** Every episode the fine-tune fails on a task
+  where the base model passed it, read as #31 read them: the shift is gone if
+  none of them is another trap's answer in the wrong place — the livestream
+  trap's refund on an out-of-window dispute, the peak-delay trap's "wait" on a
+  customs hold — and still there if any is. The per-trap table beside it, paired
+  by task.
+- **The aggregate (secondary).** pass^1 and pass^k against the base model,
+  paired by task. At 0.98 for the base model, a null is the expected result,
+  and is reported as one.
+- **Where GRPO can learn.** On the 62 newer tasks, the base model's passes out
+  of five per task: the tasks with one to four are GRPO's material; their count
+  by trap decides whether GRPO runs on them or waits for harder tasks.
+- **Context, not comparison:** round 1's numbers beside these — another customer
+  and older tools, so not paired against round 2.
 
 ### Budget
 
