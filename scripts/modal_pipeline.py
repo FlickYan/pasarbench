@@ -57,7 +57,10 @@ WORK = f"{VOL}/pasarbench"
 # What `pull` brings back: what the report and the audits read. The collection
 # run (traces/P-collect, several GB) stays on the Volume.
 RESULTS = ["logs", "data/splits", "data/rft/stats.json", "data/run_settings.env",
-           "traces/P-smoke", "traces/P-base", "traces/P-rft", "traces/P-ref"]
+           "traces/P-smoke", "traces/P-base", "traces/P-rft", "traces/P-ref",
+           # round 2 (PASAR_ROUND=2): files of its own, round 1's left as they are
+           "data/rft2/stats.json", "data/run2_settings.env", "traces/P2-base",
+           "traces/P2-base-e2", "traces/P2-rft", "traces/P2-ref"]
 # One GPU stage at a time: two writing the same traces corrupt both, and bill
 # twice. The lock is a heartbeat, so a stage that dies without cleaning up
 # stops blocking after STALE seconds; Modal's restart of a preempted stage
@@ -152,8 +155,9 @@ def _run(cmd: list[str], cwd: Path) -> None:
 # knobs gpu_pipeline.sh documents (repetitions, epochs, turn length, the
 # simulated customer's rules).
 PASSED_ON = ("AGENT_MODEL", "SIM_MODEL", "SGLANG_ARGS", "PASAR_K", "PASAR_COLLECT_K",
-             "PASAR_EPOCHS", "PASAR_TRAIN_MAX_LEN", "PASAR_CUSTOMER", "PASAR_GPU",
-             "PASAR_AGENT_POOL_GB", "PASAR_RESERVE_GB", "PASAR_USD_PER_HOUR")
+             "PASAR_EPOCHS", "PASAR_TRAIN_MAX_LEN", "PASAR_CUSTOMER", "PASAR_PER_TRAP",
+             "PASAR_ROUND", "PASAR_GPU", "PASAR_AGENT_POOL_GB", "PASAR_RESERVE_GB",
+             "PASAR_USD_PER_HOUR")
 
 
 @app.function(volumes={VOL: volume}, cpu=4, memory=16384, timeout=4 * 3600,
