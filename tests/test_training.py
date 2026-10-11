@@ -272,6 +272,17 @@ def test_examples():
               and "<|im_start|>" not in x["completion"] for x in exs))
     check("tool calls are trained in the model's own format",
           any('<tool_call>\n{"name": ' in x["completion"] for x in exs))
+    bal_files, bal = build(cell, BY_ID, folds, tok, max_per_task=3, expect_model="toy",
+                           per_trap=1)
+    check("balanced by trap (round 2): at most the quota from each trap and fold, the "
+          "selection recorded, the same turns from the episodes it keeps",
+          bal["selection"] == {"per_trap": 1, "max_per_task": 3}
+          and all(n <= 1 for by in bal["episodes_by_trap"].values() for n in by.values())
+          and sum(bal["episodes_used"].values()) == sum(
+              n for by in bal["episodes_by_trap"].values() for n in by.values())
+          and {x["task_id"] for x in bal_files["A"]} <= ta
+          and stats["selection"] == {"max_per_task": 3},
+          (bal["selection"], bal["episodes_by_trap"]))
 
     # Which verdict picks the episodes (#30). Task a's episodes all pass; say
     # otherwise in their footers, as a stale checker would have.
@@ -351,6 +362,29 @@ def _sglang_tools(tools):
                                  "parameters": f.get("parameters"), "strict": False},
                     "defer_loading": None})
     return out
+
+
+def test_balance():
+    print("\n=== round 2's training data: balanced by trap, not by task ===")
+    from pasarbench.rl.sft import balance
+
+    # One trap's distinct passing episodes per task: a task the model always
+    # solves has eight, one it rarely solves has one, one it never solves none.
+    cands = {"T-easy": [f"e{i}" for i in range(8)], "T-mid": ["m0", "m1", "m2"],
+             "T-rare": ["r0"], "T-never": []}
+    chosen, left = balance(cands, per_trap=6, max_per_task=8)
+    check("round robin over the trap's tasks: each task's first episode, then each one's "
+          "second, until the trap has its quota",
+          chosen == {"T-easy": ["e0", "e1", "e2"], "T-mid": ["m0", "m1"], "T-rare": ["r0"],
+                     "T-never": []} and left == 12 - 6, (chosen, left))
+    chosen, left = balance(cands, per_trap=20, max_per_task=2)
+    check("…no task gives more than its cap, and a trap short of passing episodes gives "
+          "what it has", chosen == {"T-easy": ["e0", "e1"], "T-mid": ["m0", "m1"],
+                                    "T-rare": ["r0"], "T-never": []} and left == 12 - 5,
+          (chosen, left))
+    chosen, left = balance({"T": ["a", "b"]}, per_trap=0, max_per_task=3)
+    check("…and a quota of nothing takes nothing", chosen == {"T": []} and left == 2,
+          (chosen, left))
 
 
 def test_check_command():
@@ -558,6 +592,22 @@ def test_wrappers():
     check("every step asks for the same simulated customer, the one runs since v31 have "
           "unless PASAR_CUSTOMER says otherwise (WHAT_FAILED #38)",
           all(f"--customer {want}" in c for c in (base, coll, ev)), base)
+    e2 = cmd(["baseline", "--suite", "edition2", "--run-id", "P2-base-e2"])
+    check("round 2's base run on the 62 newer tasks of the five hardest traps: the same "
+          "sweep under a run id of its own",
+          "--suite edition2 -k 5 --temperature 0.0" in e2 and "--run-id P2-base-e2" in e2, e2)
+    ev2 = cmd(["eval", "--adapter-prefix", "pasar-rft2-", "--run-id", "P2-rft"])
+    check("…and its fine-tunes evaluated under their own adapter names and run id",
+          "B=Qwen/Qwen3.8-27B:pasar-rft2-B" in ev2 and "--run-id P2-rft" in ev2, ev2)
+    helped = io.StringIO()
+    with contextlib.redirect_stdout(helped):
+        try:
+            sys.argv = ["train_rft.py", "build", "--help"]
+            tr.main()
+        except SystemExit:
+            pass
+    check("the build balances by trap on request (WHAT_FAILED #31)",
+          "--per-trap" in helped.getvalue(), helped.getvalue()[-400:])
     sim = os.environ.get("SIM_MODEL") or tr.SIM_DEFAULT
     check("the customer is Gemma 4 31B, served locally",
           tr.SIM_DEFAULT == "RedHatAI/gemma-4-31B-it-FP8-Dynamic"
@@ -827,8 +877,16 @@ def test_serve_scripts():
     check("a customer that would get too small a cache refuses to start, and says what to lower",
           left.startswith("exit 1") and "PASAR_AGENT_POOL_GB" in left, left)
 
+    for f in "AB":
+        (work / "checkpoints" / f"rft2-{f}").mkdir(parents=True)
+        (work / "checkpoints" / f"rft2-{f}" / "adapter_config.json").write_text("{}")
+    r2 = cmd("rft", RFT_NAME="rft2")
+    check("round 2 serves its own adapters under its own names (RFT_NAME=rft2)",
+          all(f"pasar-rft2-{f}=checkpoints/rft2-{f}" in r2 for f in "AB")
+          and "pasar-rft-A" not in r2, r2)
     shutil.rmtree(work / "checkpoints")
-    check("rft refuses to start without both adapters", cmd("rft").startswith("exit 1"))
+    check("rft refuses to start without both adapters", cmd("rft").startswith("exit 1")
+          and cmd("rft", RFT_NAME="rft2").startswith("exit 1"))
 
     # The settings that decide the bill survive a new terminal.
     (work / "scripts").mkdir()
@@ -865,9 +923,25 @@ def test_serve_scripts():
                                  capture_output=True, text=True, env=clean)
               for st in ("smoke", "stage1", "stage2")}
     check("…and no stage runs on a stage 1 from before v31, whose runs had the old tools and "
-          "customer, before a GPU hour is spent",
+          "customer, before a GPU hour is spent -- the refusal names round 2",
           all(r.returncode != 0 and "stage 1 ran before v31" in r.stderr and not r.stdout
-              for r in stages.values()), {k: r.stderr[-200:] for k, r in stages.items()})
+              and "PASAR_ROUND=2" in r.stderr for r in stages.values()),
+          {k: r.stderr[-200:] for k, r in stages.items()})
+    code, out = settings(PASAR_ROUND="2")
+    check("round 2 keeps round 1's files and settings, and starts with its own: today's "
+          "customer, and its data balanced by trap",
+          code == 0 and "round 2: runs P2-*" in out and "checkpoints/rft2-A" in out
+          and "not run yet" in out and "PASAR_CUSTOMER=2" in out and "PASAR_PER_TRAP=20" in out,
+          out)
+    (work / "data" / "run2_settings.env").write_text(
+        "PASAR_K=5\nPASAR_COLLECT_K=8\nPASAR_EPOCHS=2\nPASAR_TRAIN_MAX_LEN=16384\n"
+        "PASAR_CUSTOMER=2\nPASAR_PER_TRAP=20\n")
+    code, out = settings(PASAR_ROUND="2", PASAR_PER_TRAP="10")
+    check("…and, once its stage 1 has run, another quota than the one it built with is "
+          "refused", code != 0 and "stage 1 ran with PASAR_PER_TRAP=20" in out, out)
+    (work / "data" / "run2_settings.env").unlink()
+    code, out = settings(PASAR_ROUND="3")
+    check("…and there is no round 3", code != 0 and "PASAR_ROUND is 1 or 2" in out, out)
     (work / "data" / "run_settings.env").write_text(
         "PASAR_K=3\nPASAR_COLLECT_K=4\nPASAR_EPOCHS=2\nPASAR_TRAIN_MAX_LEN=16384\nPASAR_CUSTOMER=2\n")
     code, out = settings(PASAR_CUSTOMER="2")
@@ -894,6 +968,15 @@ def test_serve_scripts():
           and re.search(r"LLMUser\([^)]*customer=args\.customer\)", grpo) is not None
           and all(f'"{k}"' in (root / "scripts" / "modal_pipeline.py").read_text().split(
               "PASSED_ON = (")[1].split(")")[0] for k in recorded), recorded)
+    check("round 2's stages name every run, file, log and adapter apart from round 1's, and "
+          "its stage 1 also runs the base model on the 62 newer tasks",
+          "2) P=P2; RFT=rft2; LP=\"r2-\"; SETTINGS=data/run2_settings.env ;;" in pipe
+          and '--run-id "$P-base"' in pipe and '--suite edition2 --run-id "$P-base-e2"' in pipe
+          and '--run "traces/$P-collect/full" --out-dir "data/$RFT"' in pipe
+          and '--per-trap "$PER_TRAP" --max-per-task "$COLLECT_K"' in pipe
+          and '--out "checkpoints/$RFT-$F"' in pipe and '--run-id "$P-ref"' in pipe
+          and '--adapter-prefix "pasar-$RFT-" --run-id "$P-rft"' in pipe
+          and 'export RFT_NAME="$RFT"' in pipe)
     shared = pipe[pipe.index('if [ -n "${SHARE_GPU:-}" ]; then\n    # One card'):]
     check("on one card the customer starts only after the agent is up",
           shared.index("wait_ready 8000") < shared.index("serve_sglang.sh sim"))
@@ -1344,6 +1427,14 @@ def test_notebook_helper():
         check("launch starts the same detached job part A starts from a laptop",
               cmd[1:] == ["-m", "modal", "run", "--detach", "scripts/modal_pipeline.py",
                           "--stage", "stage1"], cmd)
+        try:
+            pn._round(3)
+            bad = ""
+        except SystemExit as e:
+            bad = str(e)
+        check("round=2 reaches the stage as PASAR_ROUND, here and in a launched job, and there "
+              "is no round 3", pn._round(2) == {"PASAR_ROUND": "2"} and pn._round(None) == {}
+              and "1 or 2" in bad, bad)
         out2 = __import__("io").StringIO()
         with contextlib.redirect_stdout(out2):
             pn.read("logs/stage1.log", tail=1)
@@ -1662,6 +1753,7 @@ def main() -> int:
     test_family_guard()
     test_sweep_collection()
     test_examples()
+    test_balance()
     test_check_command()
     test_served_models()
     test_serve_scripts()
