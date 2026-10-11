@@ -82,18 +82,20 @@ re-scored by replaying their tool calls (`scripts/rescore.py`).
   charged ([RUNBOOK 1j, 1k](docs/RUNBOOK.md),
   [WHAT_FAILED #36](docs/WHAT_FAILED.md)).
 - **The checks were blind where that second look walked.** Cancelling a card
-  order, the agent told the customer her money would go back — 42 times in 42
-  in the last control, in every language — and nothing in the world did it: no
-  rule, tool or check says what happens to it ([#37](docs/WHAT_FAILED.md)). And the
-  simulated customer often said yes and goodbye in one message — "Sure, I'll
-  take the voucher. Thanks." — ending the episode before the agent could act:
-  63 failures in the runs without the closing check, 57 of them the voucher
-  trap's, more than half of its failures. Counted as passes they reverse no
-  result above; one, search against all 20 tools, would cross p < 0.05
+  order, the agent told the customer her money would go back — 42 times in 42 in
+  the last control, in every language — and nothing in the world did it: no
+  rule, tool or check says what happens to it ([#37](docs/WHAT_FAILED.md)). And
+  the simulated customer often said yes and goodbye in one message — "Sure, I'll
+  take the voucher. Thanks." — ending the episode before the agent could act: 63
+  failures in the runs without the closing check, 57 of them the voucher trap's,
+  more than half of its failures. Counted as passes they reverse no result
+  above; one, search against all 20 tools, would cross p < 0.05
   ([#38](docs/WHAT_FAILED.md)). Both are changed in v31 — a cancellation now
   settles the payment, and the simulated customer is told to wait for what she
-  agreed to — with every recorded run re-scoring exactly as before. Whether she
-  waits is what the next run checks ([RUNBOOK 1l](docs/RUNBOOK.md)).
+  agreed to — with every recorded run re-scoring exactly as before. In the run
+  that checked, she waited: none of 252 conversations ended on her yes, where
+  the old customer ended 7 of the voucher trap's that way the same day, and the
+  trap went from 0.81 to 1.00 ([RUNBOOK 1l](docs/RUNBOOK.md)).
 - **An LLM judge could not stand in for the database.** Its best configuration —
   with the tool results and the policy — reached κ = 0.72 and still accepted 6
   of 15 failed episodes. It caught one of three false claims and noticed another
@@ -128,10 +130,10 @@ python -m tests.test_generated    # 108 checks over all 199 generated tasks: dat
 python -m tests.test_rescore      # 29 re-scoring invariants: the pre-v19 world, replay by digest and by length, the same tool errors on every Python, nothing re-scored on a guess
 python -m tests.test_context      # 39 context-strategy + analysis invariants
 python -m tests.test_judge        # 83 judge + agreement-statistics invariants, judged against today's checks
-python -m tests.test_exposure     # 160 tool-scaling + diagnosis invariants, the tool-naming experiment and its confirmation tasks, the guardrail's report and dry run, the closing check's report, its costs, each case before and after it and what each customer last said, a write a database check needs told from one no check sees, readers that skip its case note, how episodes ended and what cancellations settled, listed, cells compared across tool versions or customers flagged
+python -m tests.test_exposure     # 161 tool-scaling + diagnosis invariants, the tool-naming experiment and its confirmation tasks, the guardrail's report and dry run, the closing check's report, its costs, each case before and after it and what each customer last said, a write a database check needs told from one no check sees, readers that skip its case note, how episodes ended and what cancellations settled, listed, cells compared across tool versions or customers flagged, and episodes a server error ended
 python -m tests.test_serving      # 54 metrics (SGLang and vLLM), cost and quality-guard invariants
 python -m tests.test_report       # 62 report invariants: paired verdicts, ties, replication, calibration, noise floor, post-training with one customer and one tool version, both scorings in every section, a figure that matches its numbers and drops a title they stop bearing out
-python -m tests.test_training     # 166 checks: split, customer family, collection and resume, examples (Qwen3 and Qwen3.8 formats) against an SGLang-like server, adapter routing, the LoRA probe, serve and Modal scripts, one-GPU memory plans, the notebook helper (progress in place, an interrupt-proof cleanup), the CUDA compiler, run settings, LoRA steps on Qwen3 and Qwen3.8's hybrid architecture, training data picked by today's checks, a push script that keeps runs and keys off GitHub, closing-check runs refused as training data, one simulated customer in every step, kept from stage 1 to stage 2 (124 without transformers/torch)
+python -m tests.test_training     # 167 checks: split, customer family, collection and resume, examples (Qwen3 and Qwen3.8 formats) against an SGLang-like server, adapter routing, the LoRA probe, serve and Modal scripts, one-GPU memory plans, the notebook helper (progress in place, an interrupt-proof cleanup), the CUDA compiler, run settings, LoRA steps on Qwen3 and Qwen3.8's hybrid architecture, training data picked by today's checks, a push script that keeps runs and keys off GitHub, closing-check runs refused as training data, one simulated customer in every step, kept from stage 1 to stage 2, server errors reported (125 without transformers/torch)
 
 python -m pasarbench.sweep --backend scripted --suite all
 python scripts/make_report.py     # regenerates RESULTS.md; never hand-fill it
