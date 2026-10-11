@@ -108,11 +108,61 @@ for stage 2. The simulated customer is kept the same way: stage 1 records
 `PASAR_CUSTOMER` — 2 by default, the customer told to wait for what she agreed
 to (WHAT_FAILED #38) — and stage 2 and the reference row use it. A stage 1 from
 before v31 recorded none; its runs had the old customer and the old tools
-(#37), and no stage runs on it: move `data/` and `traces/P-*` aside and run
-stage 1 again.
+(#37), and no stage runs on it: run round 2 (below), which keeps it, or move
+`data/` and `traces/P-*` aside and run stage 1 again.
 
 The optional reference row calls deepseek-v4-pro through its API against the
 same customer; it only needs your DeepSeek key.
+
+---
+
+## Round 2 — the second fine-tune (v44)
+
+The same stages again, with the training data balanced by trap (WHAT_FAILED
+#31) and today's customer and tools, plus the base model on the 62 newer tasks
+of the five hardest traps (RUNBOOK phase 4, round 2). Everything it writes has
+a name of its own — `traces/P2-*`, `data/rft2`, `checkpoints/rft2-*`,
+`logs/r2-*`, `data/run2_settings.env` — so round 1's files stay as they are on
+the Volume and on your laptop. Round 1's settings file records no customer, and
+no round-1 stage will run on it any more; round 2 does not need it.
+
+| stage | what runs | one B200 | as a job | in a notebook |
+|---|---|---|---|---|
+| smoke | the new version's check, as before | ~1 h | ~$7 | ~$9 |
+| stage 1, round 2 | 1,075 base episodes, 310 on the newer tasks, 1,720 to learn from, examples balanced by trap | ~3.5–4 h | ~$25–28 | ~$32–36 |
+| stage 2, round 2 | two LoRAs, 1,075 held-out episodes (+ the reference row if keyed) | ~2.5–3 h | ~$18–21 | ~$23–27 |
+
+The hours are round 1's, measured; the smoke stage projects yours.
+
+**In a notebook** (part N), after the new version is unpacked onto the Volume
+(N3–N5):
+
+```python
+pn.run("smoke")
+pn.run("stage1", round=2)      # or pn.launch("stage1", round=2): a detached job, notebook may stop
+pn.read("logs/r2-check-A.txt") # step R, with round 2's files (below)
+pn.run("stage2", round=2)
+pn.pack()                      # round 1's and round 2's results, one archive
+```
+
+**As Modal jobs** (part A), from your laptop:
+
+```bash
+modal run --detach scripts/modal_pipeline.py --stage smoke
+PASAR_ROUND=2 modal run --detach scripts/modal_pipeline.py --stage stage1
+modal run scripts/modal_pipeline.py --stage pull          # read step R's files
+PASAR_ROUND=2 modal run --detach scripts/modal_pipeline.py --stage stage2
+modal run scripts/modal_pipeline.py --stage pull
+```
+
+**On Lambda** (part B), in tmux: `PASAR_ROUND=2 bash scripts/gpu_pipeline.sh
+stage1`, then `stage2` the same way.
+
+Step R for round 2 reads `logs/r2-sim_audit.txt`, `logs/r2-check-A.txt` and
+`data/rft2/stats.json`, whose `episodes_by_trap` shows how many episodes each
+trap gave each fold; `logs/r2-build.log` names any trap below the quota of 20
+for want of passing episodes. Then send me the pulled results (or say done):
+the reading is fixed in RUNBOOK phase 4, round 2.
 
 ---
 
