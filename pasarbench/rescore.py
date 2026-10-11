@@ -46,14 +46,22 @@ _CACHE: dict[tuple[str, int, int], "Rescored"] = {}
 
 
 def all_tasks() -> dict[str, Any]:
-    """Every task today's code defines, hand-written and generated, by id."""
+    """Every task today's code defines, hand-written and generated, by id --
+    the suite and the second edition (RUNBOOK 1m), so an episode of either
+    can be rebuilt and re-scored."""
     global _TASKS
     if _TASKS is None:
         from .generate import generate
-        from .tasks import TASKS
-        gen, _ = generate()
-        _TASKS = {t.task_id: t for t in list(TASKS) + gen}
+        _TASKS = {**suite_tasks(), **{t.task_id: t for t in generate(edition=2)[0]}}
     return _TASKS
+
+
+def suite_tasks() -> dict[str, Any]:
+    """The suite, by id: the 16 hand-written tasks and the first edition of the
+    generated ones -- what `--suite all` runs and every recorded run had."""
+    from .generate import generate
+    from .tasks import TASKS
+    return {t.task_id: t for t in list(TASKS) + generate()[0]}
 
 
 @dataclass
