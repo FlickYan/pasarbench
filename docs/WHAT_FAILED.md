@@ -1,6 +1,6 @@
 # What failed
 
-Thirty-eight real defects found while building this. The first fifteen are in
+Thirty-nine real defects found while building this. The first fifteen are in
 the order of how much damage they would have done; the rest are in the order
 they were found. Every one is reproducible from the git history.
 
@@ -1489,6 +1489,39 @@ whose voucher needed digits she had not given.
 **Lesson.** Who ends a simulated conversation, and on what, is part of what it
 measures. Read the last message of every failure: half of one trap's were saying
 yes.
+
+## 39. The guard read a correction as a repeat
+
+**What happened.** Since v29 the closing review has counted a write that repeats
+one already made — the same tool on the same order, item or customer and, for an
+escalation, the same category — as a cost (#36), and v37's guard refuses exactly
+what that count calls a repeat. For escalations it is right: 91 of 93 second
+calls were the agent's first answer to the note, made with the first in front of
+it. For payments it leaves out the amount. In 1k two of the six "repeats" were a
+shipping credit P4.6 asks for after a credit for the item — read one by one and
+set aside, while the definition went on counting them. In 1p the guard refused
+the same correction three times, in CCRTOM-ID and its Indonesian twin: a broken
+cash-on-delivery item credited at IDR 700,000, then the IDR 37,000 of shipping
+refused as the same credit twice. "The error says the call would be a duplicate.
+But actually the amounts differ." No check asks for the shipping, so both cases
+passed, IDR 37,000 short.
+
+**Why.** The target was built from the cost that had been seen — a second ticket
+for one case, where the order and the category are all that makes it the same —
+and applied to every write. A second escalation of one case is the case twice; a
+second payment against one order can be the rest of what is owed.
+
+**Fix.** Not yet built, because it is a new guard: a payment's amount and
+currency become part of its target — refunds, store credit, vouchers. Run dry
+over every recorded closing phase, that changes exactly the corrections: 1k's
+repeats go from six to four, every other run is unchanged — the vouchers paid
+twice in 1n and 1o were the same amount again, and stay refused — and 1p's three
+refusals would have run (RUNBOOK 1p).
+
+**Lesson.** A definition written from the failure you saw is blind to the one
+you did not, and reading the exceptions once does not change the definition. 1k
+found these credits by reading and wrote them down; the count went on calling
+them repeats until a guard built on it refused the next one.
 
 ---
 
