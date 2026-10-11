@@ -712,6 +712,13 @@ def test_closing_check():
           "made again, it is a second ticket for one case, and the review says so",
           r["first"] == [] and r["writes"] == [("escalate_to_human", True)]
           and [t for t, _ in r["repeated"]] == ["escalate_to_human"], str(r))
+    check("…with the step of the closing phase that made it: here its first answer to the "
+          "note", r["repeated_at"] == [1], str(r))
+    _, _, rec, _, _ = run([look, esc, explain, look, esc, "Escalated again."], "check")
+    r = cl.review(rec.recs, task)
+    check("…and here its second, after a look at the order",
+          r["repeated_at"] == [2] and [t for t, _ in r["repeated"]] == ["escalate_to_human"],
+          str(r))
     _, _, rec, _, _ = run([look, other, explain, esc, "Escalated as a duplicate refund."],
                           "check")
     r = cl.review(rec.recs, task)
