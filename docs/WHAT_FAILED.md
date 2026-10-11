@@ -1356,6 +1356,10 @@ note, was the agent's first answer to it — 91 of 93 — made with the first ca
 in front of it, and in 1n's record arm listed in the note itself as done. A note
 cannot stop a call the agent makes as its first answer to the note; a refusal
 could.
+v37's `--closing guard` is that refusal: 1j's note, and in the closing phase a
+write that repeats one already made, by the review's own definition, is not run;
+the agent is told so. Run dry over every recorded closing phase it refuses
+exactly the 93 calls the review counted; 1o runs it.
 
 **Lesson.** Count an intervention's cost in what it does, not in what the
 checks forbid. The checks were written for the agent's mistakes before the
