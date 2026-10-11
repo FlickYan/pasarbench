@@ -66,31 +66,33 @@ re-scored by replaying their tool calls (`scripts/rescore.py`).
   wording still got through about as often with it as without — "your case has
   been flagged", a promise never kept ([RUNBOOK 1i](docs/RUNBOOK.md)).
 - **A second look after the customer left rescued what the agent let go — and
-  cost about as much.** When the customer ended the conversation, the agent got
-  one note she never saw: check the case against the policy, make any call it
-  requires. On the tasks that suggested it, pass^1 went from 0.85 to 0.96 (11
-  tasks better, 2 worse, p = 0.02) under a rule written before the run. On the
-  other 158, replaying every episode as the customer left it and as it ended
-  shows the note broke no case; the 10 tasks that did worse (6 did better,
-  p = 0.45) had done so before it. By a second rule written in advance it is
-  worth keeping as an option — 27 episodes rescued against 23 with a cost, most
-  of them a case escalated twice, which no conversation did on its own (0 of
-  1,290). Read one by one it is about even, 22 against 23: five rescues were a
-  customer who said "yes, go ahead" and left in the same message, before the
-  agent could act; two "repeats" were a shipping credit the policy asks for; and
-  two refunds after a cancellation paid back an authorization that was never
-  charged ([RUNBOOK 1j, 1k](docs/RUNBOOK.md),
-  [WHAT_FAILED #36](docs/WHAT_FAILED.md)).
-  Confirmed on 62 new tasks of the traps that suggested it, with a customer who
-  waits: 0.83 to 0.94, 15 tasks better and 5 worse (p = 0.04), 21 of its 25
-  rescues the escalation P10 requires after a duplicate-refund customer is
-  satisfied — and the same cost, a case escalated twice in 22 of 186 episodes,
-  where the conversations alone did it in 2 of 372
-  ([RUNBOOK 1m](docs/RUNBOOK.md)).
-  Giving the agent the record of its own calls, and telling it not to make one
-  again, did not take that cost away (26 to 24 of 186, p = 0.66): nearly every
-  second call, in every run, was its first answer to the note — 91 of 93 — made
-  with the first call in front of it ([RUNBOOK 1n](docs/RUNBOOK.md)).
+  refusing a repeat took away its cost.** When the customer ended the
+  conversation, the agent got one note she never saw: check the case against the
+  policy, make any call it requires. On the tasks that suggested it, pass^1 went
+  from 0.85 to 0.96 (11 tasks better, 2 worse, p = 0.02) under a rule written
+  before the run. On the other 158, replaying every episode as the customer left
+  it and as it ended shows the note broke no case; the 10 tasks that did worse
+  (6 did better, p = 0.45) had done so before it. By a second rule written in
+  advance it is worth keeping as an option — 27 episodes rescued against 23 with
+  a cost, most of them a case escalated twice, which no conversation did on its
+  own (0 of 1,290). Read one by one it is about even, 22 against 23: five
+  rescues were a customer who said "yes, go ahead" and left in the same message,
+  before the agent could act; two "repeats" were a shipping credit the policy
+  asks for; and two refunds after a cancellation paid back an authorization that
+  was never charged ([RUNBOOK 1j, 1k](docs/RUNBOOK.md),
+  [WHAT_FAILED #36](docs/WHAT_FAILED.md)). Confirmed on 62 new tasks of the
+  traps that suggested it, with a customer who waits: 0.83 to 0.94, 15 tasks
+  better and 5 worse (p = 0.04), 21 of its 25 rescues the escalation P10
+  requires after a duplicate-refund customer is satisfied — and the same cost, a
+  case escalated twice in 22 of 186 episodes, where the conversations alone did
+  it in 2 of 372 ([RUNBOOK 1m](docs/RUNBOOK.md)). Giving the agent the record of
+  its own calls, and telling it not to make one again, did not take that cost
+  away (26 to 24 of 186, p = 0.66): nearly every second call, in every run, was
+  its first answer to the note — 91 of 93 — made with the first call in front of
+  it ([RUNBOOK 1n](docs/RUNBOOK.md)). Refusing it worked where asking did not:
+  with 1j's note unchanged and a write that repeats one already made not run
+  after it, 20 second tickets became none, the rescues stayed at 24, and nothing
+  took the refused call's place ([RUNBOOK 1o](docs/RUNBOOK.md)).
 - **The checks were blind where that second look walked.** Cancelling a card
   order, the agent told the customer her money would go back — 42 times in 42 in
   the last control, in every language — and nothing in the world did it: no
