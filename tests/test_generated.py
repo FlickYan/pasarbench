@@ -569,6 +569,101 @@ def test_leak_rates_are_per_episode():
           len(it.same_tasks([dict(ep(3, "Order number?"), head={})], tasks)) == 1)
 
 
+def test_second_edition():
+    """RUNBOOK 1m confirms the closing check on new tasks of the five traps it
+    came from: the same checks, new worlds and stories. Every guarantee the
+    suite has, these have; and they are new -- no id, row, story or customer
+    of the suite -- while the suite is exactly what it was."""
+    print("\n=== the second edition: new tasks of the closing check's five traps ===")
+    from pasarbench.generate import EDITION2_TRAPS
+    from pasarbench.rescore import all_tasks, suite_tasks
+    from pasarbench.tasks import TASKS as CORE
+    from pasarbench.tasks import task_digest
+    t2, s2 = generate(edition=2)
+    check("62 tasks of the five traps, in every market and language their first edition has",
+          len(t2) == 62 and {t.trap for t in t2} == set(EDITION2_TRAPS)
+          and Counter(t.trap for t in t2) == Counter(t.trap for t in TASKS
+                                                     if t.trap in EDITION2_TRAPS),
+          str(Counter(t.trap for t in t2)))
+    unsolved = [t.task_id for t in t2 if not run_script(t, s2[t.task_id]).passed]
+    check("each is solved by its own reference solution", not unsolved, str(unsolved[:5]))
+    sample = stratified_sample(t2, per_trap=1)
+    looped = []
+    for t in sample:
+        db = Database.fresh(t.db_patch)
+        run_episode(t, db, ScriptedBackend(s2[t.task_id]))
+        looped.append(verify(t, db).passed)
+    check("…through the real loop too", all(looped) and len(looped) == 5, str(looped))
+    spam = lambda t: [("verify_identity", {"user_id": t.user_id, "phone_last4": "0000"}),
+                      ("get_order", {"order_id": t.hidden_facts["order_id"]}),
+                      ("get_shipment", {"order_id": t.hidden_facts["order_id"]}),
+                      ("escalate_to_human", {"order_id": t.hidden_facts["order_id"],
+                                             "category": "other", "reason": "x"})]
+    lucky = [t.task_id for t in t2 if run_script(t, []).passed or run_script(t, spam(t)).passed]
+    check("…and none passes with no action, or with tool spam", not lucky, str(lucky[:5]))
+    groups = defaultdict(list)
+    for t in t2:
+        groups[t.task_id.split(".")[0]].append(t)
+    check("locale twins share checks, world, persona and solution, and differ in the opening",
+          all(all(x.checks is g[0].checks and x.db_patch == g[0].db_patch
+                  and x.persona == g[0].persona and s2[x.task_id] == s2[g[0].task_id]
+                  for x in g) and len({x.opening for x in g}) == len(g)
+              for g in groups.values()))
+    probs = [p for t in t2 for p in timeline_problems(Database.fresh(t.db_patch))]
+    check("every world's dates are in causal order", not probs, str(probs[:3]))
+    first = {t.task_id: t for t in TASKS}
+
+    def rows(t):
+        return {(table, rid) for table, rs in t.db_patch.items() for rid in rs}
+    shared = {r for t in t2 for r in rows(t)} & {r for t in TASKS for r in rows(t)}
+    twin = {t.task_id: first[t.task_id.replace("2-", "-", 1)] for t in t2}
+    check("new: no task id, row id, customer, persona or opening of the suite",
+          not ({t.task_id for t in t2} & set(first)) and not shared
+          and all(t.persona != twin[t.task_id].persona and t.opening != twin[t.task_id].opening
+                  and t.db_patch["users"] != twin[t.task_id].db_patch["users"]
+                  for t in t2), str(sorted(shared)[:4]))
+    import dataclasses
+    import json
+
+    def rules(t):
+        """The checks with this world's ids written as roles."""
+        text = json.dumps(dataclasses.asdict(t.checks), sort_keys=True, default=str)
+        names = {t.hidden_facts["order_id"]: "<order>", t.user_id: "<user>"}
+        for it in t.db_patch["order_items"].values():
+            names.update({it["order_item_id"]: "<item>", it["product_id"]: "<product>"})
+        for o in t.db_patch["orders"].values():
+            if o.get("livestream_id"):
+                names[o["livestream_id"]] = "<live>"
+        for k, v in names.items():
+            text = text.replace(k, v)
+        return text
+    check("…under the same rules: each has its first-edition twin's checks, but its own ids",
+          all(t.trap == twin[t.task_id].trap and rules(t) == rules(twin[t.task_id])
+              and task_digest(t) != task_digest(twin[t.task_id]) for t in t2))
+    from pasarbench.sweep import ALL_TASKS, EDITION2_TASKS
+    check("outside the suite: `all` runs the 215 it always has, and the replays and readers "
+          "find the new ones",
+          len(ALL_TASKS) == 215 == len(suite_tasks()) == len(CORE) + len(TASKS)
+          and not {t.task_id for t in EDITION2_TASKS} & {t.task_id for t in ALL_TASKS}
+          and set(all_tasks()) == set(suite_tasks()) | {t.task_id for t in t2})
+    from types import SimpleNamespace
+
+    from pasarbench.sweep import select_tasks
+    picked = select_tasks(SimpleNamespace(suite="edition2", languages="", tasks="", sample=0,
+                                          traps=""))
+    check("`--suite edition2` runs the 62, as RUNBOOK 1m's command asks",
+          sorted(t.task_id for t in picked) == sorted(t.task_id for t in t2)
+          and "--suite edition2" in (Path(__file__).resolve().parent.parent / "docs"
+                                     / "RUNBOOK.md").read_text(encoding="utf-8"))
+    try:
+        generate(edition=2, traps=["happy_path_return_refund"])
+        refused = False
+    except ValueError:
+        refused = True
+    check("…and a trap the second edition does not have is refused, not built from the first",
+          refused)
+
+
 def main() -> int:
     test_all_solvable()
     test_solutions_run_through_harness()
@@ -583,6 +678,7 @@ def main() -> int:
     test_simulator_qa()
     test_leak_detector_reads_every_language()
     test_leak_rates_are_per_episode()
+    test_second_edition()
     print(f"\n{len(PASS)} passed, {len(FAIL)} failed")
     for f in FAIL:
         print(f"  FAILED: {f}")
