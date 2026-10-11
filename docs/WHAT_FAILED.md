@@ -1511,12 +1511,19 @@ for one case, where the order and the category are all that makes it the same �
 and applied to every write. A second escalation of one case is the case twice; a
 second payment against one order can be the rest of what is owed.
 
-**Fix.** Not yet built, because it is a new guard: a payment's amount and
-currency become part of its target — refunds, store credit, vouchers. Run dry
-over every recorded closing phase, that changes exactly the corrections: 1k's
-repeats go from six to four, every other run is unchanged — the vouchers paid
-twice in 1n and 1o were the same amount again, and stay refused — and 1p's three
-refusals would have run (RUNBOOK 1p).
+**Fix.** v41: a payment's amount and currency are part of its target — refunds,
+store credit, vouchers — for the review's count and the guard alike
+(`closing._keys`). The same payment again is still a repeat; one of another
+amount on what was already paid is not, and the review lists it as
+`another_amount`, to be read: the rest of what is owed, or a second payment. The
+trace header records the guard's version (`closing_guard`), and `--resume` will
+not mix the two. Run dry over every recorded closing phase, that changes exactly
+the corrections: 1k's repeats go from six to four, its two shipping credits
+listed instead as payments of another amount, and every other run is unchanged —
+the vouchers paid twice in 1n and 1o were the same amount again, and stay
+refused. Counted that way, the second calls that were the agent's first answer
+to the note are 90 of 91 across 1j to 1n, where the older count said 91 of 93.
+1q runs the guard again where it was not built for (RUNBOOK 1q).
 
 **Lesson.** A definition written from the failure you saw is blind to the one
 you did not, and reading the exceptions once does not change the definition. 1k
