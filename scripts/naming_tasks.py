@@ -41,8 +41,8 @@ def needs_named(task) -> bool:
 
 
 def tasks() -> list[str]:
-    from pasarbench.rescore import all_tasks
-    return [tid for tid, t in sorted(all_tasks().items())
+    from pasarbench.rescore import suite_tasks
+    return [tid for tid, t in sorted(suite_tasks().items())
             if tid not in FIRST_RUN and needs_named(t)]
 
 
@@ -55,9 +55,9 @@ def main(argv: list[str] | None = None) -> int:
                     help="every task but the 57 (the closing check's second run, 1k)")
     a = ap.parse_args(argv)
     if a.rest:
-        from pasarbench.rescore import all_tasks
+        from pasarbench.rescore import suite_tasks
         named = set(tasks())
-        ids = [tid for tid in sorted(all_tasks()) if tid not in named]
+        ids = [tid for tid in sorted(suite_tasks()) if tid not in named]
     else:
         ids = list(FIRST_RUN) if a.first_run else tasks()
     print(len(ids) if a.count else ",".join(ids))
