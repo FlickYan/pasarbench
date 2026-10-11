@@ -1218,6 +1218,73 @@ episodes with a cost, for each.
 - **Secondary:** tokens; phases cut short; guessed digits and writes no check
   scores, in both arms; and the failures each arm still has, read.
 
+**Run on 2026-10-12, v35** (`R-check`, `R-record`, back to back): not fewer, and
+not taken over, by the reading fixed before the run. The record did not stop the
+second ticket.
+
+| | 1j's note | the record note |
+|---|---|---|
+| pass^1 (pass^k) | 0.973 (0.935) | 0.962 (0.903) |
+| paired by task | | 2 tasks better, 5 worse, p = 0.45: INCONCLUSIVE |
+| the same, each case as its customer left it | | 7 better, 4 worse, p = 0.55 |
+| failed as she left it, passed at the end | 27 of 32 | 21 of 28 (2 tasks more, 7 fewer, p = 0.18) |
+| a write repeating one already made | 26 episodes | 24 (9 tasks more, 12 fewer, p = 0.66): INCONCLUSIVE |
+| …of them, the agent's first answer to the note | 25 | 24 |
+| a forbidden call first made then | none | none |
+| a verification with digits never given | none | 1 |
+| rescues minus episodes with a cost (1j's rule) | +1 | −4 |
+| tokens per episode | 58,182 | 59,223 (+1,041, p = 0.10) |
+
+**The call comes first.** Each of the record arm's 24 second calls was the
+agent's first move after the note, and in each the record in that note listed
+the first call as done: for the 23 escalations the same order under the same
+category, for the voucher the same customer, each "-- done". With 1j's note, 25
+of the 26 were the first move too. The record was in front of the agent when it
+made the call. Once in 24, what it wrote afterwards saw it: "I made a duplicate
+voucher call in error. The record already shows the voucher was issued
+(VCH0001)." — a second goodwill voucher, SGD 11.80 paid twice. The other 23 case
+notes report the escalation as if it were the only one. By the reading's own
+words all 24 are the note read and not followed, and not followed at the first
+step, before anything else. The identity trap paid most: 17 of the 24, 14 of the
+26. And it is not this run's: `compare_cells.py` now counts the repeats made at
+the first step after the note (`closing.review`'s `repeated_at`), and in every
+run with the note so far they are nearly all of them — 15 of 1j's 15, 5 of 1k's
+6, 22 of 1m's 22, 25 and 24 here: 91 of 93.
+
+**1j's note again.** 26 second tickets in 186 (1m: 22) and 27 rescues (1m: 25),
+all passing: the control repeated 1m on the same tasks. The conversations alone
+showed no difference (p = 0.55).
+
+**The rescues.** 27 to 21, which the test does not resolve (p = 0.18). The
+record arm had fewer to rescue — 28 cases failed as their customer left them,
+against 32 — and rescued three in four of them, against five in six. Each arm
+had 23 duplicate refunds failing as she left; the record arm rescued 17, 1j's
+note 19. In all 6 the record arm let go the record was empty — "(nothing: no
+identity check or action was attempted)" — and the case note read it as a case
+that needed nothing: "no identity verification was required since I only
+provided read-only information". A lead, not a finding: 1j's note let 4 go with
+the same conclusion, and no record.
+
+**Secondary.** Tokens +1,041 an episode, 38 tasks costlier and 24 cheaper, p =
+0.10. Three closing phases cut short against one: two by the episode's
+120,000-token budget, in long conversations that had passed as the customer left
+them and still did; one by the six-step cap. One verification with digits nobody
+gave, "0000", after a record that showed the escalation done (CHE2-VN__r1, which
+passed). Failures left: 7 against 5 — six duplicate refunds and one identity
+case, against four and one.
+
+**What it means.** The second ticket is not a matter of what the agent can see,
+so showing it more does not stop it: asked to make any call the policy requires,
+its first move is the call, and the record it has just been given is read, if at
+all, after. What does not depend on the agent's reading is a refusal: the
+closing phase declining a write that repeats one the record shows as done, as
+the tools since v31 decline a refund once a cancellation has settled the payment
+(#37). That takes this cost away by construction; a run would measure what is
+left — whether the rescues survive it, and what the agent does when told no.
+Until then 1j's note stays the closing check, with its cost stated: about one
+case in eight escalated twice (48 of 372, in 1m and here). The record note stays
+as `--closing record`, a result rather than a recommendation.
+
 ---
 
 # Phase 2 — judge calibration (no GPU, ~6 hours of your time)
