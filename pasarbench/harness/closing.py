@@ -42,13 +42,23 @@ each with what came of it, read off the database's action log as a support
 system's case history would show it -- then 1j's note, with one sentence
 more. It reads nothing about the task either. The trace's closing_check
 event carries the note it gave.
+
+It did not stop the call made again (1n): nearly every second call, in every
+run, was the agent's first answer to the note -- 91 of 93 -- made with the
+first call in front of it. A note cannot reach that; a refusal can. "guard"
+(v37, RUNBOOK 1o) gives 1j's note unchanged and, in the closing phase only,
+does not run a write that repeats one already made, by the review's own
+definition (`repeat_of`): the agent is told it was already done and that
+nothing new was filed (`refusal`), and the trace records a closing_refused
+event. The call never reaches the tools, so a replay reproduces it from the
+recorded error (replay.NO_DISPATCH), as it does an unknown tool.
 """
 
 from __future__ import annotations
 
 from typing import Any, Iterable
 
-MODES = ("off", "check", "record")
+MODES = ("off", "check", "record", "guard")
 # The closing phase's own cap, inside the episode's budget: enough to look a
 # tool up, call it and write the note, not enough to start the case again.
 MAX_STEPS = 6
@@ -85,7 +95,7 @@ SHOWN = 60
 def note(mode: str, log: Iterable[Any] = ()) -> str:
     """The note the agent gets when the customer leaves, in this mode: 1j's,
     or the case record (`record`) and the note after it."""
-    if mode == "check":
+    if mode in ("check", "guard"):
         return NOTE
     if mode == "record":
         return RECORD_NOTE.replace("{record}", "\n".join(record(log)) or NO_RECORD)
@@ -125,6 +135,64 @@ def _shown(value: Any) -> str:
     if isinstance(value, str):
         value = _cut(value, SHOWN)
     return json.dumps(value, ensure_ascii=False, default=str)
+
+
+# How the guard's refusal begins: replay.NO_DISPATCH knows it, so a replay
+# reproduces the refused call from its recorded error instead of running it.
+REFUSED = "already done in this case: "
+
+
+def repeat_of(log: Iterable[Any], tool: str, args: Any) -> Any:
+    """The successful write in the log that a call of `tool` with `args`
+    would repeat -- the same tool on the same order, item or customer and, for
+    an escalation, the same category, as `review` counts a repeat -- or None.
+    The call's target is read from the keys the tool would log: every write
+    logs all its parameters, an optional one as None when it is not given."""
+    from ..tools import TOOLS, WRITE_TOOLS
+    if tool not in WRITE_TOOLS or not isinstance(args, dict):
+        return None
+    params = TOOLS[tool]["schema"]["function"]["parameters"]["properties"]
+    target = (tool,) + tuple((k, args.get(k)) for k in _TARGET if k in params)
+    return next((a for a in reversed(list(log))
+                 if a.ok and a.tool in WRITE_TOOLS and _target(a) == target), None)
+
+
+def would_refuse(recs: list[dict[str, Any]], task) -> list[tuple[str, Any]] | None:
+    """The calls the guard would not have run in a closing phase recorded
+    without it: the episode replayed to the note, then its closing calls
+    walked in order, each write asked `repeat_of` before it runs as it ran. A
+    call the loop never dispatched (an unknown tool, say) is skipped, as it
+    never reached the tools. None without a closing phase, or when the
+    conversation does not replay (scripts/closing_guard_dry_run.py)."""
+    from ..tools import WRITE_TOOLS, call
+    from .replay import NO_DISPATCH, replay
+    head = [r for r in recs if r.get("type") == "header"][:1]
+    steps = [r for r in recs if r.get("type") == "step"]
+    at = next((i for i, st in enumerate(steps) if st.get("closing")), None)
+    if at is None or not head or task is None:
+        return None
+    rebuilt = replay(head + steps[:at], task)
+    if rebuilt.diverged or rebuilt.mismatched:
+        return None
+    db, checks = rebuilt.db, int(head[0].get("tool_checks") or 1)
+    out = []
+    for st in steps[at:]:
+        for tc, tr in zip(st.get("tool_calls") or [], st.get("tool_results") or []):
+            if any((tr.get("error") or "").startswith(p) for p in NO_DISPATCH):
+                continue
+            name, args = tc.get("name"), tc.get("arguments")
+            if name in WRITE_TOOLS and repeat_of(db.action_log, name, args) is not None:
+                out.append((name, args))
+            if name in WRITE_TOOLS or name == "verify_identity":
+                call(db, name, args if isinstance(args, dict) else {}, checks=checks)
+    return out
+
+
+def refusal(done: Any) -> str:
+    """What the agent is told when the guard does not run a repeat."""
+    args = ", ".join(f"{k}={_shown(v)}" for k, v in (done.args or {}).items() if v is not None)
+    return (f"{REFUSED}{done.tool}({args}) succeeded earlier, so this call would make it "
+            f"a second time. It was not run, and nothing new was filed.")
 
 
 def is_note(content: str | None) -> bool:
@@ -169,6 +237,13 @@ def review(recs: list[dict[str, Any]], task=None) -> dict[str, Any]:
                the calls and the log do not pair up. 1n found nearly every
                repeat at step 1, under either note: made before anything the
                note said could change it.
+    refused    [(tool, args)] calls the guard did not run as repeats (mode
+               "guard", RUNBOOK 1o), and refused_at the step of each, as above.
+               Not writes: none reached the tools.
+    substituted  [(tool, args)] writes after the first refusal that no check
+               asks for -- not required, and forbidden or seen by no check:
+               the same order escalated under another category, say. The
+               repeat in other words, and counted as a cost.
     guessed    [digits] identity verifications after the note with digits the
                customer never gave -- there was no one left to ask.
     unscored   [(tool, args)] writes after the note that the checks do not see:
@@ -216,11 +291,16 @@ def review(recs: list[dict[str, Any]], task=None) -> dict[str, Any]:
         "ran": any(st.get("closing") for st in steps),
         "cut": [e.get("reason") for e in events if e.get("kind") == "closing_cut_short"],
         "writes": [], "first": [], "forbidden": [], "repeated": [], "repeated_at": [],
-        "guessed": [],
+        "guessed": [], "refused": [], "refused_at": [], "substituted": [],
         "unscored": [], "at_note": None, "at_end": None,
         "left_saying": next((str(e.get("text") or "").strip() for e in reversed(events)
                              if e.get("kind") == "user_turn" and e.get("ended")), None),
         "not_replayed": None}
+    refusals = [e for e in events if e.get("kind") == "closing_refused"]
+    opened = next((st.get("step") for st in steps if st.get("closing")), None)
+    out["refused"] = [(e.get("tool"), e.get("args")) for e in refusals]
+    out["refused_at"] = [e["step"] - opened + 1 if opened is not None and e.get("step")
+                         else None for e in refusals]
     if task is None or not out["noted"]:
         return out
     from ..tasks import task_digest
@@ -290,6 +370,16 @@ def review(recs: list[dict[str, Any]], task=None) -> dict[str, Any]:
                 and not seen(k):
             out["unscored"].append((a.tool, a.args))
         made.add(_target(a))
+    if refusals and paired:
+        # After the first refusal, a write no check asks for -- one that is
+        # forbidden, or that no check sees -- is the same ticket made another way.
+        no = (refusals[0].get("step") or 0, refusals[0].get("index") or 0)
+        for k, a in enumerate(wrote):
+            i, j = calls[k]
+            if (steps[i].get("step") or 0, j) > no and (
+                    (a.tool, a.args) in out["unscored"]
+                    or (a.tool, a.args) in out["forbidden"]):
+                out["substituted"].append((a.tool, a.args))
     said = _digits(" ".join([task.opening] + [str(e.get("text") or "") for e in events
                                                if e.get("kind") == "user_turn"]))
     out["guessed"] = [str(a.args.get("phone_last4")) for a in during
