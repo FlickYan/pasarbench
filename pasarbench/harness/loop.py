@@ -206,7 +206,7 @@ def run_episode(
         state.messages.append(resp.as_message())
 
         results: list[dict[str, Any]] = []
-        for tc in resp.tool_calls:
+        for n_call, tc in enumerate(resp.tool_calls):
             # Valid JSON need not be an object: a bare number here used to raise
             # and end the sweep. The tools refuse a non-object themselves.
             if isinstance(tc.arguments, dict) and "__malformed__" in tc.arguments:
@@ -223,6 +223,15 @@ def run_episode(
             elif tracker.tool_calls >= budget.max_tool_calls:
                 # Still answer the call. An orphaned tool_call breaks the next request.
                 out = {"ok": False, "error": "tool call budget exhausted for this episode"}
+            elif (closing == "guard" and closed_at is not None
+                  and (done := closing_check.repeat_of(db.action_log, tc.name,
+                                                       tc.arguments)) is not None):
+                # The closing guard (RUNBOOK 1o): after the note, a write that
+                # repeats one already made is not run. Nothing reaches the
+                # tools, and the agent is told why.
+                out = {"ok": False, "error": closing_check.refusal(done)}
+                trace.event("closing_refused", tool=tc.name, args=tc.arguments,
+                            step=tracker.steps, index=n_call)
             else:
                 out = tool_call(db, tc.name, tc.arguments, checks=TOOL_CHECKS)
                 tracker.tool_calls += 1
