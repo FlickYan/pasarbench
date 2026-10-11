@@ -36,16 +36,19 @@ customer never gave. Since 1k, each episode's verdict as the customer left it
 beside its verdict at the end -- the phase's effect with the conversation held
 fixed -- the paired comparison with every case as she left it, which is the
 conversations' difference alone, the writes no check scores either way, and
-under each episode listed what she last said. Read all of them before the
-pass rate: a rescue after "yes, go ahead, thanks" is the turn the episode's
-end never gave the agent (WHAT_FAILED #38), not a second look. Two cells that
-both gave the note -- two notes, as 1n compares 1j's with the one that carries
-the case record -- are also compared on what each did after the customer
-left, paired by task as the pass rate is: the cases each turned from a fail
-into a pass, the episodes with each cost, and 1j's rule, rescues minus the
-episodes with a cost, for each. Since v36 the repeats are also counted by when
-they came: in every run so far nearly all were the agent's first answer to the
-note (RUNBOOK 1n).
+under each episode listed what she last said. Read all of them before the pass
+rate: a rescue after "yes, go ahead, thanks" is the turn the episode's end
+never gave the agent (WHAT_FAILED #38), not a second look. Two cells that both
+gave the note -- two notes, as 1n compares 1j's with the one that carries the
+case record, or 1j's with and without the guard that does not run a repeat
+(1o) -- are also compared on what each did after the customer left, paired by
+task as the pass rate is: the cases each turned from a fail into a pass, the
+episodes with each cost, and 1j's rule, rescues minus the episodes with a
+cost, for each. Since v36 the repeats are also counted by when they came: in
+every run so far nearly all were the agent's first answer to the note (RUNBOOK
+1n). Under the guard (1o) it counts the repeats the guard did not run, and any
+write after a refusal that no check asks for -- the same ticket made another
+way, a cost.
 
 For every cell it lists the failures the customer ended -- the agent's last
 reply, then her last words, or that she said nothing more -- and with
@@ -230,7 +233,8 @@ def _as_left(eps: list[dict], cv: dict[str, dict]) -> list[dict]:
     return out
 
 
-def _print_closing(name: str, cv: dict[str, dict], show: int = 40) -> None:
+def _print_closing(name: str, cv: dict[str, dict], show: int = 40,
+                   mode: str | None = None) -> None:
     """What the closing check did, read before the pass rate: the mechanism is
     a required call first made after the customer left, and the cost is a
     forbidden call first made then -- and, since 1j, a write made a second
@@ -282,13 +286,24 @@ def _print_closing(name: str, cv: dict[str, dict], show: int = 40) -> None:
           f"{' -- one case done twice; read them' if again else ''}")
     print(f"  {'a verification with digits never given':42s} {len(guess):>4d} episodes"
           f"{' -- read them' if guess else ''}")
+    # The guard (RUNBOOK 1o): the repeats it did not run, and any write after a
+    # refusal that no check asks for -- the same ticket made another way.
+    refused = [t for t in noted if cv[t].get("refused")]
+    swapped = [t for t in noted if cv[t].get("substituted")]
+    if refused or mode == "guard":
+        at_once = sum(1 for t in refused if (cv[t].get("refused_at") or [None])[0] == 1)
+        print(f"  {'a repeat the guard did not run':42s} {len(refused):>4d} episodes"
+              f"{f', {at_once} of them the first step after the note' if refused else ''}")
+        print(f"  {'a write after a refusal no check asks for':42s} {len(swapped):>4d} episodes"
+              f"{' -- the repeat made another way, a cost; read them' if swapped else ''}")
     blind = [t for t in noted if cv[t]["unscored"]]
     print(f"  {'a write no check asks for or forbids':42s} {len(blind):>4d} episodes"
           f"{' -- the checks cannot say; read them' if blind else ''}")
     # A fail turned into a pass by no required action -- a write a database
     # check needed -- is the mechanism too, and nothing else names it.
     other = [t for t in fixed if not cv[t]["first"]]
-    paid = sorted(set(cost) | set(again) | set(guess) | set(broke) | set(blind) | set(other))
+    paid = sorted(set(cost) | set(again) | set(guess) | set(broke) | set(blind) | set(other)
+                  | set(refused) | set(swapped))
     rest = sorted(set(first) - set(paid))
     for t in paid + rest[:show]:
         r = cv[t]
@@ -298,6 +313,10 @@ def _print_closing(name: str, cv: dict[str, dict], show: int = 40) -> None:
                ([f"REPEATED: {', '.join(tool for tool, _ in r['repeated'])}"]
                 if r["repeated"] else []) + \
                ([f"GUESSED: verify_identity {', '.join(r['guessed'])}"] if r["guessed"] else []) + \
+               ([f"REFUSED: {', '.join(tool for tool, _ in r['refused'])}"]
+                if r.get("refused") else []) + \
+               ([f"SUBSTITUTE: {', '.join(tool for tool, _ in r['substituted'])}"]
+                if r.get("substituted") else []) + \
                ([f"UNSCORED: {', '.join(tool for tool, _ in r['unscored'])}"]
                 if r["unscored"] else []) + \
                (["BROKE A PASS"] if r["at_note"] and r["at_end"] is False else []) + \
@@ -328,8 +347,11 @@ def _closing_metrics(eps: list[dict], cv: dict[str, dict]) -> list[dict]:
                "broke": int(noted and bool(r.get("at_note")) and r.get("at_end") is False),
                "repeated": int(noted and bool(r.get("repeated"))),
                "forbidden": int(noted and bool(r.get("forbidden"))),
-               "guessed": int(noted and bool(r.get("guessed")))}
-        row["cost"] = int(row["repeated"] or row["forbidden"] or row["guessed"])
+               "guessed": int(noted and bool(r.get("guessed"))),
+               "refused": int(noted and bool(r.get("refused"))),
+               "substituted": int(noted and bool(r.get("substituted")))}
+        row["cost"] = int(row["repeated"] or row["forbidden"] or row["guessed"]
+                          or row["substituted"])
         out.append(row)
     return out
 
@@ -339,20 +361,24 @@ CLOSING_LINES = (("rescued", "failed as she left it, passed at the end"),
                  ("repeated", "a write repeating one already made"),
                  ("forbidden", "a forbidden call first made then"),
                  ("guessed", "a verification with digits never given"),
-                 ("cost", "an episode with any of the three costs"))
+                 ("refused", "a repeat the guard did not run"),
+                 ("substituted", "a write after a refusal no check asks for"),
+                 ("cost", "an episode with a cost"))
 
 
 def _print_closings_compared(names: list[str], eps_pair, cvs) -> None:
     """Two cells that both gave the note, compared on what it did (RUNBOOK
-    1n): each line the episodes in each cell, then the sign test over the
+    1n, 1o): each line the episodes in each cell, then the sign test over the
     tasks where the two differ -- the task is the unit, as for the pass rate,
     since the k episodes of a task are not k independent draws. The last line
-    is 1j's rule for each cell: rescues minus the episodes with a cost."""
+    is 1j's rule for each cell: rescues minus the episodes with a cost -- a
+    forbidden call, a write made again, a guessed verification, and since 1o a
+    write after a refusal that no check asks for."""
     from pasarbench.diagnose import paired_episodes
     ma, mb = (_closing_metrics(eps, cv) for eps, cv in zip(eps_pair, cvs))
     if not any(r["noted"] for r in ma) or not any(r["noted"] for r in mb):
         return
-    print(f"\nthe two closing notes compared, {names[0]} -> {names[1]}, episodes (the note "
+    print(f"\nthe two closing checks compared, {names[0]} -> {names[1]}, episodes (the note "
           f"reached {sum(r['noted'] for r in ma)} -> {sum(r['noted'] for r in mb)}), "
           f"then paired by task:")
     # The verdicts as she left the case are today's checks on replayed calls;
@@ -550,8 +576,8 @@ def main(argv: list[str] | None = None) -> int:
                 for tool, quote in (st.get("guardrail") or {}).get("claims", []):
                     print(f"    {tid:24s} {tool}: \"{quote[:110]}\"")
 
-    for name, cv in zip(names, cvs):
-        _print_closing(name, cv)
+    for name, cv, head in zip(names, cvs, heads):
+        _print_closing(name, cv, mode=head.get("closing"))
     _print_closings_compared(names, (ea, eb), cvs)
     for name, cell, eps in zip(names, cells, (ea, eb)):
         _print_endings(name, _endings(cell, eps, every=a.endings), every=a.endings)
