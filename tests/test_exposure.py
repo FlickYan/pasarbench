@@ -1547,6 +1547,110 @@ def test_answers_and_customers():
           shown.getvalue())
 
 
+def _language_cell(root, run, task_id, plans, replies=("Oh, I didn't notice.",),
+                   closing="off", first=0):
+    """Episodes of one task -- a generated one too -- through the real loop,
+    the customer saying `replies` in turn and then leaving, written as a sweep
+    writes them, under an agent model called "m"."""
+    from pasarbench.harness.simulator import ScriptedUser
+    from pasarbench.harness.trace import TraceWriter
+    from pasarbench.rescore import all_tasks
+    from pasarbench.verifier import verify
+
+    t = all_tasks()[task_id]
+    for i, plan in enumerate(plans):
+        w = TraceWriter(root=str(root), run_id=f"{run}/full")
+        db = Database.fresh(t.db_patch)
+        agent = ScriptedBackend(list(plan))
+        agent.model = "m"
+        res = run_episode(t, db, agent, trace=w, run_index=first + i,
+                          simulator=ScriptedUser(list(replies)), closing=closing)
+        v = verify(t, db)
+        w.close_episode(res.stop_reason.value, v.passed, v.failures, res.budget)
+        w.close()
+    return root / run / "full"
+
+
+def test_language_lead():
+    """RUNBOOK 1r: the duplicate-refund trap fails far more often outside
+    English. language_lead.py asks of each conversation whether the agent
+    escalated while the customer was there -- an escalation after she left is
+    the closing phase's, not the conversation's -- and whether it came in the
+    turn it found the refund or after she said more; compares each local task
+    with its English twin only in the cells that ran both, leaves a cell with
+    one side only out, and asks the same of every other trap the policy
+    answers with an escalation."""
+    print("\n=== language_lead reads the trap by language ===")
+    import contextlib
+    import io
+    import re
+    import tempfile
+    from pathlib import Path
+
+    order = {"order_id": "GO-A096E7"}
+    look = ("get_order", order)
+    esc = ("escalate_to_human", {**order, "category": "duplicate_refund",
+                                 "reason": "refund already issued"})
+    told = "Đơn hàng đã được hoàn tiền rồi."
+    tmp = Path(tempfile.mkdtemp())
+    a = _language_cell(tmp, "A", "DRE-VN", [[look, esc, "I have passed this to a colleague."],
+                                            [look, "A refund was already issued.", esc,
+                                             "I have passed this on as well."]])
+    _language_cell(tmp, "A", "DRE-VN.vi", [[look, told], ["Bạn cho mình xin mã đơn hàng nhé?"]])
+    # escalated only after she left: the closing phase's, not the conversation's
+    _language_cell(tmp, "A", "DRE-VN.vi", [[look, told, esc, "Đã ghi chú."]], replies=(),
+                   closing="check", first=2)
+    che = ("escalate_to_human", {"order_id": "GO-5BF80C", "category": "customs_hold",
+                                 "reason": "parcel held at customs"})
+    _language_cell(tmp, "A", "CHE-VN", [[che, "Escalated."]])
+    _language_cell(tmp, "A", "CHE-VN.vi", [[che, "Đã chuyển."]])
+    # English only: no twin to compare with, so left out
+    _language_cell(tmp, "B", "DRE-VN", [[look, "A refund was already issued."]])
+
+    lead = _load_script("language_lead")
+    when = sorted((r["task"], r["escalated"], r["when"]) for r in lead.scan([tmp])
+                  if r["trap"] == lead.TRAP)
+    check("each conversation: escalated in the turn it found the refund, after she said "
+          "more, never -- and an escalation after she left does not count",
+          when == [("DRE-VN", False, None), ("DRE-VN", True, lead.AFTER),
+                   ("DRE-VN", True, lead.BEFORE), ("DRE-VN.vi", False, None),
+                   ("DRE-VN.vi", False, None), ("DRE-VN.vi", False, None)], str(when))
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out):
+        lead.main([str(tmp)])
+    text = out.getvalue()
+    check("the cells that ran both sides, and the one left out",
+          "== m: 6 episodes of the duplicate-refund trap in 2 cells, 5 of them in the 1 cells "
+          "that ran it in English and another language both" in text
+          and "left out, one side only: B/full" in text
+          and re.search(r"\n  A/full +2/2 100% +0/3   0%\n", text) is not None, text[:1500])
+    check("by language, with how many escalated in the turn it found the refund",
+          re.search(r"\n    en +2/2 100%   1 of them before she said more\n    vi +0/3   0%   "
+                    r"0 of them before she said more\n", text) is not None, text[:1500])
+    check("each local task against its English twin in the cells that ran both, and the sign "
+          "test",
+          re.search(r"DRE-VN\.vi +0/3   0%   English twin DRE-VN: 2/2 100%\n  below their "
+                    r"English twin 1 of 1, above 0, level 0; mean gap -100 points; sign test "
+                    r"p=1\.0000", text) is not None, text[:2500])
+    check("the same split within each path to the lookup -- the episode that never looked "
+          "the order up has none",
+          re.search(r"0 customer turns before it, identity not checked first +2/2 100% +0/2   0%",
+                    text) is not None, text[-1800:])
+    check("…and every trap the policy answers with an escalation, twin against twin",
+          re.search(r"customs_hold_escalate +below their English twin 0 of 1, above 0, level 1",
+                    text) is not None
+          and re.search(r"duplicate_refund_escalate +below their English twin 1 of 1", text)
+          and re.search(r"out_of_window_dispute_escalate +-\n", text) is not None, text[-1800:])
+    check("…and every trap on the verdicts the runs recorded, the episode with a closing "
+          "phase left out, the largest gap first (WHAT_FAILED #40)",
+          re.search(r"every trap, passed -- on the verdicts the runs recorded, in the cells "
+                    r"without a closing phase; with 2 traps, a gap stands on its own at "
+                    r"p < 0\.0250:\n    duplicate_refund_escalate +below their English twin 1 "
+                    r"of 1, above 0, level 0; mean gap -100 points; sign test p=1\.0000\n    "
+                    r"customs_hold_escalate +below their English twin 0 of 1, above 0, level 1",
+                    text) is not None, text[-1800:])
+
+
 def main() -> int:
     test_distractors()
     test_arms_are_comparable()
@@ -1571,6 +1675,7 @@ def main() -> int:
     test_closing_report_one_cell()
     test_closing_readers()
     test_answers_and_customers()
+    test_language_lead()
     print(f"\n{len(PASS)} passed, {len(FAIL)} failed")
     for f in FAIL:
         print(f"  FAILED: {f}")
