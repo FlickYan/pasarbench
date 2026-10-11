@@ -1651,6 +1651,65 @@ def test_language_lead():
                     text) is not None, text[-1800:])
 
 
+def test_export_hf():
+    """v44 publishes the recorded runs as a Hugging Face dataset: one line per
+    episode with its setup and verdict as columns beside the whole trace, a
+    list of the runs, and a card written from what was exported -- and it
+    refuses to publish a trace holding a key, a token or a home path, and
+    replaces email addresses."""
+    print("\n=== export_hf packs the traces as a dataset, and nothing that must stay ===")
+    import contextlib
+    import io
+    import json
+    import tempfile
+    from pathlib import Path
+
+    order = {"order_id": "GO-A096E7"}
+    look = ("get_order", order)
+    esc = ("escalate_to_human", {**order, "category": "duplicate_refund",
+                                 "reason": "refund already issued"})
+    tmp = Path(tempfile.mkdtemp())
+    traces = tmp / "traces"
+    cell = _language_cell(traces, "A", "DRE-VN", [[look, esc, "Passed on."],
+                                                  [look, "Already refunded."]],
+                          replies=("my email is someone@example.com",))
+    _language_cell(traces, "B", "DRE-VN.vi", [[look, "Đã hoàn tiền rồi."]])
+    ex = _load_script("export_hf")
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out):
+        ex.main([str(traces), "--out", str(tmp / "hf")])
+    rows = [json.loads(l) for l in (tmp / "hf" / "data" / "A.jsonl").read_text(
+        encoding="utf-8").splitlines()]
+    check("one line per episode, its setup and verdict as columns beside the whole trace",
+          len(rows) == 2 and all(list(r) == list(ex.FIELDS) for r in rows)
+          and {r["passed"] for r in rows} == {True, False}
+          and all(r["trap"] == "duplicate_refund_escalate" and r["language"] == "en"
+                  and r["cell"] == "full" and r["trace"].startswith('{"type": "header"')
+                  for r in rows), [list(r)[:6] for r in rows])
+    check("…email addresses replaced and counted, the rest of the trace as written",
+          all("example.com" not in r["trace"] for r in rows)
+          and any("my email is [email]" in r["trace"] for r in rows)
+          and "2 email addresses replaced in 2 episodes" in out.getvalue(), out.getvalue())
+    runs = [json.loads(l) for l in (tmp / "hf" / "runs.jsonl").read_text().splitlines()]
+    readme = (tmp / "hf" / "README.md").read_text(encoding="utf-8")
+    check("a list of the run cells, and a card with the configs the dataset viewer reads",
+          [(r["run"], r["cell"], r["episodes"]) for r in runs] == [("A", "full", 2),
+                                                                   ("B", "full", 1)]
+          and readme.startswith("---\nlicense: mit") and "data_files: data/*.jsonl" in readme
+          and "- vi" in readme and "3 episodes in 2 runs" in readme, readme[:400])
+    leak = Path(cell) / "DRE-VN__r0.jsonl"
+    leak.write_text(leak.read_text(encoding="utf-8").replace(
+        "Passed on.", "key sk-abcdefghijklmnopqrstu1234"), encoding="utf-8")
+    try:
+        with contextlib.redirect_stdout(io.StringIO()):
+            ex.main([str(traces), "--out", str(tmp / "hf2")])
+        refused = ""
+    except SystemExit as e:
+        refused = str(e)
+    check("…and a trace holding a key stops the export, named, before anything is written",
+          "DRE-VN__r0.jsonl: an API key" in refused and not (tmp / "hf2").exists(), refused)
+
+
 def main() -> int:
     test_distractors()
     test_arms_are_comparable()
@@ -1676,6 +1735,7 @@ def main() -> int:
     test_closing_readers()
     test_answers_and_customers()
     test_language_lead()
+    test_export_hf()
     print(f"\n{len(PASS)} passed, {len(FAIL)} failed")
     for f in FAIL:
         print(f"  FAILED: {f}")
