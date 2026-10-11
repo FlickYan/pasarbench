@@ -1248,6 +1248,19 @@ def test_answers_and_customers():
         cc.main([str(a), str(b)])
     check("…as are the same rules played by another model",
           "different simulated customers --" in out.getvalue(), out.getvalue()[:1200])
+    victim = sorted(b.glob("*.jsonl"))[0]
+    lines = victim.read_text().splitlines()
+    lines[-1] = json.dumps({**json.loads(lines[-1]), "stop_reason": "backend_error",
+                            "passed": False})
+    victim.write_text("\n".join(lines) + "\n")
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out):
+        cc.main([str(a), str(b)])
+    check("…and an episode a server or API error ended is flagged, with the way to re-run it: "
+          "it counts as a failure the agent may never have made (RUNBOOK 1l)",
+          "!! 1 episode in B/full ended with a server or API error" in out.getvalue()
+          and "--resume" in out.getvalue() and "A/full ended with" not in out.getvalue(),
+          out.getvalue()[:1500])
 
     # Tool checks 3: what each cancellation did to the payment, as the trace
     # recorded it, and the refunds refused as already settled -- one in the
