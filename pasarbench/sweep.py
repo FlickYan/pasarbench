@@ -34,6 +34,7 @@ from .harness.backends import (AnthropicBackend, MuteBackend,
                                OpenAICompatBackend, ScriptedBackend)
 from .analyze import attribute_failures, markdown_report
 from .diagnose import tool_scaling_report
+from .harness.closing import GUARD_VERSION
 from .harness.context import BASE_STRATEGIES, make_strategy, note_discipline
 from .harness.exposure import build_exposure
 from .harness.loop import run_episode
@@ -376,13 +377,17 @@ def run_cell(strategy_name: str, backend_factory, simulator_factory, tasks: list
                     or head.get("policy_mode", policy_mode) != policy_mode
                     or head.get("guardrail", "off") != guardrail
                     or head.get("closing", "off") != closing
+                    or (closing == "guard"
+                        and head.get("closing_guard", 1) != GUARD_VERSION)
                     or head.get("tool_checks", 1) != TOOL_CHECKS):
                 raise SystemExit(
                     f"--resume: {cell_dir} already holds episodes from a different "
                     f"setup (model {head.get('requested_model')!r}, simulator "
                     f"{head.get('simulator')!r}, policy {head.get('policy_mode')!r}, "
                     f"guardrail {head.get('guardrail', 'off')!r}, closing "
-                    f"{head.get('closing', 'off')!r}, tool checks "
+                    f"{head.get('closing', 'off')!r}"
+                    + (f" v{head.get('closing_guard', 1)}" if closing == "guard" else "")
+                    + f", tool checks "
                     f"v{head.get('tool_checks', 1)}). Use a new --run-id.")
             if save_messages and not done["has_messages"]:
                 todo.append((task, seed))
