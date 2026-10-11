@@ -1359,7 +1359,9 @@ could.
 v37's `--closing guard` is that refusal: 1j's note, and in the closing phase a
 write that repeats one already made, by the review's own definition, is not run;
 the agent is told so. Run dry over every recorded closing phase it refuses
-exactly the 93 calls the review counted; 1o runs it.
+exactly the 93 calls the review counted. In 1o, against 1j's note alone, 20
+second tickets became none, the rescues stayed at 24 and 24, and after each
+refusal the agent made no other call.
 
 **Lesson.** Count an intervention's cost in what it does, not in what the
 checks forbid. The checks were written for the agent's mistakes before the
