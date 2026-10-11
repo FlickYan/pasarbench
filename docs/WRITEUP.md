@@ -701,16 +701,17 @@ a run from before an ID format change. Then I read the conversations the fix
 had promoted — a replay proves the state, not that the state means what the
 check assumes.
 
-**"What would you do next?"** Test a note that tells the agent to read its own
-calls before making one: the closing check is confirmed, and nearly all its
-cost, in every run, was a call made twice. Replace the guardrail's phrase list
-with a model that reads what the customer was told would happen, and keep the
-check against the tool log mechanical: what got past the list was wording —
-"flagged", "will be reviewed", a promise — and wording is a language question.
-Then test the language lead the closing check turned up — the duplicate-refund
-case failing far more often outside English, on new tasks too — on a run built
-for it. A second fine-tune on trap-balanced data built with the corrected
-checks. Get the Thai and Vietnamese translations reviewed. Then serving cost.
+**"What would you do next?"** Run the note that hands the agent the record of
+its own calls before it makes one (built; RUNBOOK 1n): the closing check is
+confirmed, and nearly all its cost, in every run, was a call made twice. Replace
+the guardrail's phrase list with a model that reads what the customer was told
+would happen, and keep the check against the tool log mechanical: what got past
+the list was wording — "flagged", "will be reviewed", a promise — and wording is
+a language question. Then test the language lead the closing check turned up —
+the duplicate-refund case failing far more often outside English, on new tasks
+too — on a run built for it. A second fine-tune on trap-balanced data built with
+the corrected checks. Get the Thai and Vietnamese translations reviewed. Then
+serving cost.
 
 ### One thing not to do
 
