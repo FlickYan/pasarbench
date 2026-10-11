@@ -52,9 +52,10 @@ from ..tools import DEFAULT_TOOLS, call
 from .exposure import distractor_names, register_distractors
 
 # Calls the loop answered without dispatching. None of them touched the
-# database, so they are reproduced from the recorded error, not re-run.
+# database, so they are reproduced from the recorded error, not re-run. The
+# last is the closing guard's refusal of a repeat (closing.REFUSED, RUNBOOK 1o).
 NO_DISPATCH = ("unknown tool", "arguments were not valid JSON",
-               "tool call budget exhausted")
+               "tool call budget exhausted", "already done in this case: ")
 
 
 def _payload(out: dict[str, Any]) -> str:
