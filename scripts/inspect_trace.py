@@ -300,7 +300,7 @@ def leaks(eps: list[dict], pattern_set: str = "current") -> None:
     try:
         from pasarbench.generate import generate
         from pasarbench.tasks import BY_ID
-        tasks = {**BY_ID, **{t.task_id: t for t in generate()[0]}}
+        tasks = {**BY_ID, **{t.task_id: t for t in generate()[0] + generate(edition=2)[0]}}
     except Exception as ex:                                  # noqa: BLE001
         print(f"  (could not load tasks: {ex})")
         return
