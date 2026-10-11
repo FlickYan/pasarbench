@@ -103,7 +103,7 @@ def _sweep(args, run_id: str, k: int, temperature: float, extra: list[str]) -> N
     cmd = [sys.executable, "-m", "pasarbench.sweep",
            "--backend", "openai", "--model", args.model, "--base-url", args.base_url,
            "--simulator", "openai", "--sim-model", args.sim_model,
-           "--sim-url", args.sim_url, "--suite", "all", "-k", str(k),
+           "--sim-url", args.sim_url, "--suite", getattr(args, "suite", "all"), "-k", str(k),
            "--temperature", str(temperature), "--strategies", "full",
            "--workers", str(args.workers), "--run-id", run_id, "--resume",
            "--max-tokens", "2048", "--extra-body", args.extra_body,
@@ -178,7 +178,8 @@ def build(args) -> None:
     files, stats = build_examples(args.run, tasks, folds, _tokenizer(args.model),
                                   max_per_task=args.max_per_task,
                                   max_len=args.max_len, expect_model=args.model,
-                                  server=server, checker=args.checker)
+                                  server=server, checker=args.checker,
+                                  per_trap=args.per_trap)
     out_dir.mkdir(parents=True, exist_ok=True)
     for fold, rows in files.items():
         p = out_dir / f"train-{fold}.jsonl"
@@ -206,6 +207,14 @@ def build(args) -> None:
         if dead:
             print(f"!! fold {fold}: {len(dead)} trap(s) never solved, so model "
                   f"rft-{fold} gets nothing to learn for them: {dead}")
+    for fold, by_trap in stats["episodes_by_trap"].items():
+        print(f"fold {fold}, episodes by trap: " +
+              ", ".join(f"{t} {n}" for t, n in by_trap.items()))
+        if args.per_trap:
+            short = {t: n for t, n in by_trap.items() if n < args.per_trap}
+            if short:
+                print(f"   below the quota of {args.per_trap}, for want of passing "
+                      f"episodes: " + ", ".join(f"{t} {n}" for t, n in short.items()))
     print("\nNext: python scripts/train_rft.py check --data data/rft/train-A.jsonl"
           " --server http://localhost:8000")
 
@@ -630,6 +639,10 @@ def main() -> None:
 
     b = sub.add_parser("baseline", help="base model, k=5, T=0: the number to beat")
     served(b, 5)
+    b.add_argument("--suite", default="all", choices=["all", "edition2"],
+                   help="edition2: the 62 newer tasks of the five hardest traps, which "
+                        "the folds do not hold -- where the base model fails is where "
+                        "GRPO can learn (RUNBOOK phase 4, round 2)")
     b.set_defaults(fn=baseline)
 
     c = sub.add_parser("collect", help="base model, k=8, T=1: episodes to learn from")
@@ -650,6 +663,10 @@ def main() -> None:
     bd.add_argument("--folds", default=FOLDS)
     bd.add_argument("--model", default=AGENT)
     bd.add_argument("--max-per-task", type=int, default=3)
+    bd.add_argument("--per-trap", type=int, default=0,
+                    help="balance by trap, not task: up to this many episodes per trap "
+                         "and fold, round robin over its tasks, at most --max-per-task "
+                         "from one (WHAT_FAILED #31). 0: the first fine-tune's recipe")
     bd.add_argument("--max-len", type=int, default=16384)
     bd.add_argument("--out-dir", default=str(OUT))
     bd.add_argument("--server", default="",
