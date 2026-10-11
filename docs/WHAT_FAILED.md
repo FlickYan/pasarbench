@@ -1,6 +1,6 @@
 # What failed
 
-Thirty-nine real defects found while building this. The first fifteen are in
+Forty real defects found while building this. The first fifteen are in
 the order of how much damage they would have done; the rest are in the order
 they were found. Every one is reproducible from the git history.
 
@@ -1532,6 +1532,35 @@ again, and no case broke.
 you did not, and reading the exceptions once does not change the definition. 1k
 found these credits by reading and wrote them down; the count went on calling
 them repeats until a guard built on it refused the next one.
+
+---
+
+## 40. The language comparison averaged away the rule it could not see
+
+**What happened.** The multilingual comparison — the one the benchmark was built
+for — compared each task with its locale twin and averaged the gaps per
+language, over all sixteen traps. Two runs found no gap beyond noise, and the
+README said so. One rule had a gap the whole time: P10's escalation of a refund
+already paid, "even if you have explained the existing refund and the customer
+accepts it". In the 16 run cells that had the trap in English and in another
+language, deepseek-v4-pro made it in 59% of English conversations and in 2–8%
+of Malay and Chinese ones, and each of the 14 local-language tasks made it less
+often than its English twin — 38 points on average, p = 0.0001. The gap was
+there in the two runs the null rests on: 48% against 33% in C-clean, 65% against
+35% in D-nozh. But one trap is one twin pair of the 13 to 16 a language has, and
+its gap moves the language's mean by a few points, inside the noise. 1j noticed
+it only by reading the one trap its closing check moved.
+
+**Fix.** `scripts/language_lead.py` (v43) reads the trap twin by twin, in the
+cells that ran both, and every trap the same way on the verdicts the runs
+recorded: the duplicate refund is the one gap that stands once sixteen traps are
+counted, the policy's other escalations are level, and the agent decides it when
+it reads the refund (RUNBOOK 1r). The README now says whose null it is: the
+suite's.
+
+**Lesson.** A null over an average is a null for the average. The guarantee that
+makes twins comparable — the same world, the same checks — holds task by task,
+and the comparison should too: a table by trap beside every pooled one.
 
 ---
 
