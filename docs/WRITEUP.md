@@ -640,7 +640,14 @@ policy asks for, and two refunds it made after a cancellation paid back a card
 authorization that had never been charged. That leaves 22 against 23. What
 only the review did is narrower: the 19 actions the agent had let go, 18 of
 them on one trap.
-<!-- RUNBOOK 1j, 1k; traces/M-* 2026-10-09, traces/N-* 2026-10-10; compare_cells.py (v30): 1j pass^1 0.848 -> 0.959, 11 better 2 worse, p=0.022; 1k 0.964 -> 0.951, 6 better 10 worse, p=0.454; as left -> at end 21 -> 0 and 6 -> 0 (171, 472); as left, paired: 2 better 3 worse p=1.000, 6 better 15 worse p=0.078; rescued 21 + 6 (1j: 18 DRE let go, IVF-VN__r1 let go, IVF-MY.zh-MY__r2 said yes and left, T13__r1 promise; 1k: HRWR-ID.id__r2, LCOW-SG.zh-SG__r0, PRWR-MY.zh-MY__r0, __r1 said yes and left, CCNRD-MY__r0, IVF-SG.sg-en__r1 promises); costs 17 + 6 (repeated 15 + 6, of 1k's 6 two CCRTOM shipping credits P4.6 asks for; guessed 2); repeated writes before the note 0 of 1,290 conversations -->
+So I built 62 new tasks of the traps that suggested it — new customers, products
+and stories under the same rules — and ran it again with a customer who waits:
+0.83 to 0.94, 15 tasks better and 5 worse, p = 0.04, under a rule written before
+the run. Twenty-one of its 25 rescues were that same let-go escalation. And the
+same cost: in 22 of 186 episodes it opened a second escalation for a case the
+conversation had already escalated, which the conversations alone did twice in
+372. It works, and it costs one case in eight a second ticket.
+<!-- RUNBOOK 1j, 1k; traces/M-* 2026-10-09, traces/N-* 2026-10-10; compare_cells.py (v30): 1j pass^1 0.848 -> 0.959, 11 better 2 worse, p=0.022; 1k 0.964 -> 0.951, 6 better 10 worse, p=0.454; as left -> at end 21 -> 0 and 6 -> 0 (171, 472); as left, paired: 2 better 3 worse p=1.000, 6 better 15 worse p=0.078; rescued 21 + 6 (1j: 18 DRE let go, IVF-VN__r1 let go, IVF-MY.zh-MY__r2 said yes and left, T13__r1 promise; 1k: HRWR-ID.id__r2, LCOW-SG.zh-SG__r0, PRWR-MY.zh-MY__r0, __r1 said yes and left, CCNRD-MY__r0, IVF-SG.sg-en__r1 promises); costs 17 + 6 (repeated 15 + 6, of 1k's 6 two CCRTOM shipping credits P4.6 asks for; guessed 2); repeated writes before the note 0 of 1,290 conversations ; 1m (Q-off vs Q-check, edition 2, 62 tasks, customer 2, 2026-10-11): pass^1 0.833 -> 0.935, 15 better 5 worse p=0.041; as left 6 better 12 worse p=0.238; rescued 25 (21 DRE2, 4 IVF2), all passed; repeated escalations 22 (13 IVF2, 7 OOWDE2, 2 CHE2); forbidden 0, guessed 0; unscored 2 (OOWOV2-ID.id__r0, OOWOV2-MY.ms__r2: yes to a voucher before verification, failed); repeated writes before the note 2 of 372 (Q-off CHE2-MY__r0, OOWDE2-MY.zh-MY__r0); DRE2 0.38 -> 0.82 -->
 
 **"What did the second look find about the benchmark?"** Two holes. Cancelling a
 card order, the agent told the customer her money would go back — 42 times in 42
@@ -694,15 +701,14 @@ a run from before an ID format change. Then I read the conversations the fix
 had promoted — a replay proves the state, not that the state means what the
 check assumes.
 
-**"What would you do next?"** Confirm the closing check — the same note, on new
-tasks of the traps that suggested it, with the new customer — and, as a separate
-experiment on tasks it hasn't seen, a note that tells the agent to read its own
-calls before making one: nearly all its cost was a call made twice. Replace the
-guardrail's phrase list with a model that reads what the customer was told would
-happen, and keep the check against the tool log mechanical: what got past the
-list was wording — "flagged", "will be reviewed", a promise — and wording is a
-language question. Then test the language lead the closing check turned up — the
-duplicate-refund case failing far more often outside English — on a run built
+**"What would you do next?"** Test a note that tells the agent to read its own
+calls before making one: the closing check is confirmed, and nearly all its
+cost, in every run, was a call made twice. Replace the guardrail's phrase list
+with a model that reads what the customer was told would happen, and keep the
+check against the tool log mechanical: what got past the list was wording —
+"flagged", "will be reviewed", a promise — and wording is a language question.
+Then test the language lead the closing check turned up — the duplicate-refund
+case failing far more often outside English, on new tasks too — on a run built
 for it. A second fine-tune on trap-balanced data built with the corrected
 checks. Get the Thai and Vietnamese translations reviewed. Then serving cost.
 
