@@ -1285,6 +1285,88 @@ Until then 1j's note stays the closing check, with its cost stated: about one
 case in eight escalated twice (48 of 372, in 1m and here). The record note stays
 as `--closing record`, a result rather than a recommendation.
 
+### 1o. Does refusing the repeat keep the rescues? (API only, no GPU)
+
+1n showed what the closing check's second call is. In every run with the note,
+nearly every repeat — 91 of 93 — was the agent's first answer to it, made with
+the first call in front of it; a record of its calls in the note did not stop
+one. A note cannot reach a call made in answer to the note. A refusal can.
+
+v37's `--closing guard` gives 1j's note, unchanged, and in the closing phase
+does not run a write that repeats one already made — the same tool on the same
+order, item or customer and, for an escalation, the same category: the closing
+review's own definition of a repeat (`closing.repeat_of`). The agent is told:
+"already done in this case: escalate_to_human(order_id=..., category=...)
+succeeded earlier, so this call would make it a second time. It was not run, and
+nothing new was filed." Nothing reaches the tools; the trace records the refusal
+(a `closing_refused` event), and a replay reproduces the call from its recorded
+error, as it does a call to an unknown tool. Before the note nothing changes:
+the conversation is the control's. Like the note, the guard reads nothing about
+the task — only what the agent already did — so a deployed agent could run it.
+
+What it refuses is what the review counts. `scripts/closing_guard_dry_run.py`
+walks every recorded closing phase and asks, call by call, whether the guard
+would have run it: in all five runs with a note — 1j, 1k, 1m and both arms of
+1n, 1,193 closing phases — it would have refused exactly the 93 calls the review
+counts as repeats, episode by episode, and nothing else. And what it refuses a
+correct agent never needs: no reference solution, in all 277 tasks, makes a
+write it would refuse (`tests/test_harness.py`). It is as blunt as the count it
+replaces all the same — 1k's two shipping credits, a correction P4.6 asks for
+after a credit that left shipping out, it would have refused too — and none of
+the second edition's traps needs a write made twice.
+
+So the cost goes by construction, and a run measures what is left: whether the
+rescues survive, and what the agent does when told no. A refused escalation made
+again under another category is the same ticket made another way; the review
+counts a write after a refusal that no check asks for as a cost (`substituted`).
+Against 1j's note alone, back to back, on the second edition's 62 tasks, with
+customer 2, as in 1m and 1n:
+
+```bash
+set -a; . ./.env; set +a
+for C in check guard; do
+  python -m pasarbench.sweep \
+    --backend openai --model deepseek-v4-pro --base-url https://api.deepseek.com/v1 \
+    --extra-body '{"thinking":{"type":"disabled"}}' \
+    --simulator openai --sim-model qwen3.8-flash \
+    --sim-url https://dashscope-intl.aliyuncs.com/compatible-mode/v1 \
+    --sim-extra-body '{"reasoning_effort":"low"}' \
+    --suite edition2 --strategies full --exposure search-300 -k 3 \
+    --policy-mode preload-named --closing $C --run-id S-$C --workers 8
+done
+python scripts/compare_cells.py traces/S-check/full+search-300 traces/S-guard/full+search-300 > S.txt
+python scripts/audit_tool_arms.py traces/S-guard >> S.txt
+python scripts/closing_guard_dry_run.py traces/S-check >> S.txt
+```
+
+186 episodes an arm, 372 in all. If either sweep reports episodes a server or
+API error ended, run it again with `--resume` before comparing. The dry run on
+the control says what the guard would have refused there: its repeats, one for
+one.
+
+**The reading, fixed before the run:**
+
+- **Kept** — the guard becomes the closing check worth keeping, in place of 1j's
+  note alone — if the compared line for an episode with a cost says FEWER (p <
+  0.05), the line for the cases failed as she left them and passed at the end
+  does not say FEWER, and the paired line over pass^1 does not say WORSE. Its
+  costs include a write after a refusal that no check asks for. Anything else is
+  reported as it comes.
+- **The guard's own count.** No write repeating one already made in the guard
+  arm: one would be a hole in the guard, a defect, reported as one. Its
+  refusals, beside the control's repeats, are the cost it took away — about one
+  episode in eight in 1m and 1n.
+- **After a refusal**, every write the agent made is read — the rescue it still
+  made, a substitute, a guess — and its case note: whether it says what was
+  refused.
+- **1j's note again**, in the control: about one episode in eight with a second
+  ticket, and 25 to 27 rescues. A control far from that is reported beside the
+  result, not re-run.
+- **The conversations alone.** The paired line with each case as its customer
+  left it should show no difference: the guard acts only after she leaves.
+- **Secondary:** tokens; phases cut short — a refusal costs a step, of six;
+  guessed digits; the failures each arm still has, read.
+
 ---
 
 # Phase 2 — judge calibration (no GPU, ~6 hours of your time)
