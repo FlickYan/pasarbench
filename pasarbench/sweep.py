@@ -707,17 +707,29 @@ def main() -> None:
     print("\nNext: pasarbench.analyze.what_compaction_lost(<full trace_dir>, "
           "<strategy trace_dir>)\n  -- that is the finding, not the table above.")
 
-    # A run whose episodes were ended by the server or the API measured the
-    # infrastructure, not the agent. Say so with the exit code, so a pipeline
-    # stops here; running the same command again re-runs just those episodes.
+    note, stop = _server_errors(rows)
+    if note:
+        print(note)
+        if stop:
+            raise SystemExit(3)
+
+
+def _server_errors(rows: list[dict]) -> tuple[str | None, bool]:
+    """What to say about episodes the server or the API ended, and whether to
+    stop with exit code 3. Such an episode measured the infrastructure, not the
+    agent, and counts as a failure until it runs again. Every one is reported:
+    two of 252 -- a network blip before the first step -- once went unsaid,
+    and a comparison by task counted them as the agent's (RUNBOOK 1l). More
+    than 1% stops a pipeline here; a few do not."""
     errors = sum(r["stop_reasons"].get("backend_error", 0) for r in rows)
     total = sum(sum(r["stop_reasons"].values()) for r in rows)
-    if errors > 0.01 * total:
-        print(f"\n!! {errors} of {total} episodes ended with a server or API error "
-              f"(backend_error): a dead key, no balance, a crashed or overloaded "
-              f"server. The first trace with one says which. Fix it and run the "
-              f"same command with --resume: only those episodes run again.")
-        raise SystemExit(3)
+    if not errors:
+        return None, False
+    return (f"\n!! {errors} of {total} episodes ended with a server or API error "
+            f"(backend_error): a dead key, no balance, a crashed or overloaded "
+            f"server, the network. Each counts as a failure until it runs again. "
+            f"The first trace with one says which. Fix it and run the same command "
+            f"with --resume: only those episodes run again."), errors > 0.01 * total
 
 
 if __name__ == "__main__":
