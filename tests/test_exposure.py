@@ -1113,7 +1113,7 @@ def test_closing_compared():
           re.search(r"closing\s+check\s+record", text) is not None, text[:900])
     check("…both closing sections are printed, then the two compared",
           text.count("closing check in") == 2
-          and "the two closing notes compared, B/full -> R/full, episodes (the note reached "
+          and "the two closing checks compared, B/full -> R/full, episodes (the note reached "
               "3 -> 3), then paired by task:" in text, text[-2500:])
     check("…the rescues each made, with the conversation held fixed",
           re.search(r"failed as she left it, passed at the end\s+1 -> 1 ", text) is not None,
@@ -1121,7 +1121,7 @@ def test_closing_compared():
     check("…each cost, episode by episode, the record's fewer",
           re.search(r"a write repeating one already made\s+1 -> 0 ", text) is not None
           and re.search(r"a verification with digits never given\s+1 -> 0 ", text) is not None
-          and re.search(r"an episode with any of the three costs\s+2 -> 0 ", text) is not None,
+          and re.search(r"an episode with a cost\s+2 -> 0 ", text) is not None,
           text[-1500:])
     check("…and 1j's rule for each: rescues minus the episodes with a cost",
           re.search(r"rescues minus episodes with a cost \(1j\)\s+-1 -> \+1", text) is not None,
@@ -1129,7 +1129,7 @@ def test_closing_compared():
     check("…with one task, too few to pair, each line says so rather than test",
           text.count("fewer than 5 shared tasks -- not testable") >= 6, text[-1500:])
     check("a cell that never gave the note is not compared this way",
-          "the two closing notes compared" not in shown([a, r]), "")
+          "the two closing checks compared" not in shown([a, r]), "")
 
     import pasarbench.diagnose as dg
     real, seen = dg.paired_episodes, []
@@ -1176,6 +1176,75 @@ def test_closing_compared():
           out.getvalue().count("not scored: the verdicts here are not today's checks on "
                                "replayed calls") >= 4
           and "rescues minus episodes with a cost" not in out.getvalue(), out.getvalue()[-1500:])
+
+
+def test_closing_guard_report():
+    """RUNBOOK 1o: under the guard a repeat after the note is not run, so it is
+    not a write and the review does not count it as one. compare_cells says
+    how many it refused, how many of them came as the agent's first answer to
+    the note, and every write after a refusal that no check asks for -- the
+    same ticket made another way, counted as a cost."""
+    print("\n=== compare_cells reads the closing guard ===")
+    import contextlib
+    import io
+    import re
+    import tempfile
+    from pathlib import Path
+
+    look, explain, esc = T14_LOOK, T14_EXPLAIN, T14_ESC
+    other = ("escalate_to_human", {"order_id": "O1009", "category": "other",
+                                   "reason": "customer asked about a refund"})
+    tmp = Path(tempfile.mkdtemp())
+    plans = [[look, explain, esc, "Escalated."],
+             [look, esc, explain, esc, "Escalated again."],
+             [look, esc, explain, esc, other, "Filed under other."]]
+    b = _closing_cell(tmp, "B", "check", plans)
+    g = _closing_cell(tmp, "G", "guard", plans)
+    cc = _load_script("compare_cells")
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out):
+        cc.main([str(b), str(g)])
+    text = out.getvalue()
+    guard = text[text.index("closing check in G/full"):text.index("the two closing checks")]
+    plain = text[text.index("closing check in B/full"):text.index("closing check in G/full")]
+    check("the guard's section counts the repeats it did not run, and how many were the "
+          "agent's first answer to the note -- and no repeat as a write",
+          re.search(r"a repeat the guard did not run\s+2 episodes, 2 of them the first step "
+                    r"after the note", guard) is not None
+          and re.search(r"a write repeating one already made\s+0 episodes", guard) is not None,
+          guard)
+    check("…and the write after a refusal that no check asks for, as a cost, each listed",
+          re.search(r"a write after a refusal no check asks for\s+1 episodes -- the repeat made "
+                    r"another way", guard) is not None
+          and re.search(r"T14__r2 .*REFUSED: escalate_to_human; SUBSTITUTE: escalate_to_human",
+                        guard) is not None
+          and re.search(r"T14__r1 .*REFUSED: escalate_to_human", guard) is not None, guard)
+    check("…while a cell under 1j's note has no guard lines: it refused nothing",
+          "the guard did not run" not in plain
+          and re.search(r"a write repeating one already made\s+2 episodes", plain) is not None,
+          plain)
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(
+        "gdry", Path(__file__).resolve().parent.parent / "scripts" / "closing_guard_dry_run.py")
+    gdry = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(gdry)
+    counts, differ = gdry.scan([b])
+    dry = io.StringIO()
+    with contextlib.redirect_stdout(dry):
+        gdry.main([str(b)])
+    check("the dry run, on the cell under 1j's note: the guard would refuse exactly the two "
+          "calls the review counts as repeats, and nothing else",
+          counts == {"B/full": [3, 2, 2, 3]} and differ == []
+          and "episodes where the guard and the review differ: 0" in dry.getvalue(),
+          str((counts, differ)) + dry.getvalue())
+    check("the two compared: the repeats gone, the refusals and the substitute in their place, "
+          "and 1j's rule counting the substitute as a cost",
+          re.search(r"a write repeating one already made\s+2 -> 0 ", text) is not None
+          and re.search(r"a repeat the guard did not run\s+0 -> 2 ", text) is not None
+          and re.search(r"a write after a refusal no check asks for\s+0 -> 1 ", text) is not None
+          and re.search(r"an episode with a cost\s+2 -> 1 ", text) is not None
+          and re.search(r"rescues minus episodes with a cost \(1j\)\s+-1 -> \+0", text)
+          is not None, text[-1800:])
 
 
 def test_closing_readers():
@@ -1427,6 +1496,7 @@ def main() -> int:
     test_claim_guardrail_report()
     test_closing_report()
     test_closing_compared()
+    test_closing_guard_report()
     test_closing_readers()
     test_answers_and_customers()
     print(f"\n{len(PASS)} passed, {len(FAIL)} failed")
