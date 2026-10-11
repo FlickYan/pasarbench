@@ -1347,6 +1347,10 @@ rule for the next run (RUNBOOK 1k) counts them from the start, beside
 forbidden calls.
 On new tasks (1m, v33) it was the note's only cost: 22 escalations made a second
 time in 186 episodes, against 25 rescues; the conversations alone made 2 in 372.
+v35 adds a second note, `--closing record`, which carries the case record —
+every identity check and action the conversation attempted, and what came of
+each — and says a call the record shows as done is done; 1n sets it against 1j's
+(RUNBOOK 1n).
 
 **Lesson.** Count an intervention's cost in what it does, not in what the
 checks forbid. The checks were written for the agent's mistakes before the
