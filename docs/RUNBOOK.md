@@ -961,6 +961,53 @@ that she said nothing more: customer 2 is told to end with `###END###` alone.
   is the customer. The closing check's confirmation still needs new tasks of
   1j's traps, and is measured with customer 2.
 
+**Run on 2026-10-11, v31** (`O-c1`, `O-c2`, back to back): both fixes do what
+they say, by the reading fixed before the run. Customer 2 waits.
+
+| | customer 1 | customer 2 |
+|---|---|---|
+| pass^1 (pass^k) | 0.893 (0.762) | 0.917 (0.857) |
+| paired by task | | 14 tasks better, 8 worse, p = 0.29: INCONCLUSIVE, not WORSE |
+| endings on a yes to an open offer, or leaving it unanswered | 7 of 252 | 0 of 252 |
+| vouchers issued, voucher trap | 34/42 | 42/42 |
+| cancellations settled | 39 refunded, 3 released | 39 refunded, 3 released |
+| refunds or credit refused as already settled | 0 | 0 |
+| replies claiming a write no call had done (guardrail reading) | 3 | 6 |
+| tokens per episode | 57,825 | 59,234 (+2%, p = 0.45) |
+
+**Customer 2 waits.** All 252 of her endings were read. Each came after the
+agent said it had done what she asked, could not, or had handed her case to a
+person, or after "anything else?" — none was a yes to an offer, and none left
+one unanswered. The same day customer 1 ended 7 conversations of the voucher
+trap on her yes — "Yeah, I'll take the voucher. Thanks." — before the agent
+issued it. With customer 2 the trap goes from 0.81 to 1.00: every voucher
+offered was issued. #38's other fix, a turn on her last message, is not needed.
+
+**The 8 worse tasks are the agent's.** The livestream trap moved both ways, 5
+tasks better and 4 worse. The identity trap lost 4 and gained 2. Six of customer
+2's seven failures there, and three of customer 1's five, are one thing: the
+agent escalated naming no real order — "unknown", or nothing — which the tools
+refuse (#35), and told her it had escalated. They are the guardrail reading's 6
+and 3. The seventh is a customer who turned the hand-off down. None of the 8 is
+a customer who left early.
+
+**The tools.** Every cancellation settled as designed, and no agent tried to
+refund one again. The English replies after a captured payment was refunded say
+it went back to the card, as the tool's note did; T03's customer was told she
+had not been charged in all six conversations — two of them after the agent had
+first promised a refund, then read the note.
+
+**One infrastructure note.** Two of customer 1's episodes first ended before
+their first step, on a DNS error on the machine running the sweep, and counted
+as failures — the sweep said nothing, because 2 of 252 is under the 1% at which
+it stops. Re-run with `--resume`, both passed; the table is after it. Since v32
+the sweep reports every such episode, and `compare_cells.py` flags them.
+
+**Next:** customer 2 is the customer from here on. The closing check's
+confirmation — 1j's note, on new tasks of its traps — is measured with her; so,
+separately, is a note that tells the agent to read its own calls before making
+one.
+
 ---
 
 # Phase 2 — judge calibration (no GPU, ~6 hours of your time)
