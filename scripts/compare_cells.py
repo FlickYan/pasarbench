@@ -48,7 +48,9 @@ wait for what she agreed to (v31, WHAT_FAILED #38), and these lists are how a
 run shows whether she did. Under tool checks 3 it counts what each
 cancellation did to the payment and the refunds the tools refused as already
 settled (#37). Two cells with different customers, or different tool
-versions, are flagged: a difference between them is partly the setup's.
+versions, are flagged: a difference between them is partly the setup's. So is
+an episode a server or API error ended: it counts as a failure the agent may
+never have made, until the sweep re-runs it with --resume.
 """
 
 from __future__ import annotations
@@ -391,6 +393,14 @@ def main(argv: list[str] | None = None) -> int:
               "gating, or the rules v31 changed (WHAT_FAILED #38): a difference between "
               "them is partly the customer's. Read it as an experiment on the customer, "
               "or re-run one cell with the other's.")
+    for name, eps in zip(names, (ea, eb)):
+        broken = sum(e.get("stop_reason") == "backend_error" for e in eps)
+        if broken:
+            print(f"!! {broken} episode{'s' if broken != 1 else ''} in {name} ended with a "
+                  f"server or API error "
+                  f"(backend_error) -- a task the agent may never have seen counts as a "
+                  f"failure here. Run the same sweep again with --resume: it re-runs only "
+                  f"those. Then compare again.")
     sa, sb = summary(ea), summary(eb)
     for key, fmt in (("episodes", "{:d}"), ("tasks", "{:d}"), ("pass1", "{:.3f}"),
                      ("passk", "{:.3f}"), ("tokens", "{:,.0f}"), ("steps", "{:.1f}")):
