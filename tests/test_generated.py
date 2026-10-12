@@ -569,6 +569,94 @@ def test_leak_rates_are_per_episode():
           len(it.same_tasks([dict(ep(3, "Order number?"), head={})], tasks)) == 1)
 
 
+def test_photo_claims():
+    """WHAT_FAILED #43: the photo trap's customer is told she has no photos and
+    will send them tonight, and customer v2 -- who cannot leave until the agent
+    has done what she needs -- sends them inside the conversation. Every line
+    below is one she wrote in round 2, in the eight languages; each must read
+    as a claim, and each of her promises must not."""
+    print("\n=== simulator QA: photos a customer says she sent but has not ===")
+    import contextlib
+    import importlib.util
+    import io
+
+    from pasarbench.simqa import claims_photos, forbids_photos, photo_claim
+    from pasarbench.tasks import TASKS as HAND
+
+    said = [
+        "[Attached: photo_1.jpg, photo_2.jpg]\n\nHere are the photos.",
+        "(Attached photos) Here are the pictures.",
+        "I've uploaded the photos now. Can you check them and start the return?",
+        "(Sends photos of the damaged blouse) Here are the photos. Please process my refund now.",
+        "(I have sent the photos)",
+        "I've sent the photos. The phone digits are 3751.",
+        "(Mengirim foto barang rusak) Ini fotonya. Tolong segera diproses ya.",
+        "(Hantar gambar barang yang pecah)\n\nDah hantar. Tolong proses refund saya ya.",
+        "(Saya sudah hantar gambar kerosakan blouse itu melalui lampiran. Sila semak.)",
+        "(Attached photos)\nOkay I send already. Please check and refund me.",
+        "(ส่งรูปภาพสินค้าที่ชำรุด) เรียบร้อยค่ะ รบกวนดำเนินการคืนเงินให้ด้วยนะคะ",
+        "ส่งรูปให้แล้วนะคะ รบกวนเช็คด้วยค่ะว่าใช้ได้ไหม",
+        "(Gửi ảnh) Đây nhé, bạn xem đường rách này. Giờ làm thủ tục trả hàng thế nào?",
+        "(Gửi ảnh sản phẩm bị hỏng) Đây nè bạn, bạn xem giúp mình với.",
+        "(发送了照片) 好了，照片发给你了，帮我处理退款吧。",
+        "（发送照片）好了，照片发给你了。帮我处理退款吧。",
+        "(假设我现在是今晚，发送了照片)\n照片发给你了，你看一下。",
+        "(今晚发送照片后) 给你照片了，你看一下。",
+    ]
+    promised = [
+        "The order number is GO-680346. I can't send the photos right now, but I'll send "
+        "them tonight.",
+        "It arrived torn. I'll get those photos to you later.",
+        "(Wait for the agent to process the photos tonight)",
+        "Kalau fotonya nanti malam ya saya kirim, sekarang belum bisa. Untuk nomor HP-nya 6337.",
+        "Sekarang saya tak boleh hantar gambar, nanti malam baru saya hantar.",
+        "cannot send photo now, will send tonight. phone is 3751",
+        "โอเคค่ะ เดี๋ยวคืนนี้ส่งรูปให้นะคะ ขอบคุณค่ะ",
+        "ตอนนี้ยังส่งรูปให้ไม่ได้ค่ะ เดี๋ยวคืนนี้ส่งให้นะคะ",
+        "Ok, vậy tối nay mình gửi ảnh rồi nhắn lại cho bạn nhé.",
+        "照片我现在没法发，我今晚发给你。",
+        "没有了，等我今晚发照片给你。",
+    ]
+    for line in said:
+        check(f"she says she sent them: {' '.join(line.split())[:48]}", claims_photos(line), line)
+    for line in promised:
+        check(f"a promise, not a claim: {' '.join(line.split())[:48]}",
+              not claims_photos(line), line)
+
+    photo = "high_value_photo_required_first"
+    every = list(HAND) + list(TASKS) + list(generate(edition=2)[0])
+    check("only the photo trap's customer is told she has none -- every one of hers is",
+          {t.trap for t in every if forbids_photos(t)} == {photo}
+          and all(forbids_photos(t) for t in every if t.trap == photo),
+          str({t.trap for t in every if forbids_photos(t)}))
+    task = next(t for t in TASKS if t.trap == photo and t.language == "en")
+    other = next(t for t in TASKS if t.trap != photo)
+    check("the first turn she says it in, and nothing for a customer allowed photos",
+          photo_claim(task, ["I'll send them tonight.", "(Attached: a.jpg) Here are the photos."])
+          == 1 and photo_claim(task, ["I'll send them tonight."]) is None
+          and photo_claim(other, ["(Attached: a.jpg) Here are the photos."]) is None)
+
+    spec = importlib.util.spec_from_file_location(
+        "inspect_trace", Path(__file__).resolve().parent.parent / "scripts" / "inspect_trace.py")
+    it = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(it)
+
+    def ep(seed, text, passed):
+        return {"id": f"{task.task_id}__r{seed}", "task_id": task.task_id, "language": "en",
+                "passed": passed, "steps": [],
+                "events": [{"kind": "user_turn", "turn": 1, "text": text}]}
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out):
+        it.photos([ep(0, "(Attached: photo_1.jpg) Here are the photos.", False),
+                   ep(1, "I can't send photos now, I'll send them tonight.", True)])
+    text = out.getvalue()
+    check("the stage-1 audit counts her by language, with the failures after and without "
+          "the line, and says what that does to the trap",
+          "en       50.0%  (1/2 episodes)" in text
+          and "Failed after it: 1 of 1; failed without it: 0 of 1" in text
+          and "WHAT_FAILED #43" in text, text)
+
+
 def test_second_edition():
     """RUNBOOK 1m confirms the closing check on new tasks of the five traps it
     came from: the same checks, new worlds and stories. Every guarantee the
@@ -678,6 +766,7 @@ def main() -> int:
     test_simulator_qa()
     test_leak_detector_reads_every_language()
     test_leak_rates_are_per_episode()
+    test_photo_claims()
     test_second_edition()
     print(f"\n{len(PASS)} passed, {len(FAIL)} failed")
     for f in FAIL:
