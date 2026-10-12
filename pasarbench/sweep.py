@@ -293,6 +293,30 @@ def make_simulator(kind: str, args) -> callable:
     raise ValueError(kind)
 
 
+def make_reader(args):
+    """The reader guardrail's model (claim_reader.py; RUNBOOK 1u), behind its
+    cache, or None for any other guardrail. Its key comes the way the
+    simulator's does: the agent's own only when it is the agent's endpoint,
+    never one provider's for another."""
+    if args.guardrail != "reader":
+        return None
+    from .claim_reader import CACHE, ClaimReader, make_backend
+    url = args.reader_url or args.sim_url or args.base_url
+    if _local(url):
+        key = "EMPTY"
+    elif url == args.base_url:
+        key = args.api_key
+    else:
+        key = args.sim_api_key or resolve_sim_api_key()
+        if not key:
+            raise SystemExit(f"The claim reader is on {url} but no key is set for it.\n"
+                             f"Set one of: {', '.join(SIM_KEY_ENV)}\n"
+                             f"Refusing to fall back to the agent's key: that would send "
+                             f"your {args.base_url} credential to a different provider.")
+    backend = make_backend(args.reader_model, url, key, _extra_body(args.reader_extra_body))
+    return ClaimReader(backend, args.reader_cache or CACHE)
+
+
 def _finished(path: Path) -> dict | None:
     """Header and footer of a trace that ran to the end, else None. A crash
     mid-episode leaves a header with no footer, and that episode is re-run."""
@@ -323,7 +347,7 @@ def run_cell(strategy_name: str, backend_factory, simulator_factory, tasks: list
              summarizer=None, exposure_spec: str = "", workers: int = 1,
              save_messages: bool = False, resume: bool = False,
              guardrail: str = "off", closing: str = "off",
-             closing_room: bool = False) -> dict:
+             closing_room: bool = False, claim_reader=None) -> dict:
     strategy = make_strategy(strategy_name, summarizer)
     exposure = build_exposure(exposure_spec, ALL_SOLUTIONS) if exposure_spec else None
     cell = strategy_name if not exposure_spec else f"{strategy_name}+{exposure_spec}"
@@ -345,7 +369,7 @@ def run_cell(strategy_name: str, backend_factory, simulator_factory, tasks: list
                           context=strategy, budget=budget, trace=w,
                           policy_mode=policy_mode, exposure=exposure,
                           run_index=seed, guardrail=guardrail, closing=closing,
-                          closing_room=closing_room)
+                          closing_room=closing_room, claim_reader=claim_reader)
         v = verify(task, db, n_turns=res.budget["steps"],
                    tokens=res.budget["tokens"])
         if save_messages:
@@ -393,6 +417,7 @@ def run_cell(strategy_name: str, backend_factory, simulator_factory, tasks: list
                     or (closing == "guard"
                         and head.get("closing_guard", 1) != GUARD_VERSION)
                     or head.get("closing_room", False) != closing_room
+                    or head.get("claim_reader") != getattr(claim_reader, "model", None)
                     or head.get("tool_checks", 1) != TOOL_CHECKS):
                 raise SystemExit(
                     f"--resume: {cell_dir} already holds episodes from a different "
@@ -564,10 +589,20 @@ def main() -> None:
                     choices=["preload", "jit", "preload-named"],
                     help="preload-named: the policy with the tools it describes but "
                          "never names named (docs/RUNBOOK.md, 1g)")
-    ap.add_argument("--guardrail", default="off", choices=["off", "claims"],
+    ap.add_argument("--guardrail", default="off", choices=["off", "claims", "reader"],
                     help="claims: hold back a reply that claims a write action no "
                          "tool call has done, and tell the agent instead "
-                         "(pasarbench/harness/guardrail.py; docs/RUNBOOK.md, 1i)")
+                         "(pasarbench/harness/guardrail.py; docs/RUNBOOK.md, 1i). "
+                         "reader: the same, the reply read by a model in any language "
+                         "in place of the English list (RUNBOOK 1u)")
+    ap.add_argument("--reader-model", default="qwen3.8-flash",
+                    help="the claim reader's model (--guardrail reader)")
+    ap.add_argument("--reader-url", default="",
+                    help="its endpoint; default the simulator's")
+    ap.add_argument("--reader-extra-body", default='{"reasoning_effort":"low"}')
+    ap.add_argument("--reader-cache", default="",
+                    help="default data/claims/reader-cache.json, the calibration's: "
+                         "one answer per reader and reply text")
     ap.add_argument("--closing", default="off", choices=["off", "check", "record", "guard"],
                     help="check: when the customer leaves, give the agent one note "
                          "to go over the case against the policy and make any call "
@@ -672,6 +707,7 @@ def main() -> None:
                                          api_key=args.api_key, temperature=0.0)
 
     exposures = [e.strip() for e in args.exposure.split(",")] if args.exposure else [""]
+    reader = make_reader(args)
     rows = []
     for name in [n.strip() for n in args.strategies.split(",")]:
         for exp in exposures:
@@ -683,7 +719,10 @@ def main() -> None:
                                  summarizer, exp, args.workers,
                                  save_messages=args.save_messages,
                                  resume=args.resume, guardrail=args.guardrail,
-                                 closing=args.closing, closing_room=args.closing_room))
+                                 closing=args.closing, closing_room=args.closing_room,
+                                 claim_reader=reader))
+            if reader is not None:
+                reader.save()
 
     print("\n" + markdown_table(rows))
 
