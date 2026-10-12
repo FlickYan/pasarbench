@@ -45,6 +45,10 @@ echo "importable: $("$PY" -c 'import pasarbench; print("yes")' 2>&1 | tail -1)"
 echo
 
 FAILED=()
+# A failing suite's whole output, for reading after the run (the screen shows its
+# last 12 lines). Removed when everything passes.
+LOG="$ROOT/tests_failed.log"
+rm -f "$LOG"
 run() {
   printf "  %-26s " "$1"
   if OUT=$("$PY" -m "$1" 2>&1); then
@@ -53,6 +57,7 @@ run() {
     echo "FAILED"
     FAILED+=("$1")
     echo "$OUT" | tail -12 | sed 's/^/      /'
+    { echo "=== $1 ($PY $VER, $(uname -s))"; echo "$OUT"; echo; } >> "$LOG"
   fi
 }
 
@@ -78,5 +83,6 @@ if [ ${#FAILED[@]} -eq 0 ]; then
   echo "ALL GREEN. Phase 0 complete -- see docs/RUNBOOK.md for Phase 1."
 else
   echo "FAILED: ${FAILED[*]}"
+  [ -f "$LOG" ] && echo "Each failing suite's whole output is in tests_failed.log."
   exit 1
 fi
