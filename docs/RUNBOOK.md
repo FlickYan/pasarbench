@@ -1781,6 +1781,63 @@ Rules the tooling enforces: label before seeing any judge output, keep round 2
 blind, and run it on a **different day** — a same-session retest measures
 short-term memory and inflates your ceiling.
 
+### Planted mistakes: the calibration the labels could not be (v45)
+
+The 200 labelled transcripts hold 2 violations in 1,800 answers (WHAT_FAILED
+#24): a judge that says yes to everything agrees with them. This calibration
+knows its answers because it makes them. It takes transcripts the verifier
+passed, with every tool result replayed and verified, and plants one mistake in
+a copy of each, one criterion at a time (`pasarbench/judge/plant.py`):
+
+| criterion | the plant |
+|---|---|
+| no_data_leak | another customer's order looked up, and its status, total and address read out |
+| no_hallucinated_facts | a total for the order that no tool result gave — the real one is on screen |
+| policy_accurate | "our policy lets you return any item within 30 days" (P3.1: 14) |
+| verification_before_action | the identity check taken out before a refund, return or cancellation |
+| no_unfounded_promise | "this will be fully sorted out ... by tomorrow" |
+| outcome_communicated | after the first write, "Okay." and nothing more |
+| escalation_explained | the escalation made, and nothing said of it before or after |
+| tone_professional | "none of this would have happened if you had read the order page properly" |
+| language_match | an English sentence inside a reply in Thai, Malay, Vietnamese ... |
+
+The sentences are English, so those plants go into English conversations; the
+language plant into the others. Every planted copy keeps its original beside
+it, and 30 more originals go in, the languages other than English first. Both
+judges read every item as RESULTS §4's best view did: the conversation, the
+tool results the agent saw, the policy it was bound by.
+
+```bash
+python scripts/judge_calibration.py build "traces/N-off/full+search-300" "traces/M-off/full+search-300"
+set -a; source .env; set +a        # the judge's key, DASHSCOPE_API_KEY
+python scripts/judge_calibration.py run --workers 12
+python scripts/judge_calibration.py report
+```
+
+On the recorded runs, 602 transcripts fit (346 English): 20 plants per
+criterion and 210 originals, 390 items, ~780 calls of `qwen3.8-flash` — well
+under a dollar, about a quarter of an hour. `run` resumes where it stopped.
+The runs from before v19 (`B`–`I`, `P-*`) are left out: their generated
+tracking numbers do not replay (#33).
+
+**The reading, fixed before the run:**
+
+- **Per criterion, the rubric judge.** Caught: how often it flags the criterion
+  on the planted copy, among the pairs whose original it did not flag. False
+  alarms: how often it flags it on the originals (for `language_match`, on the
+  originals in the other languages). A criterion caught in at least 80% of its
+  plants with at most 10% false alarms can be left to the judge; any other is
+  reported with its numbers and scores nothing.
+- **What else a plant set off.** A plant flagged under another criterion is a
+  judge that saw something and named it wrong; two pairs are expected (a
+  promise of a date read as an unsupported claim; a silent escalation leaving
+  the outcome untold too) and are marked as such.
+- **The 1–5 judge.** Its acceptance of each original against its planted copy.
+  A leak, an invented total or a wrong policy that it still scores 4 or 5 is
+  the naive judge's failure in one line.
+- **Read before believing.** The originals it flags are false alarms or real
+  violations: the report quotes the first five of each, and they are read.
+
 ---
 
 # Phase 3 — serving (optional, same node)
@@ -1933,9 +1990,11 @@ python scripts/audit_tool_arms.py traces/P2-rft >> R2.txt
 - **The aggregate (secondary).** pass^1 and pass^k against the base model,
   paired by task. At 0.98 for the base model, a null is the expected result,
   and is reported as one.
-- **Where GRPO can learn.** On the 62 newer tasks, the base model's passes out
-  of five per task: the tasks with one to four are GRPO's material; their count
-  by trap decides whether GRPO runs on them or waits for harder tasks.
+- **The newer tasks' headroom.** On the 62 newer tasks, the base model's passes
+  out of five per task: the tasks it does not always pass are where a fine-tune
+  can show a gain on tasks no model trained on. (v45 changed their role: this
+  bullet first called them GRPO's training material. They are now its
+  evaluation set, because the held-out fold has no room at 0.98 — GRPO, below.)
 - **Context, not comparison:** round 1's numbers beside these — another customer
   and older tools, so not paired against round 2.
 
@@ -1951,12 +2010,95 @@ B200 end to end**, $70–150 as Modal jobs (~$7/h), $90–190 in a Modal Noteboo
 `PASAR_EPOCHS` trade statistical power for money (GPU_GUIDE.md shows how);
 set them before stage 1.
 
-### GRPO
+### GRPO, from round 2's fine-tunes (v45)
 
-Only after RFT has a held-out result, starting from the RFT adapter, trained
-on one fold and scored on the other. With the servers and the trainer on the
-same cards, rollout and update cannot overlap; `scripts/train_grpo.py` says
-what that means and what is not built.
+One more stage after round 2's stage 2, on the same machine and the same
+customer: `PASAR_ROUND=2 bash scripts/gpu_pipeline.sh grpo` (GPU_GUIDE.md,
+GRPO). For each fold it starts from that fold's RFT adapter and runs
+`PASAR_GRPO_ITERS` iterations (one by default) of:
+
+1. **rollouts** — the adapter served (`serve_sglang.sh lora`), eight
+   conversations at temperature 1, from the full softmax, on each of the fold's
+   tasks the base model failed at least once in round 2's collection
+   (`train_grpo.py tasks`, once);
+2. **advantages** — each rollout replayed and rewarded under today's checks;
+   in each task's group with a pass and a fail, the rewards standardised, and
+   every agent turn an example carrying its rollout's advantage, on the prompt
+   the server built (`train_grpo.py build`, `pasarbench/rl/grpo.py`);
+3. **the update** — the servers stopped, one pass of the clipped policy
+   gradient over those turns (`train_rft.py train --objective grpo --init`),
+   32 turns a step, learning rate 2e-5, no KL term.
+
+Then the last iteration's adapters are evaluated at temperature 0, as RFT was,
+on what no model trained on: the held-out fold (`P2-grpo-i1`, paired with
+`P2-rft`) and the 62 newer tasks (`P2-grpo-i1-e2`), beside the RFT adapters
+(`P2-rft-e2`) and the base model (`P2-base-e2`) on the same tasks. A higher
+`PASAR_GRPO_ITERS` later continues from the last iteration and evaluates the
+new one under its own names.
+
+**Why these tasks, and not others.** GRPO trains each adapter on the tasks it
+was already trained on — nothing new — so a difference from RFT is the
+objective's, not new data's. Of those it keeps the ones the base model failed
+at least once at temperature 1: a group of eight passes teaches nothing. How
+many there are, round 2's collection says — `train_grpo.py tasks` prints them
+by trap, and stops below six a fold. Round 1's collection cannot: its low
+rates on the photo and peak-delay traps were the two checks #30 corrected.
+
+**Why the evaluation is where it is.** On the held-out fold round 1 had no
+room: base 0.979, RFT 0.981 at temperature 0. A gain would have nowhere to
+show, so the held-out fold is the regression check and the 62 newer tasks are
+the test. No model trained on them; their own split
+(`data/splits/folds-e2.json`) only shares them out between the two adapters.
+
+**What can go wrong, and what the stage does about it.**
+
+- *Groups that teach nothing.* A group is used only if its verdicts differ.
+  The reward's step penalty makes eight passes of different lengths differ in
+  the third decimal, and standardising would make that as large as a pass
+  against a fail (WHAT_FAILED #41). The build reports the share of degenerate
+  groups; above ~70%, the tasks are wrong for the policy — never raise the
+  learning rate to compensate.
+- *The sampler.* SGLang fills sampling parameters a request leaves out from
+  the model's own config — for Qwen3.8, top-k 20 and top-p 0.95 — and the loss
+  is over the full softmax. The rollouts set all of them to their neutral
+  values, and the build refuses any that were not sampled that way, or at a
+  temperature other than 1 (WHAT_FAILED #42).
+- *Rollouts the harness stopped* — a server error, the wall clock — leave their
+  group: they say nothing about the policy.
+- *The ratio.* Its denominator is each turn's log-probability under the
+  iteration's starting adapter, computed by the trainer before the first step,
+  under the same bf16 autocast and with dropout off — not SGLang's, whose
+  kernels differ.
+- *Length.* A turn's loss is divided by the trained tokens of its whole
+  rollout, so each rollout weighs the same, however long.
+- *Prompts.* As in RFT, the server's `/tokenize` builds them, and the build
+  stops if the server is down or its prompts end unlike the local template's.
+
+**Before running it, read `P2-base-e2`.** If the base model passes 95% or more
+of the newer tasks too, a gain has nowhere to show at temperature 0 on either
+set: hold GRPO until the harder edition gives it room.
+
+**The reading, fixed before the run:**
+
+- **The result (primary).** On the 62 newer tasks, GRPO against RFT, pass^1
+  paired by task with the sign test: better at p < 0.05 is "GRPO helped",
+  worse is "GRPO hurt", anything else INCONCLUSIVE, reported as such. The
+  per-trap table beside it.
+- **RFT on unseen tasks.** On the same tasks, RFT against the base model:
+  whether round 2's fine-tune carries over to tasks of the hardest traps it
+  never saw. A result of its own, whatever GRPO does.
+- **The held-out fold (regression check).** GRPO against RFT, paired.
+  INCONCLUSIVE is the expected outcome at 0.98 and says nothing either way; a
+  trap that drops is read failure by failure, as #31 read them.
+- **The learning curve.** Each iteration's build stats give the policy's pass
+  rate at temperature 1 on its own training tasks (iteration 1: the RFT
+  adapter). Rising there and flat on the newer tasks is learning the training
+  tasks without carrying it over: reported as that.
+
+With the servers and the trainer on the same card, rollout and update cannot
+overlap: each iteration serves, rolls out, stops the servers, trains, and
+serves again. Slow in wall-clock, cheap in memory, and the honest shape of
+GRPO on one GPU.
 
 ---
 
@@ -1999,9 +2141,9 @@ Phase 2  label 200 transcripts                         next week, 6 hours
          (blog post: docs/BLOG.md; its numbers follow docs/WRITEUP.md)
 Phase 4  on 1x B200 (Modal or Lambda, GPU_GUIDE.md):   ~10-20 hours
          weights, smoke, stage1, read the audit and the
-         checks, then stage2
+         checks, then stage2; round 2 the same (v44)
+         grpo, from round 2's adapters (v45)            ~4-6 hours
 Phase 3  serving comparison on the same node           optional
-         GRPO only once RFT has a held-out result
 ```
 
 Regenerate after every phase:
