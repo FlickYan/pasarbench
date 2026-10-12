@@ -1552,14 +1552,26 @@ def section_grpo(traces: Path = Path("traces"), stats_dir: Path = Path("data/grp
     else:
         out.append(MISSING + " — `P2-rft` and `P2-grpo-i" + str(n) + "` are both needed.")
 
-    curve = []
-    for i in range(1, n + 1):
+    # Every point built: iteration i's rollouts are the adapter it started
+    # from, so with one more than the iterations evaluated, the last GRPO
+    # adapters measured on their own tasks and not trained on (grpo-measure).
+    points = sorted({int(p.name[1:].split("-")[0]) for p in stats_dir.glob("i*-*.stats.json")
+                     if p.name[1:].split("-")[0].isdigit()}) if stats_dir.is_dir() else []
+    curve, counted, undated = [], False, False
+    for i in points:
         for fold in ("A", "B"):
             st = _load_json(stats_dir / f"i{i}-{fold}.stats.json")
             if st:
-                curve.append(f"| {i} | {fold} | {st.get('episodes', 0)} on {st.get('groups', 0)} "
+                who = str(st.get("model") or "?").split(":")[-1]
+                vd = st.get("voucher_declined")
+                counted |= bool(vd)
+                undated |= vd is None
+                curve.append(f"| {i}{' (measured)' if i > n else ''} | {fold} | `{who}` | "
+                             f"{st.get('episodes', 0)} on {st.get('groups', 0)} "
                              f"tasks | {st.get('pass_rate', 0):.0%} | "
-                             f"{st.get('degenerate_rate', 0):.0%} | {st.get('examples', 0)} |")
+                             f"{'—' if vd is None else vd} | "
+                             f"{st.get('degenerate_rate', 0):.0%} | "
+                             f"{0 if i > n else st.get('examples', 0)} |")
     tasks_of = {f: _load_json(stats_dir / f"tasks-{f}.json") or {} for f in ("A", "B")}
     if curve or any(tasks_of.values()):
         out.append("\n**The learning curve**: the policy at temperature 1 on its own "
@@ -1573,10 +1585,26 @@ def section_grpo(traces: Path = Path("traces"), stats_dir: Path = Path("data/grp
                            + (f"; {len(left)} of {', '.join(d.get('skipped_traps', []))} left "
                               f"out (WHAT_FAILED #43)" if left else ""))
         if curve:
-            out.append("\n| iteration | fold | rollouts | passed | groups with nothing to "
-                       "learn | turns trained |")
-            out.append("|---|---|---|---|---|---|")
+            out.append("\n| iteration | fold | rolled out by | rollouts | passed (checks) | "
+                       "she declined the voucher | groups with nothing to learn | "
+                       "turns trained |")
+            out.append("|---|---|---|---|---|---|---|---|")
             out += curve
+            notes = []
+            if counted:
+                notes.append("\"She declined the voucher\": rollouts the checks failed where "
+                             "P6.3 and P10 ask for the escalation (WHAT_FAILED #46), counted "
+                             "whichever way the reward read them")
+            if undated:
+                notes.append("— built before the build counted the voucher she declined (v52)")
+            if notes:
+                out.append("\n" + "; ".join(notes) + ".")
+        if any(i > n for i in points):
+            m = max(points)
+            out.append(f"\nPoint {m} is GRPO's last adapters on the same tasks, measured and "
+                       f"not trained on (`grpo-measure`); `logs/r2-grpo-measure-i{m}.txt` pairs "
+                       f"it with point {m - 1} task by task, as its reading was fixed before it "
+                       f"ran (RUNBOOK phase 4, GRPO, the learning curve's second point).")
 
     checks = []
     heads = {name: _headers(traces / name / "full")
