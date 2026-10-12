@@ -1710,6 +1710,47 @@ def test_export_hf():
           "DRE-VN__r0.jsonl: an API key" in refused and not (tmp / "hf2").exists(), refused)
 
 
+def test_photo_claims_compared():
+    """WHAT_FAILED #43: on the photo trap, customer v2 says she sent the photos
+    she was told she does not have, and the trap's verdict then follows her.
+    compare_cells counts, in each cell, the episodes she says it in and the
+    failures after and without it, so a reader of a paired comparison -- GRPO
+    against RFT on the held-out fold -- sees whose verdicts that trap's are."""
+    print("\n=== compare_cells counts the photos a customer says she sent ===")
+    import contextlib
+    import io
+    import tempfile
+    from pathlib import Path
+
+    look = ("get_order", {"order_id": "O1005"})
+    ask = "Please send photos of the torn strap first; I cannot open the return without them."
+    opened = ("initiate_return", {"order_id": "O1005", "order_item_id": "OI5",
+                                  "reason": "torn strap", "photo_evidence_provided": True})
+    tmp = Path(tempfile.mkdtemp())
+    held = _language_cell(tmp, "H", "T07", [[look, ask]],
+                          replies=("I can't send photos now, I'll send them tonight.",))
+    took = _language_cell(tmp, "G", "T07", [[look, ask, opened, "Your return is open."]],
+                          replies=("(Attached: photo_1.jpg) Here are the photos.",))
+    cc = _load_script("compare_cells")
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out):
+        cc.main([str(held), str(took)])
+    text = out.getvalue()
+    block = text[text.find("customers told they have no photos"):]
+    rows = {line.split("  ")[1].strip(): line.split()[-2:] for line in block.splitlines()[1:4]}
+    check("each cell's episodes she said it in, and the failures after and without it",
+          rows == {"episodes she said it in": ["0/1", "1/1"], "failures after it": ["0", "1"],
+                   "failures without it": ["0", "0"]}, block[:600])
+    check("…and what that makes of the trap's row, when she said it anywhere",
+          "the photo trap's verdict follows her line" in block, block[:600])
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out):
+        cc.main([str(held), str(held)])
+    check("…said only where she said it",
+          "follows her line" not in out.getvalue()
+          and "customers told they have no photos" in out.getvalue(), out.getvalue()[-600:])
+
+
 def main() -> int:
     test_distractors()
     test_arms_are_comparable()
@@ -1735,6 +1776,7 @@ def main() -> int:
     test_closing_readers()
     test_answers_and_customers()
     test_language_lead()
+    test_photo_claims_compared()
     test_export_hf()
     print(f"\n{len(PASS)} passed, {len(FAIL)} failed")
     for f in FAIL:
