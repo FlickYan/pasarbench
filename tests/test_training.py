@@ -2221,6 +2221,7 @@ def test_notebook_helper():
     import re
     import shutil
     import tarfile
+    import time
     root = Path(__file__).resolve().parent.parent
     src = (root / "scripts" / "pasar_notebook.py").read_text()
     modal_src = (root / "scripts" / "modal_pipeline.py").read_text()
@@ -2287,6 +2288,53 @@ def test_notebook_helper():
         check("status counts GRPO's evaluations and rollouts too",
               "traces/P2-grpo-i1: 1 finished of ~1075" in out.getvalue()
               and "traces/P2-grpo-i1-collect-A: 1 finished" in out.getvalue(), out.getvalue())
+        # The next pack holds only what is new or changed since the last (v53):
+        # a pack of every result read some ten thousand files off the Volume,
+        # one round trip each -- 20 minutes.
+        packs = __import__("io").StringIO()
+        with contextlib.redirect_stdout(packs):
+            again = pn.pack()
+        check("a pack with nothing new since the last makes no archive, and says how to pack "
+              "everything again", again is None and "nothing new or changed since "
+              f"{archive.name}" in packs.getvalue() and "full=True" in packs.getvalue(),
+              packs.getvalue())
+        (work / "traces" / "P2-c3-check" / "full").mkdir(parents=True)
+        (work / "traces" / "P2-c3-check" / "full" / "HVPRF-SG__r0.jsonl").write_text(
+            '{"type": "header"}\n{"type": "footer"}\n')
+        (work / "data/grpo2/stats/i1-A.stats.json").write_text('{"passed": 1}')
+        with contextlib.redirect_stdout(packs):
+            later = pn.pack()
+        held = [n for n in tarfile.open(later).getnames()]
+        check("…and one after a stage holds only its new and changed files, to extract over "
+              "the packs before it",
+              sorted(held) == ["pasarbench/data/grpo2/stats/i1-A.stats.json",
+                               "pasarbench/traces/P2-c3-check/full/HVPRF-SG__r0.jsonl"]
+              and f"2 files new or changed since {archive.name}" in packs.getvalue()
+              and "extract this one over them" in packs.getvalue(), (held, packs.getvalue()))
+        with contextlib.redirect_stdout(packs):
+            whole = pn.pack(full=True)
+        names_all = tarfile.open(whole).getnames()
+        check("pack(full=True) holds every result again, as changed since",
+              set(names) <= set(names_all) and len(names_all) == len(names) + 1
+              and tarfile.open(whole).extractfile(
+                  "pasarbench/data/grpo2/stats/i1-A.stats.json").read() == b'{"passed": 1}',
+              (len(names), len(names_all)))
+        # Packs made before the record: the newest archive's own list stands in
+        # for it -- as v52's pack made them, every file added with its float mtime.
+        (work / ".packed.json").unlink()
+        old = work / "results-20261012-1141.tar.gz"
+        with tarfile.open(old, "w:gz") as t:
+            for rel in pn.RESULTS:
+                for path in sorted(work.glob(rel)):
+                    t.add(path, arcname=f"pasarbench/{path.relative_to(work).as_posix()}")
+        os.utime(old, (time.time() + 60, time.time() + 60))
+        packs = __import__("io").StringIO()
+        with contextlib.redirect_stdout(packs):
+            seeded = pn.pack()
+        check("…and with no record yet, the newest archive's own list says what the packs "
+              "hold: nothing new since a pack of v52's making",
+              seeded is None and f"since {old.name}" in packs.getvalue()
+              and not any(".packed.json" in n for n in names_all), packs.getvalue())
         try:
             pn.run("grpo")
             r1 = ""
