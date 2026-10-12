@@ -165,6 +165,11 @@ class OpenAICompatBackend:
         # x-grok-conv-id (v56). Without it each step may land where the steps
         # before it are not cached -- the bill of a run several times over.
         self.sticky = host == "x.ai" or host.endswith(".x.ai")
+        # Z.ai (and Zhipu's own platform) documents an assistant message's content
+        # as a string and a tool result without a name: sent so (v59). Every other
+        # provider gets the messages exactly as before.
+        self.documented = (host == "z.ai" or host.endswith(".z.ai")
+                           or host == "bigmodel.cn" or host.endswith(".bigmodel.cn"))
         self.temperature = temperature
         self.max_tokens = max_tokens
         # Provider-specific body fields. The one that matters here:
@@ -180,7 +185,7 @@ class OpenAICompatBackend:
     def chat(self, messages: list[Message], tools: list[dict[str, Any]]) -> ModelResponse:
         payload = {
             "model": self.model,
-            "messages": [self._msg(m) for m in messages],
+            "messages": [self._msg(m, self.documented) for m in messages],
             "temperature": self.temperature,
             "max_tokens": self.max_tokens,
         }
@@ -231,11 +236,17 @@ class OpenAICompatBackend:
         )
 
     @staticmethod
-    def _msg(m: Message) -> dict[str, Any]:
+    def _msg(m: Message, documented: bool = False) -> dict[str, Any]:
+        """One message on the wire. `documented`: as Z.ai's schema has it -- an
+        empty content as "" rather than null, a tool result without its tool's
+        name."""
         if m.role == "tool":
+            if documented:
+                return {"role": "tool", "tool_call_id": m.tool_call_id, "content": m.content}
             return {"role": "tool", "tool_call_id": m.tool_call_id,
                     "name": m.name, "content": m.content}
-        d: dict[str, Any] = {"role": m.role, "content": m.content or None}
+        d: dict[str, Any] = {"role": m.role,
+                             "content": m.content or ("" if documented else None)}
         if m.tool_calls:
             d["tool_calls"] = [
                 {"id": tc.id, "type": "function",
