@@ -214,10 +214,10 @@ def _reader(a, backend=None):
     same cache."""
     from pasarbench.claim_reader import ClaimReader, make_backend
     if backend is None:
-        from pasarbench.sweep import SIM_KEY_ENV, _extra_body, _local, resolve_sim_api_key
-        key = "EMPTY" if _local(a.reader_url) else resolve_sim_api_key()
+        from pasarbench.sweep import SIM_KEY, _extra_body, key_for, key_hint
+        key = key_for(a.reader_url, SIM_KEY)
         if not key:
-            raise SystemExit(f"no key for {a.reader_url}: set one of {', '.join(SIM_KEY_ENV)}")
+            raise SystemExit(f"no key for {a.reader_url}: {key_hint(a.reader_url, SIM_KEY)}")
         backend = make_backend(a.reader_model, a.reader_url, key,
                                _extra_body(a.reader_extra_body))
     return ClaimReader(backend, a.cache)
