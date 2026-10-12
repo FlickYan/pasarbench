@@ -109,7 +109,7 @@ Unpaired rates over whatever tasks each language drew in this run: a gap here mi
 ## 3. Multilingual diagnosis
 
 *Source: `traces/C-clean/full` — 1075 episodes, pinned with `--multilingual-run`.*  
-*Also qualifying: `B-multilingual/full` (930), `D-nozh/full` (930), `F-clean-sim/full` (1075), `G-gated/full` (1075), `H-context/full` (96), `P-base/full` (1075), `P-ref/full` (1075), `P-rft/full` (1075), `P-smoke/full` (16), `P2-base-e2/full` (310), `P2-base-e3/full` (180), `P2-base/full` (1075), `P2-c2-check/full` (140), `P2-c3-check/full` (140), `P2-grpo-i1-e2/full` (310), `P2-grpo-i1-e3/full` (180), `P2-grpo-i1/full` (1075), `P2-ref/full` (1075), `P2-rft-e2/full` (310), `P2-rft-e3/full` (180), `P2-rft/full` (1075).*
+*Also qualifying: `B-multilingual/full` (930), `D-nozh/full` (930), `F-clean-sim/full` (1075), `G-gated/full` (1075), `H-context/full` (96), `P-base/full` (1075), `P-ref/full` (1075), `P-rft/full` (1075), `P-smoke/full` (16), `P2-base-e2/full` (310), `P2-base-e3/full` (180), `P2-base/full` (1075), `P2-c2-check/full` (140), `P2-c3-check/full` (140), `P2-grpo-i1-e2/full` (310), `P2-grpo-i1-e3/full` (180), `P2-grpo-i1/full` (1075), `P2-ref/full` (1075), `P2-rft-e2/full` (310), `P2-rft-e3/full` (180), `P2-rft/full` (1075), `V-dsk-flash-parts/full` (117), `V-dsk-flash/full` (108), `V-dsk-parts/full` (117), `V-dsk/full` (108), `V-glm-parts/full` (117), `V-glm/full` (108), `V-grok-parts/full` (117), `V-grok/full` (108), `V-mimo-parts/full` (117), `V-mimo/full` (108).*
 
 ## Multilingual diagnosis
 
@@ -546,6 +546,17 @@ Each episode's recorded tool calls are replayed against the world it ran in, and
 | `S-guard/full+search-300` | 186 | 0.946 → 0.946 | 0.903 → 0.903 | 0 | 0 | 0 |
 | `T-guard/full+search-300` | 474 | 0.970 → 0.970 | 0.930 → 0.930 | 0 | 0 | 0 |
 | `U-guard/full+search-300` | 474 | 0.973 → 0.973 | 0.943 → 0.943 | 0 | 0 | 0 |
+| `U-room/full+search-300` | 16 | 0.938 → 0.938 | 0.833 → 0.833 | 0 | 0 | 0 |
+| `V-dsk/full` | 108 | 0.944 → 0.944 | 0.889 → 0.889 | 0 | 0 | 0 |
+| `V-dsk-flash/full` | 108 | 0.991 → 0.991 | 0.972 → 0.972 | 0 | 0 | 0 |
+| `V-dsk-flash-parts/full` | 117 | 1.000 → 1.000 | 1.000 → 1.000 | 0 | 0 | 0 |
+| `V-dsk-parts/full` | 117 | 0.795 → 0.795 | 0.692 → 0.692 | 0 | 0 | 0 |
+| `V-glm/full` | 108 | 0.954 → 0.954 | 0.889 → 0.889 | 0 | 0 | 0 |
+| `V-glm-parts/full` | 117 | 0.949 → 0.949 | 0.872 → 0.872 | 0 | 0 | 0 |
+| `V-grok/full` | 108 | 0.685 → 0.685 | 0.583 → 0.583 | 0 | 0 | 0 |
+| `V-grok-parts/full` | 117 | 0.675 → 0.675 | 0.667 → 0.667 | 0 | 0 | 0 |
+| `V-mimo/full` | 108 | 0.991 → 0.991 | 0.972 → 0.972 | 0 | 0 | 0 |
+| `V-mimo-parts/full` | 117 | 0.983 → 0.983 | 0.949 → 0.949 | 0 | 0 | 0 |
 
 | trap | fail → pass | pass → fail |
 |---|---|---|
@@ -553,6 +564,53 @@ Each episode's recorded tool calls are replayed against the world it ran in, and
 | `peak_period_delay_not_compensable` | 116 | 0 |
 
 Kept as recorded: 788 because the task's opening or facts changed since the run; 37 because a payload differs from the recording (a world older than the replay can rebuild).
+
+## 8. The hard edition against its parts, on several labs' models
+
+Each agent on the hard edition's 36 cases and on their parts — the first edition's task of the trap each case turns on, in the same market and language — the same day, against one customer; read as fixed before the runs (RUNBOOK 1s, 2026-10-12). Each case against its part, paired, sign test: HARDER at p < 0.05 with the cases failing more.
+
+| agent | model | settings | hard cases, pass^1 (pass^k) | their parts | each case against its part |
+|---|---|---|---|---|---|
+| dsk | `deepseek-v4-pro` | `{"thinking": {"type": "disabled"}}` | 0.944 (0.89) | 0.833 (0.75) | **EASIER** — +0.111; 1 cases failed more than their part, 8 less, p=0.039 |
+| dsk-flash | `deepseek-flash` | `{"thinking": {"type": "disabled"}}` | 0.991 (0.97) | 1.000 (1.00) | **INCONCLUSIVE** — -0.009; 1 cases failed more than their part, 0 less, p=1.000 |
+| mimo | `mimo-v2.6-flash` | `{"thinking": {"type": "disabled"}}` | 0.991 (0.97) | 0.991 (0.97) | **INCONCLUSIVE** — +0.000; 1 cases failed more than their part, 1 less, p=1.000 |
+| grok | `grok-4.3` | `{"reasoning_effort": "none"}` | 0.685 (0.58) | 0.731 (0.72) | **INCONCLUSIVE** — -0.046; 6 cases failed more than their part, 2 less, p=0.289 |
+| glm | `glm-5.3-flash` | `{"reasoning_effort": "low"}` | 0.954 (0.89) | 0.944 (0.86) | **INCONCLUSIVE** — +0.009; 3 cases failed more than their part, 4 less, p=1.000 |
+
+- **Harder:** shown for none of them.
+
+| case (its part) | dsk | dsk-flash | mimo | grok | glm |
+|---|---|---|---|---|---|
+| `duplicate_refund_cod_livestream` (`duplicate_refund_escalate`) | 25/30 · 12/30 | 29/30 · 30/30 | 29/30 · 30/30 | 2/30 · 1/30 | 25/30 · 24/30 |
+| `two_orders_voucher_and_cancel` (`out_of_window_offer_voucher`) | 38/39 · 39/39 | 39/39 · 39/39 | 39/39 · 38/39 | 33/39 · 39/39 | 39/39 · 39/39 |
+| `changed_request_cancel_to_address` (`cancel_while_processing`) | 39/39 · 39/39 | 39/39 · 39/39 | 39/39 · 39/39 | 39/39 · 39/39 | 39/39 · 39/39 |
+
+*Each cell: the case's passes · its part's.*
+
+| agents, paired by task | on the hard cases | on the parts' run | |
+|---|---|---|---|
+| dsk → dsk-flash | **INCONCLUSIVE** — +0.046; 3 tasks better, 0 worse, p=0.250 | **dsk-flash better** — +0.205; 12 tasks better, 0 worse, p=0.000 | the parts separate them, the cases do not |
+| dsk → mimo | **INCONCLUSIVE** — +0.046; 3 tasks better, 0 worse, p=0.250 | **mimo better** — +0.188; 12 tasks better, 1 worse, p=0.003 | the parts separate them, the cases do not |
+| dsk → grok | **grok worse** — -0.259; 0 tasks better, 14 worse, p=0.000 | **grok worse** — -0.120; 1 tasks better, 8 worse, p=0.039 |  |
+| dsk → glm | **INCONCLUSIVE** — +0.009; 3 tasks better, 2 worse, p=1.000 | **glm better** — +0.154; 11 tasks better, 1 worse, p=0.006 | the parts separate them, the cases do not |
+| dsk-flash → mimo | **INCONCLUSIVE** — +0.000; 0 tasks better, 0 worse, p=1.000 | **INCONCLUSIVE** — -0.017; 0 tasks better, 2 worse, p=0.500 |  |
+| dsk-flash → grok | **grok worse** — -0.306; 0 tasks better, 15 worse, p=0.000 | **grok worse** — -0.325; 0 tasks better, 13 worse, p=0.000 |  |
+| dsk-flash → glm | **INCONCLUSIVE** — -0.037; 1 tasks better, 4 worse, p=0.375 | **INCONCLUSIVE** — -0.051; 0 tasks better, 5 worse, p=0.062 |  |
+| mimo → grok | **grok worse** — -0.306; 0 tasks better, 15 worse, p=0.000 | **grok worse** — -0.308; 1 tasks better, 13 worse, p=0.002 |  |
+| mimo → glm | **INCONCLUSIVE** — -0.037; 1 tasks better, 4 worse, p=0.375 | **INCONCLUSIVE** — -0.034; 2 tasks better, 5 worse, p=0.453 |  |
+| grok → glm | **glm better** — +0.269; 15 tasks better, 0 worse, p=0.000 | **glm better** — +0.274; 13 tasks better, 0 worse, p=0.000 |  |
+
+- **Separation:** the hard edition separates no pair of agents the parts do not. The parts separate dsk–dsk-flash, dsk–mimo, dsk–glm, which the cases do not.
+
+*The customer:* in the changed request her phone digits came without the change of mind her persona puts in that message in 1 of 39 dsk episodes (0 of them failed); those failures are hers, not the agent's.
+
+*The voucher choice:* offered the voucher, she never declined it — a voucher the agent tried to issue counts as hers taken (WHAT_FAILED #49): nothing to read as P6.3 and P10 read it.
+
+Checks:
+
+- ✓ one customer in every run: `llm-user/v3:openai-compat:qwen3.8-flash`
+- ✓ agent temperature 0 in every run
+- ✓ each agent's two runs: one model, one setting, every case's part
 
 ---
 
