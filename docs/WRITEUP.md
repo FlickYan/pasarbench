@@ -861,9 +861,11 @@ leaves once she has promised what she can't do in the conversation (WHAT_FAILED
 #43). GRPO is running, from the second fine-tune and without the photo trap
 (RUNBOOK phase 4, GRPO), and the hard edition gives it room too. Along the way:
 the run the language finding needs — hold a conversation fixed at the moment
-the agent reads the refund and change only its language (RUNBOOK 1r); room for
+the agent reads the refund and change only its language (built in v49, RUNBOOK
+1t: 96 recorded conversations rebuilt exactly, each run as recorded, translated,
+and translated back); room for
 the closing phase in the token budget (27 of 456 cut short in the last run,
-RUNBOOK 1q); and a model that reads what the customer was told in place of the
+RUNBOOK 1q; built in v49 as `--closing-room`, opt-in); and a model that reads what the customer was told in place of the
 guardrail's phrase list, with the check against the tool log kept mechanical.
 Then serving cost.
 
