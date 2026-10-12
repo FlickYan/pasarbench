@@ -2091,6 +2091,11 @@ def test_add_model():
         glm = plan("--provider", "zai", "--model", "glm-5.3-flash")
         mimo = plan("--provider", "mimo", "--model", "mimo-v2.6-flash")
         grok = plan("--provider", "xai", "--model", "grok-4.3")
+        slow = plan("--provider", "zai", "--model", "glm-5.3-flash", "--workers", "3")
+        check("v59: fewer conversations at once for a provider that limits an account's "
+              "open requests, the same runs otherwise",
+              slow.count("--workers 3 --resume") == 2
+              and slow.replace("--workers 3", "--workers 8") == glm, slow)
         check("Z.ai, Xiaomi and xAI each at its own endpoint: GLM-5.3-Flash, which cannot stop "
               "reasoning, at low effort with 4,096 tokens a step; MiMo, and Grok 4.3, with "
               "reasoning off",
@@ -2137,6 +2142,15 @@ def test_add_model():
                       for _, e in sweeps)
               and not any(k in " ".join(c) for c, _ in ran
                           for k in ("sk-oai-typed", "sk-ds", "sk-dsk")), ran[:2])
+        record = (tmp / "logs" / "add_model-gpt-x.log").read_text(encoding="utf-8")
+        check("v59: the run keeps its own record in logs/ -- what ran, the check requests, "
+              "each sweep's end, the reading -- and no key in it",
+              "start: gpt-x on https://api.openai.com/v1" in record
+              and "check requests ok: answered as gpt-x-served" in record
+              and "sweep V-gpt-x ended, exit code 0" in record
+              and "sweep V-gpt-x-parts ended, exit code 0" in record
+              and "reading written: V-gpt-x.txt, paired with dsk" in record
+              and not any(k in record for k in ("sk-oai-typed", "sk-ds", "sk-dsk")), record)
         check("…its reading and, for each model run before it, the pairing on the cases "
               "and on the parts, each run with no key at all",
               (tmp / "V-gpt-x.txt").exists()
@@ -2175,6 +2189,20 @@ def test_add_model():
         with contextlib.redirect_stdout(out):
             rc = am.main(["--provider", "openai", "--model", "gpt-x", "--yes"],
                          ask=lambda prompt: "y", secret=lambda prompt: "sk-oai-typed")
+        def broke(*a, **k):
+            raise SystemExit("!! the check requests failed, so nothing ran:\n   HTTP 429 from "
+                             "https://api.z.ai/api/paas/v4/chat/completions: {\"error\":{\"code\":"
+                             "\"1113\",\"message\":\"Insufficient balance\"}}")
+        kept, am.preflight = am.preflight, broke
+        stopped = refused(["--provider", "zai", "--model", "glm-5.3-flash", "--name", "glm"],
+                          typed="zai-typed-1")
+        am.preflight = kept
+        zrec = (tmp / "logs" / "add_model-glm.log").read_text(encoding="utf-8")
+        check("…and a run that stops at the check requests says why there too, the "
+              "provider's own words, so it can be read after the terminal is gone",
+              "1113" in stopped and "stopped at the check requests, nothing ran" in zrec
+              and "Insufficient balance" in zrec and "zai-typed-1" not in zrec
+              and not (tmp / "traces" / "V-glm").exists(), zrec)
         check("a conversation an API error ended: run it again, and no reading until then",
               rc == 1 and "ended on a server or API error" in out.getvalue()
               and not (tmp / "V-gpt-x.txt").exists(), out.getvalue()[-300:])
