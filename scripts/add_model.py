@@ -151,7 +151,7 @@ def runs(name: str) -> tuple[str, str]:
 
 
 def commands(backend: str, url: str, model: str, name: str, extra: str,
-             max_tokens: int = MAX_TOKENS) -> list[list[str]]:
+             max_tokens: int = MAX_TOKENS, workers: int = 8) -> list[list[str]]:
     """The two sweeps of RUNBOOK 1s for one model. No key is in them."""
     agent = ["--backend", backend, "--model", model]
     if backend == "openai":
@@ -161,7 +161,7 @@ def commands(backend: str, url: str, model: str, name: str, extra: str,
     if max_tokens != MAX_TOKENS:
         agent += ["--max-tokens", str(max_tokens)]
     common = [sys.executable, "-m", "pasarbench.sweep", *agent, *CUSTOMER,
-              "--strategies", "full", "-k", "3", "--workers", "8", "--resume"]
+              "--strategies", "full", "-k", "3", "--workers", str(workers), "--resume"]
     cases, parts = runs(name)
     return [[*common, "--suite", "edition3", "--run-id", cases],
             [*common, "--suite", "generated", "--traps", part_traps(), "--run-id", parts]]
@@ -184,6 +184,19 @@ def child_env(agent_key: str, customer_key: str) -> dict[str, str]:
     env["PASARBENCH_API_KEY"] = agent_key
     env["PASARBENCH_SIM_API_KEY"] = customer_key
     return env
+
+
+def log(name: str, text: str) -> None:
+    """A line of the run's own record, logs/add_model-<name>.log: what ran, what
+    the check requests met, how each sweep ended -- so that a stop can be read
+    after it, from the folder. No key goes in it (v59)."""
+    path = ROOT / "logs" / f"add_model-{name}.log"
+    try:
+        path.parent.mkdir(exist_ok=True)
+        with path.open("a", encoding="utf-8") as fh:
+            fh.write(f"{time.strftime('%Y-%m-%d %H:%M:%S')}  {text}\n")
+    except OSError:
+        pass
 
 
 def keyless_env() -> dict[str, str]:
@@ -601,6 +614,9 @@ def main(argv: list[str] | None = None, ask=input, secret=getpass.getpass) -> in
     ap.add_argument("--extra-body", help="request settings as JSON (default: the provider's "
                                          "in the table, e.g. DeepSeek's reasoning off)")
     ap.add_argument("--yes", action="store_true", help="do not ask before running")
+    ap.add_argument("--workers", type=int, default=8,
+                    help="conversations at once (default 8): fewer for a provider that "
+                         "limits how many requests an account has open")
     ap.add_argument("--dry-run", action="store_true", help="the plan only; nothing is sent")
     ap.add_argument("--check", action="store_true",
                     help="which keys work and which models: every provider whose key is "
@@ -678,13 +694,15 @@ def main(argv: list[str] | None = None, ask=input, secret=getpass.getpass) -> in
         print("\n(dry run: nothing sent) The runs would be, each with the two keys in its "
               "environment as PASARBENCH_API_KEY and PASARBENCH_SIM_API_KEY and no other "
               "*_API_KEY:")
-        for c in commands(backend, url, model, name, extra, max_tokens):
+        for c in commands(backend, url, model, name, extra, max_tokens, a.workers):
             print("  " + " ".join(c[1:]))
         for c in readings(name):
             print("  " + " ".join(c[1:]))
         return 0
 
     print()
+    log(name, f"start: {model} on {url}, settings {extra or 'none'}, {max_tokens:,} tokens a "
+              f"step; runs {cases} and {parts}")
     if key_env and os.environ.get(key_env) and _ask(
             ask, f"Use {key_env} from your environment for {model}? (y/n)", "y").lower() \
             .startswith("y"):
@@ -698,6 +716,7 @@ def main(argv: list[str] | None = None, ask=input, secret=getpass.getpass) -> in
               if k.endswith("_API_KEY") and not k.startswith("PASARBENCH_")
               and k not in own and v.strip() == agent_key}
     if others:
+        log(name, f"refused: the key typed is the one in {', '.join(sorted(others))}")
         raise SystemExit(f"that is the key in {', '.join(sorted(others))}, another "
                          f"provider's: not sent to {url}")
     customer_key = key_for(CUSTOMER_URL, SIM_KEY) or secret(
@@ -710,19 +729,28 @@ def main(argv: list[str] | None = None, ask=input, secret=getpass.getpass) -> in
 
     print(f"Checking that {model} looks an order up with its tools and answers ...",
           flush=True)
-    served = preflight(backend, url, model, agent_key, extra, max_tokens)
+    try:
+        served = preflight(backend, url, model, agent_key, extra, max_tokens)
+    except SystemExit as e:
+        log(name, f"stopped at the check requests, nothing ran: {e}")
+        print(f"   (written to logs/add_model-{name}.log)")
+        raise
+    log(name, f"check requests ok: answered as {served}")
     print(f"  ok: answered as {served}")
     if not a.yes and not _ask(ask, "Run them? (y/n)", "n").lower().startswith("y"):
         print("Nothing ran.")
         return 0
 
     env = child_env(agent_key, customer_key)
-    for c in commands(backend, url, model, name, extra, max_tokens):
-        if subprocess.run(c, env=env).returncode:
+    for c in commands(backend, url, model, name, extra, max_tokens, a.workers):
+        rc = subprocess.run(c, env=env).returncode
+        log(name, f"sweep {c[c.index('--run-id') + 1]} ended, exit code {rc}")
+        if rc:
             print("!! a sweep stopped. Run the same command again: it carries on.")
             return 1
     left = api_errors(name)
     if left:
+        log(name, f"{left} conversations ended on a server or API error; no reading yet")
         print(f"!! {left} conversations ended on a server or API error. Run the same "
               f"command again before reading: only those run again.")
         return 1
@@ -741,6 +769,8 @@ def main(argv: list[str] | None = None, ask=input, secret=getpass.getpass) -> in
                 subprocess.run([sys.executable, "scripts/compare_cells.py",
                                 f"traces/{x}/full", f"traces/{y}/full"],
                                env=keyless_env(), stdout=fh, stderr=subprocess.STDOUT)
+    log(name, f"reading written: {out}" + (f", paired with {', '.join(rivals(name))}"
+                                           if rivals(name) else ""))
     print(f"\nDone: {out} -- the hard edition against its parts for {model}"
           + (f", and against {', '.join(rivals(name))}" if rivals(name) else "")
           + " (RUNBOOK 1s).")
