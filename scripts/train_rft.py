@@ -221,7 +221,8 @@ def build(args) -> None:
             if short:
                 print(f"   below the quota of {args.per_trap}, for want of passing "
                       f"episodes: " + ", ".join(f"{t} {n}" for t, n in short.items()))
-    print("\nNext: python scripts/train_rft.py check --data data/rft/train-A.jsonl"
+    # The files just written: round 2 writes them to data/rft2 (--out-dir).
+    print(f"\nNext: python scripts/train_rft.py check --data {out_dir / 'train-A.jsonl'}"
           " --server http://localhost:8000")
 
 
