@@ -1652,6 +1652,137 @@ def test_language_lead():
                     text) is not None, text[-1800:])
 
 
+def test_claim_reader_check():
+    """RUNBOOK 1u calibrates the claim reader on recorded replies before it
+    holds back a live one: the replies the English list holds back, a sample
+    of every language, and the duplicate refund's replies after the lookup --
+    where an alarm on the refund paid before would send the agent to pay it
+    again. The report reads the quotes first, then that, then English against
+    the list, then every other language."""
+    print("\n=== claim_reader_check calibrates the reader on recorded replies ===")
+    import contextlib
+    import io
+    import json
+    import re
+    import tempfile
+    from pathlib import Path
+
+    from pasarbench.harness.types import ModelResponse, Usage
+
+    tmp = Path(tempfile.mkdtemp())
+    order = {"order_id": "GO-A096E7"}
+    look = ("get_order", order)
+    _language_cell(tmp, "A", "DRE-VN", [[look, "I've escalated your case to a specialist.",
+                                         "Noted."]])
+    _language_cell(tmp, "A", "DRE-VN.vi", [[look, "Đơn hàng đã được hoàn tiền vào ngày 9/11.",
+                                            "Cảm ơn bạn."]])
+    _language_cell(tmp, "A", "CHE-VN.vi", [["Tôi đã chuyển yêu cầu của bạn lên bộ phận "
+                                            "chuyên trách.", "Xin cảm ơn."]])
+    crc = _load_script("claim_reader_check")
+    sample = tmp / "s.jsonl"
+    with contextlib.redirect_stdout(io.StringIO()):
+        crc.main(["sample", str(tmp), "--out", str(sample), "--per-language", "5",
+                  "--per-language-refund", "5"])
+    rows = [json.loads(l) for l in sample.read_text(encoding="utf-8").splitlines()]
+    by = {r["text"]: r for r in rows}
+    en = by["I've escalated your case to a specialist."]
+    vi = by["Đơn hàng đã được hoàn tiền vào ngày 9/11."]
+    check("every reply the agent wrote her, with what was done when it was written: the "
+          "list's alarm, the duplicate refund after the lookup",
+          en["phrase"] == [["escalate_to_human", "I've escalated your case to a specialist."]]
+          and "the English list holds it back" in en["why"] and en["after_lookup"]
+          and vi["after_lookup"] and not vi["phrase"] and "get_order" in vi["done"]
+          and not by["Tôi đã chuyển yêu cầu của bạn lên bộ phận chuyên trách."]["after_lookup"],
+          str(rows[:2]))
+
+    class Reader:
+        """Reads an escalation in English and Vietnamese -- and, wrongly, the refund
+        paid before the conversation as one this agent made."""
+        model = "fake-reader"
+
+        def chat(self, messages, tools):
+            t = messages[1].content
+            claims = ([{"action": "escalate", "quote": "I've escalated your case"}]
+                      if "escalated" in t else
+                      [{"action": "escalate", "quote": "Tôi đã chuyển yêu cầu của bạn"}]
+                      if "chuyển yêu cầu" in t else
+                      [{"action": "refund", "quote": "đã được hoàn tiền"},
+                       {"action": "voucher", "quote": "a voucher nobody wrote"}]
+                      if "hoàn tiền" in t else [])
+            return ModelResponse(content=json.dumps({"claims": claims}, ensure_ascii=False),
+                                 usage=Usage(1, 1))
+    import argparse
+    with contextlib.redirect_stdout(io.StringIO()):
+        crc.cmd_read(argparse.Namespace(sample=str(sample), out="", cache=str(tmp / "c.json"),
+                                        workers=2), backend=Reader())
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out):
+        crc.main(["report", str(tmp / "s.read.jsonl")])
+    text = out.getvalue()
+    check("the quotes first: a claim whose words are not in the reply is dropped and counted, "
+          "and over 5% the reader is not used",
+          "3 claims kept, 1 dropped" in text and "(25.0%)" in text
+          and "!! more than 5% dropped: the reader invents" in text, text[:600])
+    check("…then the refund already paid: every alarm on a payment in the duplicate refund "
+          "after the lookup, each to read",
+          "the reader holds back 1 for a payment no call made" in text
+          and "đã được hoàn tiền" in text.split("ENGLISH")[0], text)
+    check("…English against the list, and every alarm outside English",
+          "both hold back 1, the list only 0, the reader only 0" in text
+          and "Tôi đã chuyển yêu cầu của bạn" in text.split("BY LANGUAGE")[1], text)
+    from pasarbench.claim_reader import ClaimReader
+
+    class Cut(Reader):
+        """The same reader, its answer to one reply cut short."""
+
+        def chat(self, messages, tools):
+            if messages[1].content == "Xin cảm ơn.":
+                return ModelResponse(content='{"claims": [', usage=Usage(1, 1))
+            return super().chat(messages, tools)
+    _language_cell(tmp, "B", "CHE-VN.vi", [["Tôi đã chuyển yêu cầu của bạn lên bộ phận "
+                                            "chuyên trách.", "Xin cảm ơn."]],
+                   guardrail="reader", claim_reader=ClaimReader(Cut()))
+
+    class Counted(Reader):
+        calls = 0
+
+        def chat(self, messages, tools):
+            Counted.calls += 1
+            return super().chat(messages, tools)
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out):
+        crc.cmd_delivered(argparse.Namespace(cells=[str(tmp / "B" / "full")],
+                                             cache=str(tmp / "d.json"), workers=2),
+                          backend=Counted())
+    guarded = out.getvalue()
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out):
+        crc.cmd_delivered(argparse.Namespace(cells=[str(tmp / "A" / "full")],
+                                             cache=str(tmp / "c.json"), workers=2),
+                          backend=Reader())
+    text = out.getvalue()
+    check("after a live run: every reply the customer saw that the reader reads as a claim "
+          "no call backed, by cell and language, each with its verdict, to read",
+          f"{tmp / 'A' / 'full'}: 3 of 3 episodes, 3 of them failed (en 1, vi 2)" in text
+          and text.count("  failed") == 3
+          and "6 replies, read now; 0 answers not the JSON asked for (those replies unread) "
+              "and 1 claims dropped" in text, text)
+    check("…the guarded arm read as the run read it, asking the reader nothing, with the "
+          "answer it could not give counted",
+          f"{tmp / 'B' / 'full'}: 0 of 1 episodes" in guarded and Counted.calls == 0
+          and "as the run read them; 1 answers not the JSON asked for" in guarded, guarded)
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out):
+        _load_script("compare_cells").main([str(tmp / "A" / "full"), str(tmp / "B" / "full"),
+                                            "--checker", "recorded"])
+    text = out.getvalue()
+    check("compare_cells names the reader a cell read with, and says its guardrail reading "
+          "is not the other cell's instrument",
+          re.search(r"claim_reader\s+-\s+fake-reader", text) is not None
+          and "B/full with the reader fake-reader" in text
+          and "A/full with the English list" in text, text[:1500])
+
+
 def test_closing_room_compared():
     """v49: a closing phase may have room of its own. Two cells, one with it
     and one without, are not one experiment after the customer left, and
@@ -2106,6 +2237,7 @@ def main() -> int:
     test_answers_and_customers()
     test_language_lead()
     test_closing_room_compared()
+    test_claim_reader_check()
     test_language_swap()
     test_photo_claims_compared()
     test_read_failures()
