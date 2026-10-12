@@ -401,7 +401,8 @@ the base model passes 96% of the newer tasks, above the 95% at which I had said
 I would hold GRPO back. Half the room I ran it for was the customer's choice.
 And measured afterwards on the tasks it had trained on, it showed no gain there
 either: 91.2% to 92.0%, p = 0.71. One update that small moved nothing I could
-measure.
+measure. On a hard edition built to give it room, where the base model passes
+86%, it was inconclusive again.
 
 A verifier is a reward function the moment you train on it, and its quirks
 become the model's habits. The replay that caught this cost seconds. Without
