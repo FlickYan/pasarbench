@@ -322,7 +322,8 @@ def run_cell(strategy_name: str, backend_factory, simulator_factory, tasks: list
              k: int, budget: Budget, policy_mode: str, trace_root: str, run_id: str,
              summarizer=None, exposure_spec: str = "", workers: int = 1,
              save_messages: bool = False, resume: bool = False,
-             guardrail: str = "off", closing: str = "off") -> dict:
+             guardrail: str = "off", closing: str = "off",
+             closing_room: bool = False) -> dict:
     strategy = make_strategy(strategy_name, summarizer)
     exposure = build_exposure(exposure_spec, ALL_SOLUTIONS) if exposure_spec else None
     cell = strategy_name if not exposure_spec else f"{strategy_name}+{exposure_spec}"
@@ -343,7 +344,8 @@ def run_cell(strategy_name: str, backend_factory, simulator_factory, tasks: list
                           simulator=simulator_factory(task),
                           context=strategy, budget=budget, trace=w,
                           policy_mode=policy_mode, exposure=exposure,
-                          run_index=seed, guardrail=guardrail, closing=closing)
+                          run_index=seed, guardrail=guardrail, closing=closing,
+                          closing_room=closing_room)
         v = verify(task, db, n_turns=res.budget["steps"],
                    tokens=res.budget["tokens"])
         if save_messages:
@@ -390,6 +392,7 @@ def run_cell(strategy_name: str, backend_factory, simulator_factory, tasks: list
                     or head.get("closing", "off") != closing
                     or (closing == "guard"
                         and head.get("closing_guard", 1) != GUARD_VERSION)
+                    or head.get("closing_room", False) != closing_room
                     or head.get("tool_checks", 1) != TOOL_CHECKS):
                 raise SystemExit(
                     f"--resume: {cell_dir} already holds episodes from a different "
@@ -398,6 +401,7 @@ def run_cell(strategy_name: str, backend_factory, simulator_factory, tasks: list
                     f"guardrail {head.get('guardrail', 'off')!r}, closing "
                     f"{head.get('closing', 'off')!r}"
                     + (f" v{head.get('closing_guard', 1)}" if closing == "guard" else "")
+                    + (" with room" if head.get("closing_room") else "")
                     + f", tool checks "
                     f"v{head.get('tool_checks', 1)}). Use a new --run-id.")
             if save_messages and not done["has_messages"]:
@@ -574,6 +578,11 @@ def main() -> None:
                          "and what came of each (RUNBOOK 1n). guard: 1j's note, and "
                          "in the closing phase a write that repeats one already "
                          "made is not run (RUNBOOK 1o)")
+    ap.add_argument("--closing-room", action="store_true",
+                    help="bound the closing phase by its own six steps, not by what the "
+                         "conversation left of the episode's steps, tool calls and "
+                         "tokens (v49; in 1q the budget cut 27 of 456 phases short). "
+                         "The conversation runs as before; the trace header records it"),
     ap.add_argument("-k", type=int, default=1)
     ap.add_argument("--suite", default="core", choices=list(SUITES),
                     help="edition2: new tasks of the closing check's five traps, outside "
@@ -642,6 +651,8 @@ def main() -> None:
     if served and args.backend == "openai" and _local(args.base_url):
         print(check_served(args.base_url, served))
 
+    if args.closing_room and args.closing == "off":
+        raise SystemExit("--closing-room gives the closing phase room: it needs --closing")
     tasks = select_tasks(args)
     if not tasks:
         raise SystemExit("no tasks selected")
@@ -672,7 +683,7 @@ def main() -> None:
                                  summarizer, exp, args.workers,
                                  save_messages=args.save_messages,
                                  resume=args.resume, guardrail=args.guardrail,
-                                 closing=args.closing))
+                                 closing=args.closing, closing_room=args.closing_room))
 
     print("\n" + markdown_table(rows))
 
