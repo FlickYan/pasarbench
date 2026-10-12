@@ -215,6 +215,26 @@ def _print_photo_claims(rows: list[tuple[int, int, int, int]]) -> None:
               "agent's policy: read that trap's row below as hers as much as the agent's")
 
 
+def _print_voucher_choices(rows: list[dict[str, int]]) -> None:
+    """The voucher trap's customer, offered the voucher, declining it for her
+    money or a human, and the agent escalating as P6.3 and P10 ask -- which the
+    trap's check fails (WHAT_FAILED #46). Counts from diagnose.voucher_choice."""
+    if not any(r["episodes"] for r in rows):
+        return
+    print("\ncustomers offered the voucher who declined it for a refund or a human "
+          "(WHAT_FAILED #46):")
+    for label, key in (("episodes she declined it in", "declined"),
+                       ("failed on the voucher alone", "read_as_pass"),
+                       ("trap failures without it", "failed_without")):
+        cells = [f"{r[key]}/{r['episodes']}" if key == "declined" else str(r[key])
+                 for r in rows]
+        print(f"  {label:28s} " + " ".join(f"{c:>18s}" for c in cells))
+    if any(r["declined"] for r in rows):
+        print("  !! where she declines it, P6.3 and P10 ask for the escalation the check "
+              "fails: read that trap's row below as hers as much as the agent's, and the "
+              "paired line read as the policy reads it beside the result")
+
+
 def _print_endings(name: str, rows: list[tuple[str, str, bool, str, str]],
                    every: bool = False) -> None:
     what = "episodes" if every else "failures"
@@ -531,7 +551,7 @@ def main(argv: list[str] | None = None) -> int:
                     help="today's checks on the replayed episodes (default, as "
                          "RESULTS.md) or the verdicts the runs recorded")
     a = ap.parse_args(argv)
-    from pasarbench.diagnose import load_episodes, paired_episodes
+    from pasarbench.diagnose import load_episodes, paired_episodes, voucher_choice
     from pasarbench.rescore import all_tasks
 
     cells = [Path(a.control), Path(a.treatment)]
@@ -588,6 +608,7 @@ def main(argv: list[str] | None = None) -> int:
 
     g = paired_episodes(ea, eb)
     cvs = [_closings(c, eps, tasks) for c, eps in zip(cells, (ea, eb))]
+    vcs = [voucher_choice(c, eps, a.checker) for c, eps in zip(cells, (ea, eb))]
     print()
     if g is None:
         print("paired: fewer than 5 shared tasks -- not testable")
@@ -608,6 +629,12 @@ def main(argv: list[str] | None = None) -> int:
                 if gl else "fewer than 5 shared tasks -- not testable")
                 + (f" ({out} episodes left out: not scored as the customer left them)"
                    if out else ""))
+        if any(n["read_as_pass"] for _, n in vcs):
+            gv = paired_episodes(vcs[0][0], vcs[1][0])
+            print("  the same, the voucher trap's escalations after she declined the voucher "
+                  "read as P6.3 and P10 read them (after the fact, WHAT_FAILED #46): " + (
+                      f"{gv['diff']:+.3f}; {gv['better']} tasks better, {gv['worse']} worse, "
+                      f"p={gv['p']:.3f}" if gv else "fewer than 5 shared tasks -- not testable"))
     t = paired_episodes(ea, eb, metric="tokens")
     if t:
         print(f"tokens, paired: {t['diff']:+,.0f} per episode; {t['better']} tasks "
@@ -662,6 +689,7 @@ def main(argv: list[str] | None = None) -> int:
         _print_endings(name, _endings(cell, eps, every=a.endings), every=a.endings)
         _print_settlements(name, *_settlements(cell, eps))
     _print_photo_claims([_photo_claims(c, eps, tasks) for c, eps in zip(cells, (ea, eb))])
+    _print_voucher_choices([n for _, n in vcs])
 
     def per_trap(eps):
         d: dict[str, list[bool]] = defaultdict(list)
