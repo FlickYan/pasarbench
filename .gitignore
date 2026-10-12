@@ -9,6 +9,9 @@ venv/
 .vscode/
 *.tar
 *.tar.gz
+# local reports with no key in them, rewritten on each run
+models_check.txt
+tests_failed.log
 
 # run artifacts -- regenerate, never commit
 traces/
