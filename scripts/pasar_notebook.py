@@ -19,6 +19,7 @@ and then any of:
     pn.launch("stage1") # ...or as a detached Modal job on its own GPU; the notebook may stop
     pn.run("stage1", round=2)   # round 2: the second fine-tune, files of its own (v44)
     pn.run("grpo", round=2)     # GRPO from round 2's adapters, after its stage 2 (v45)
+    pn.run("customer3", round=2)   # customer 3 against customer 2, ~30 min (v47)
     pn.status()         # what is running or done (a notebook sees other containers'
                         # writes as of its start: check a job from a new session)
     pn.read("logs/smoke-projection.txt")    # print a file (head=, tail= for long ones)
@@ -60,7 +61,7 @@ VENV = Path(os.environ.get("PASAR_NB_VENV") or
 REPO = "pasarbench"
 LOCK = "logs/.stage-lock.json"
 STALE = 15 * 60
-STAGES = ("smoke", "stage1", "stage2", "grpo")
+STAGES = ("smoke", "stage1", "stage2", "grpo", "customer3")
 # What pack() archives: what the report and the audits read (as modal_pipeline.pull).
 RESULTS = ["logs", "data/splits", "data/rft/stats.json", "data/run_settings.env",
            "traces/P-smoke", "traces/P-base", "traces/P-rft", "traces/P-ref",
@@ -69,7 +70,9 @@ RESULTS = ["logs", "data/splits", "data/rft/stats.json", "data/run_settings.env"
            "traces/P2-base-e2", "traces/P2-rft", "traces/P2-ref",
            # GRPO (round 2's grpo stage), patterns: its stats and evaluations; its
            # rollouts (traces/P2-grpo-i*-collect-*) stay on the Volume
-           "data/grpo2/stats", "traces/P2-rft-e2", "traces/P2-grpo-i?", "traces/P2-grpo-i?-e2"]
+           "data/grpo2/stats", "traces/P2-rft-e2", "traces/P2-grpo-i?", "traces/P2-grpo-i?-e2",
+           # the customer check (round 2's customer3 stage): customer 2 and 3
+           "traces/P2-c?-check"]
 WEB_DOWNLOAD_LIMIT = 16 * 2**20    # the Modal web UI downloads files up to 16 MB
 
 _state: dict = {}
@@ -522,6 +525,9 @@ def run(stage: str, force: bool = False, round: int | None = None) -> None:
     env = _round(round)
     if stage == "grpo" and env.get("PASAR_ROUND") != "2":
         raise SystemExit("GRPO continues round 2's fine-tunes: pn.run('grpo', round=2)")
+    if stage == "customer3" and env.get("PASAR_ROUND") != "2":
+        raise SystemExit("the customer check runs on round 2's models: "
+                         "pn.run('customer3', round=2)")
     if not _gpus():
         raise SystemExit("this notebook has no GPU: open the compute profile (sidebar), pick "
                          "B200 x1 (or H200 x1), let the kernel restart, run pn.setup() again")
@@ -549,6 +555,9 @@ def launch(stage: str, wait_min: float = 30, dry_run: bool = False,
     env = _round(round)
     if stage == "grpo" and env.get("PASAR_ROUND") != "2":
         raise SystemExit("GRPO continues round 2's fine-tunes: pn.launch('grpo', round=2)")
+    if stage == "customer3" and env.get("PASAR_ROUND") != "2":
+        raise SystemExit("the customer check runs on round 2's models: "
+                         "pn.launch('customer3', round=2)")
     work = paths()["work"]
     cmd = [sys.executable, "-m", "modal", "run", "--detach", "scripts/modal_pipeline.py",
            "--stage", stage]
@@ -678,6 +687,8 @@ def status() -> None:
             for d in sorted((work / "traces").glob("P2-grpo-i*")):
                 expect[d.name] = (None if "-collect-" in d.name else
                                   62 * K if d.name.endswith("-e2") else 215 * K)
+            for c in (2, 3):            # the customer check: two traps, 28 tasks
+                expect[f"P2-c{c}-check"] = 28 * K
         for name, n in expect.items():
             d = work / "traces" / name
             if d.exists():
