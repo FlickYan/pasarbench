@@ -173,7 +173,12 @@ _CHANGE = re.compile(
     r"new address|keep (?:it|the)|\binstead\b|changed? my mind"
     r"|(?:don'?t|do not|not|no need(?: to)?) (?:want to |need to )?cancel"
     r"|alamat baru|tak (?:jadi|payah|perlu) batal|jangan (?:di)?batal|(?:ubah|tukar) fikiran"
+    # Malay as round 2's customer wrote it in the hard edition: "tak nak cancel
+    # lah. Saya nak simpan rak buku tu, cuma nak tukar alamat penghantaran".
+    r"|tak (?:nak|mahu|mau) (?:cancel|batal)|nak simpan|(?:tukar|ubah) alamat"
+    r"|teruskan (?:order|pesanan)"
     r"|(?:tidak|nggak|gak|ga|enggak) jadi|(?:berubah|ganti) pikiran"
+    r"|(?:tidak|nggak|gak|ga|enggak) (?:mau|ingin) (?:cancel|batal)|(?:ganti|ubah) alamat"
     r"|ที่อยู่ใหม่|ไม่(?:ต้อง)?ยกเลิก|เปลี่ยนใจ"
     r"|địa chỉ mới|không (?:cần )?hủy|đừng hủy|đổi ý"
     r"|新地址|(?:不|不要|别|不用)(?:取消|cancel)|改(?:变)?主意", re.I)
