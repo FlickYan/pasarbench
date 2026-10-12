@@ -237,7 +237,7 @@ that choice beside every comparison the hard edition prints.
 scripts as it goes — bash reads `gpu_pipeline.sh` line by line — so a version
 unpacked while GRPO runs can change what the rest of the run does.
 
-## Customer 3 — after GRPO (v47, optional, ~30 minutes)
+## Customer 3 — after GRPO (v47; run 2026-10-12 in ten minutes: she holds)
 
 The simulated customer the next edition will use, checked against today's on
 the two traps her new rule reaches (RUNBOOK phase 4, customer 3; WHAT_FAILED
@@ -250,8 +250,10 @@ pn.pack()
 ```
 
 As a Modal job: `PASAR_ROUND=2 modal run --detach scripts/modal_pipeline.py --stage
-customer3`, then `--stage pull`. About half an hour of one B200 (~$5): 280
-episodes at temperature 0, with the server start.
+customer3`, then `--stage pull`. About ten minutes of one B200 (~$2): 280
+episodes at temperature 0, with the server start. Its reading on 2026-10-12:
+customer 3 holds, and the hard edition runs with her (RUNBOOK phase 4, customer
+3).
 
 ## The hard edition — after the customer check (v48, optional, ~1.5 hours)
 
@@ -260,7 +262,8 @@ RFT adapters and GRPO's (RUNBOOK phase 4, the hard edition; 1s says what the
 cases are). Read `logs/r2-customer3.txt` first: the stage runs customer 3, and
 refuses to until her check has run. If the check says to keep customer 2, set
 `PASAR_E3_CUSTOMER=2` before the stage — in the notebook,
-`os.environ["PASAR_E3_CUSTOMER"] = "2"`.
+`os.environ["PASAR_E3_CUSTOMER"] = "2"`. (Read 2026-10-12: she holds, so nothing
+is set.)
 
 ```python
 pn.run("edition3", round=2)                       # or pn.launch("edition3", round=2)
@@ -273,7 +276,7 @@ edition3`, then `--stage pull`. About an hour and a half of one B200 (~$15): 540
 episodes at temperature 0 and three server starts. Run it again after a failure:
 finished runs are not served again.
 
-## GRPO on its own tasks — optional (v52, ~1 hour)
+## GRPO on its own tasks — optional (v52; run 2026-10-12 in 22 minutes)
 
 Whether GRPO's one iteration learned the tasks it trained on, which its
 evaluation cannot say (RUNBOOK phase 4, GRPO, the learning curve's second
@@ -289,9 +292,10 @@ pn.pack()
 ```
 
 As a Modal job: `PASAR_ROUND=2 modal run --detach scripts/modal_pipeline.py --stage
-grpo-measure`, then `--stage pull`. About an hour of one B200 (~$7). Its
+grpo-measure`, then `--stage pull`. About 25 minutes of one B200 (~$3). Its
 rollouts stay on the Volume, as GRPO's do; the comparison and the stats come
-back with `pull`.
+back with `pull`. Its reading on 2026-10-12: NOT SHOWN (RUNBOOK phase 4, GRPO,
+the learning curve's second point).
 
 ---
 
@@ -494,17 +498,26 @@ prints "Stage 2 done", go on.
 pn.pack()
 ```
 
-It writes `results-<date>.tar.gz` (logs, splits, settings, and the smoke,
-baseline, RFT and reference traces; the multi-GB collection run stays on the
-Volume) and says how to download it: from the Files panel when it is under
-16 MB (the web UI's limit), otherwise with `modal volume get` from your laptop.
-On the laptop:
+It writes `results-<date>.tar.gz` (logs, splits, settings, GRPO's stats and
+every evaluation's traces; the multi-GB collection runs and GRPO's rollouts stay
+on the Volume) and says how to download it: from the Files panel when it is
+under 16 MB (the web UI's limit), otherwise with `modal volume get` from your
+laptop. On the laptop:
 
 ```bash
 cd ~/Downloads && tar -xzf results-<date>.tar.gz    # lands in ~/Downloads/pasarbench/
 ```
 
 then **step F**.
+
+Since v53 a pack holds only what is new or changed since the last one — after a
+stage, its traces and the logs — so extract each over the one before it, as
+above. It notes what the packs hold in `.packed.json` beside them on the Volume;
+the first pack after v53 reads that from the newest `results-*.tar.gz` instead.
+`pn.pack(full=True)` packs every result again, for a fresh copy of the repo.
+Before v53 every pack held every result: some ten thousand trace files by round
+2, each a round trip to read off the Volume, one at a time — 20 minutes, with
+the GPU still attached. They are now read 32 at a time.
 
 ### N11. Stop paying
 
