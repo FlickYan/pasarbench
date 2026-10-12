@@ -66,6 +66,7 @@ and `check` prints exactly which text that is. Read it before training.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import os
 import random
@@ -80,6 +81,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 OUT = Path("data/rft")
 FOLDS = "data/splits/folds.json"
+FOLDS_E2 = "data/splits/folds-e2.json"     # the 62 newer tasks' own split (rl/split.py --suite edition2)
 NO_THINKING = json.dumps({"chat_template_kwargs": {"enable_thinking": False}})
 
 from pasarbench.models import AGENT_DEFAULT, SIM_DEFAULT  # noqa: E402  (after sys.path)
@@ -135,8 +137,12 @@ def evaluate(args) -> None:
     names against the server's adapter list before the first episode, because
     a bare adapter name would be answered by the base model."""
     fm = ",".join(f"{f}={args.model}:{args.adapter_prefix}{f}" for f in ("A", "B"))
+    # The 62 newer tasks are in neither fold: no adapter trained on any of
+    # them, and their own split (data/splits/folds-e2.json, families dealt as
+    # the main split's) only shares them out between the two adapters.
+    folds = args.folds or (FOLDS_E2 if args.suite == "edition2" else FOLDS)
     _sweep(args, args.run_id or "P-rft", args.k, 0.0,
-           ["--folds", args.folds, "--fold-models", fm])
+           ["--folds", folds, "--fold-models", fm])
 
 
 # --------------------------------------------------------------------------
@@ -353,6 +359,13 @@ def train(args) -> None:
     rows = [json.loads(l) for l in Path(args.data).read_text().splitlines() if l.strip()]
     if not rows:
         raise SystemExit(f"{args.data} is empty")
+    # GRPO (pasarbench/rl/grpo.py): every turn carries its episode's advantage
+    # and the token count of the episode's turns; the loss is the clipped
+    # policy gradient, not the turn's likelihood.
+    grpo = getattr(args, "objective", "sft") == "grpo"
+    if grpo and any("advantage" not in r or "norm" not in r for r in rows):
+        raise SystemExit(f"{args.data} has no advantages: build it with "
+                         f"`train_grpo.py build`")
     long = [r for r in rows if r.get("tokens", 0) > args.max_len]
     if long:
         # The build capped turns at its own --max-len; a lower cap here is the
@@ -373,7 +386,11 @@ def train(args) -> None:
             return len(rows)
 
         def __getitem__(self, i):
-            return tokenize_example(tok, rows[i])
+            item = tokenize_example(tok, rows[i])
+            if grpo:
+                item = {**item, "advantage": rows[i]["advantage"], "norm": rows[i]["norm"],
+                        "old_logprobs": rows[i].get("old_logprobs")}
+            return item
 
     def collate(batch):
         n = max(len(b["input_ids"]) for b in batch)
@@ -394,6 +411,13 @@ def train(args) -> None:
             keep = n - first + 1
             out["logits_to_keep"] = keep
             out["labels"] = out["labels"][:, -keep:]
+        if "advantage" in batch[0]:
+            if len(batch) != 1:
+                raise SystemExit("GRPO trains one turn per micro-batch")
+            out["advantage"] = torch.tensor([float(batch[0]["advantage"])])
+            out["norm"] = torch.tensor([float(batch[0]["norm"])])
+            if batch[0].get("old_logprobs") is not None:
+                out["old_logprobs"] = torch.tensor([batch[0]["old_logprobs"]])
         return out
 
     bf16 = torch.cuda.is_available() and not args.fp32
@@ -409,9 +433,22 @@ def train(args) -> None:
         args.model, dtype=torch.bfloat16 if bf16 else torch.float32,
         attn_implementation=args.attn, **placement)
     model.config.use_cache = False
-    model = get_peft_model(model, LoraConfig(
-        r=args.lora_r, lora_alpha=2 * args.lora_r, lora_dropout=0.05,
-        target_modules=LORA_TARGETS, task_type="CAUSAL_LM"))
+    if getattr(args, "init", ""):
+        # Continue from an adapter -- the RFT model GRPO starts from, or the
+        # last iteration's -- with its rank and targets.
+        from peft import PeftModel
+        model = PeftModel.from_pretrained(model, args.init, is_trainable=True)
+    else:
+        model = get_peft_model(model, LoraConfig(
+            r=args.lora_r, lora_alpha=2 * args.lora_r, lora_dropout=0.05,
+            target_modules=LORA_TARGETS, task_type="CAUSAL_LM"))
+    if grpo:
+        # The policy that sampled the rollouts ran with no dropout, and the
+        # ratio compares this pass with one in eval mode: dropout here would
+        # put noise in every ratio, the first step's included.
+        for m in model.modules():
+            if isinstance(m, torch.nn.Dropout):
+                m.p = 0.0
     wrapped = [n for n, m in model.named_modules() if hasattr(m, "lora_A")]
     stray = [n for n in wrapped if "visual" in n or "vision" in n]
     if stray:
@@ -426,7 +463,9 @@ def train(args) -> None:
         per_device_train_batch_size=1,          # turns run 3k-16k tokens; no padding waste
         gradient_accumulation_steps=args.grad_accum,
         learning_rate=args.lr,                  # LoRA; full fine-tuning would want ~1e-5
-        lr_scheduler_type="cosine",
+        # GRPO: each iteration's rollouts are new data; a schedule that decays
+        # to nothing inside one iteration would end each one learning nothing.
+        lr_scheduler_type="constant_with_warmup" if grpo else "cosine",
         warmup_steps=args.warmup_steps,
         bf16=bf16,
         gradient_checkpointing=True,
@@ -455,8 +494,53 @@ def train(args) -> None:
             self.last = now
 
     clock = Clock()
-    trainer = Trainer(model=model, args=targs, train_dataset=Turns(), data_collator=collate,
-                      callbacks=[clock])
+    trainer_cls = Trainer
+    if grpo:
+        from pasarbench.rl.grpo import grpo_loss
+
+        # The ratio's denominator: each turn's log-probabilities under the
+        # adapter this iteration starts from, by the forward pass training
+        # uses, before the first step moves it.
+        model.eval()
+        dev = next(model.parameters()).device
+        # Under the autocast training runs in (the Trainer's bf16 wraps the
+        # forward): without it the LoRA path, kept in fp32 by PEFT, would run
+        # in fp32 here and in bf16 there, and no ratio would start at 1.
+        cast = (torch.autocast("cuda", dtype=torch.bfloat16) if bf16
+                else contextlib.nullcontext())
+        with torch.no_grad(), cast:
+            for i, r in enumerate(rows):
+                b = collate([tokenize_example(tok, r)])
+                labels = b.pop("labels")
+                out = model(**{k: (v.to(dev) if torch.is_tensor(v) else v)
+                               for k, v in b.items()})
+                _, logp = grpo_loss(out.logits, labels.to(dev), 0.0, 1.0)
+                r["old_logprobs"] = logp.float().cpu().tolist()
+                if i and i % 200 == 0:
+                    print(f"old log-probabilities: {i}/{len(rows)} turns", flush=True)
+        model.train()
+        clip = getattr(args, "clip", 0.2)
+
+        class GRPOTrainer(Trainer):
+            def __init__(self, *a, **k):
+                super().__init__(*a, **k)
+                # The loss is a turn's own (grpo_loss), not one to be summed over
+                # the tokens of the accumulated turns: the Trainer then averages
+                # it over the turns of an optimizer step, as it should.
+                self.model_accepts_loss_kwargs = False
+
+            def compute_loss(self, model, inputs, return_outputs=False,
+                             num_items_in_batch=None):
+                adv, norm = inputs.pop("advantage"), inputs.pop("norm")
+                old = inputs.pop("old_logprobs", None)
+                labels = inputs.pop("labels")
+                out = model(**inputs)
+                loss, _ = grpo_loss(out.logits, labels, float(adv[0]), float(norm[0]),
+                                    None if old is None else old[0], clip=clip)
+                return (loss, out) if return_outputs else loss
+        trainer_cls = GRPOTrainer
+    trainer = trainer_cls(model=model, args=targs, train_dataset=Turns(),
+                          data_collator=collate, callbacks=[clock])
     resume = args.resume and any(Path(args.out).glob("checkpoint-*"))
     trainer.train(resume_from_checkpoint=True if resume else None)
     trainer.save_model(args.out)
@@ -468,7 +552,11 @@ def train(args) -> None:
         "lora_r": args.lora_r, "lora_targets": LORA_TARGETS, "max_len": args.max_len,
         "processes": world, "grad_accum": args.grad_accum,
         "turns_per_step": world * args.grad_accum,
-        "logits": "full" if args.full_logits else "turn only"}, indent=2))
+        "logits": "full" if args.full_logits else "turn only",
+        "objective": "grpo" if grpo else "sft", "init": getattr(args, "init", "") or None,
+        **({"clip": getattr(args, "clip", 0.2),
+            "mean_abs_advantage": round(sum(abs(r["advantage"]) for r in rows) / len(rows), 4)}
+           if grpo else {})}, indent=2))
     stats = {"step_s": clock.steps, "peak_gib": 0.0, "total_gib": 0.0}
     if bf16:
         stats["peak_gib"] = torch.cuda.max_memory_reserved(rank) / 2**30
@@ -477,7 +565,10 @@ def train(args) -> None:
         print(f"\npeak GPU memory {stats['peak_gib']:.1f} of {stats['total_gib']:.0f} GiB; "
               f"{rest[len(rest) // 2]:.0f} s per optimizer step "
               f"({world * args.grad_accum} turns)" if rest else "")
-    if not getattr(args, "probe", False):
+    if grpo:
+        print(f"\nadapter -> {args.out}: the next iteration's policy. A GRPO loss is "
+              f"not a result either; held-out pass^k is.")
+    elif not getattr(args, "probe", False):
         print(f"\nadapter -> {args.out}. Serve it with serve_sglang.sh rft and run "
               f"`train_rft.py eval`. Training loss is not a result; held-out pass^k is.")
     return stats
@@ -652,7 +743,11 @@ def main() -> None:
 
     e = sub.add_parser("eval", help="each adapter on the fold it did not train on")
     served(e, 5)
-    e.add_argument("--folds", default=FOLDS)
+    e.add_argument("--suite", default="all", choices=["all", "edition2"],
+                   help="edition2: the 62 newer tasks, which no adapter trained on, "
+                        "shared out between the two by their own split")
+    e.add_argument("--folds", default="",
+                   help=f"default {FOLDS}; {FOLDS_E2} with --suite edition2")
     e.add_argument("--adapter-prefix", default="pasar-rft-",
                    help="adapters are loaded as <prefix>A and <prefix>B, and "
                         "requested as <model>:<prefix>A")
@@ -729,6 +824,12 @@ def main() -> None:
                         "default avoids); for comparison only")
     t.add_argument("--resume", action="store_true",
                    help="continue from the latest checkpoint in --out")
+    t.add_argument("--objective", choices=["sft", "grpo"], default="sft",
+                   help="grpo: the clipped policy gradient on examples from "
+                        "`train_grpo.py build` (pasarbench/rl/grpo.py)")
+    t.add_argument("--init", default="",
+                   help="an adapter to continue from (GRPO starts from the RFT one)")
+    t.add_argument("--clip", type=float, default=0.2, help="GRPO's ratio clip")
     t.set_defaults(fn=train)
 
     args = ap.parse_args()
