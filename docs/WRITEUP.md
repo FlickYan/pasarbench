@@ -535,7 +535,7 @@ doing it twice.
 
 ### What failed
 
-`docs/WHAT_FAILED.md` has 47 entries. Most were found by running experiments
+`docs/WHAT_FAILED.md` has 49 entries. Most were found by running experiments
 and refusing a number that couldn't be right. Four more:
 
 **The ceiling was below the floor.** The oracle arm — by design the best case —
@@ -601,7 +601,7 @@ iteration, judged on tasks whose room was partly the customer's choice. Serving
 cost is built but not measured.
 <!-- RESULTS.md §3 paired table (pairs 13–16); audit_tool_arms.py §3 header; traces/J-preload OOWDE-VN.vi__r2: "Trường hợp của bạn đã được chuyển lên bộ phận xử lý khiếu nại", escalate_to_human never searched for, never called; traces/L2-claims OOWOV-VN__r1, DRE-PH__r1, HPRR-PH__r2 (RUNBOOK 1i, v25) -->
 
-The code, the trace generators, and all 47 failures are in the repo.
+The code, the trace generators, and all 49 failures are in the repo.
 
 ---
 
@@ -896,12 +896,22 @@ chat, where the failing agents asked for photos of cushion covers worth about
 SGD 58 as if they were worth over SGD 200, outside a return window most of them
 told the customer was still open, and almost always without the one call that
 would have told them both. In Singapore, where the price is in SGD, no model
-failed it. Then run models from several labs on it, one command each
+failed it. Then I ran models from four labs on it, one command each
 (`scripts/add_model.py`, each key sent to its own provider only), against one
 customer — a customer who leaves once she has promised what she can't do in the
 conversation (WHAT_FAILED #43), checked on round 2's machine: under her no claim
 of photos reached the agent, where the old customer's did in 31 of 70
-conversations. GRPO ran one iteration from the second fine-tune: inconclusive,
+conversations. For the five of them the hard edition was not harder than its
+parts, and it separated no two the parts did not: where they failed, they failed
+the duplicate refund the parts already test, and DeepSeek-V4-Pro failed it less
+often inside the livestream story than alone (RUNBOOK 1s). It was hard for
+round 2's 27B models; for API models the next edition needs combinations that
+defeat them. Reading those failures found two more broken instruments: every
+generated customer's profile shows a phone that does not end in the digits that
+verify her (WHAT_FAILED #48), and the voucher choice's reader took a refused
+voucher for one she declined (#49).
+<!-- RUNBOOK 1s, run on 2026-10-13; RESULTS.md §8: cases against their parts, pass^1: deepseek-v4-pro 0.944 vs 0.833 EASIER p=0.039, deepseek-flash 0.991 vs 1.000, mimo-v2.6-flash 0.991 vs 0.991, grok-4.3 0.685 vs 0.731 p=0.289, glm-5.3-flash 0.954 vs 0.944; the parts separate deepseek-v4-pro from deepseek-flash, mimo and glm (p<=0.006), the cases separate no pair the parts do not; duplicate refund twins: deepseek-v4-pro 12/30 alone, 25/30 in the livestream case -->
+GRPO ran one iteration from the second fine-tune: inconclusive,
 and the room it was judged in was partly the voucher trap's customer (RUNBOOK
 phase 4, GRPO; WHAT_FAILED #46); on the hard edition, inconclusive again.
 Measured on the tasks it trained on, the one iteration showed no gain there
