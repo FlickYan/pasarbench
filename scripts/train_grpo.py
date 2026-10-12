@@ -74,7 +74,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from pasarbench.harness.simulator import CUSTOMER  # noqa: E402
+from pasarbench.harness.simulator import CUSTOMER, ENDING  # noqa: E402
 from pasarbench.models import AGENT_DEFAULT, SIM_DEFAULT  # noqa: E402
 
 AGENT = os.environ.get("AGENT_MODEL") or AGENT_DEFAULT
@@ -271,7 +271,7 @@ def main(argv: list[str] | None = None) -> None:
     c.add_argument("--base-url", default="http://localhost:8000/v1")
     c.add_argument("--sim-model", default=os.environ.get("SIM_MODEL") or SIM_DEFAULT)
     c.add_argument("--sim-url", default="http://localhost:8001/v1")
-    c.add_argument("--customer", type=int, choices=[1, 2],
+    c.add_argument("--customer", type=int, choices=sorted(ENDING),
                    default=int(os.environ.get("PASAR_CUSTOMER") or CUSTOMER),
                    help="the simulated customer's rules (WHAT_FAILED #38)")
     c.add_argument("-k", type=int, default=8)
