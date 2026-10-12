@@ -698,6 +698,13 @@ checks, #30) — a ground truth with variance, and the experiment that produced
 the project's clearest judge result. The 41 of 43 is the same on either
 checker.
 
+**Since v45.** The verifier is ground truth for actions only, and the rubric
+is about what the agent said. So the calibration now makes its own
+violations: transcripts the verifier passed, each beside a copy with one
+mistake of one criterion planted in it (`scripts/judge_calibration.py`,
+RUNBOOK phase 2) — known answers, with variance, on the criteria the database
+cannot see.
+
 **Lesson.** Look at label variance after the first twenty labels, not after two
 hundred. And sample for the property the rubric measures: a set stratified on
 *task* failure is not a set rich in *communication* failure.
@@ -1561,6 +1568,63 @@ suite's.
 **Lesson.** A null over an average is a null for the average. The guarantee that
 makes twins comparable — the same world, the same checks — holds task by task,
 and the comparison should too: a table by trap beside every pooled one.
+
+## 41. The step penalty would have trained GRPO on passes alone
+
+**What happened.** The first draft of GRPO's build (v45, before any run) took
+the textbook test for a group with nothing to learn from: standardise its
+rewards, and skip it if they all come out zero. But the reward takes 0.005 off
+a passing episode for every step beyond the reference path (the third of the
+defences in `pasarbench/rl/reward.py`), so eight passing rollouts of different
+lengths have rewards that differ in the third decimal — and standardising
+divides that difference by its own tiny spread. The shortest pass would have
+got an advantage as large as a pass gets against a fail, the longest one as
+large as a fail's. The model passes 98% of the suite, so most groups would be
+all passes, and most of the gradient would have taught already correct
+conversations to be a step shorter — at full strength, with the pass and fail
+signal a minority of it. Found by reading the reward against the build before
+the first run; the test that guards it shows the size: two passes of one task,
+one three steps longer, standardise to +1 and −1.
+
+**Fix.** A group is learned from only when its verdicts differ: some rollouts
+passed and some did not (`pasarbench/rl/grpo.py`). Inside such a group the
+shaped reward still orders the rollouts; on its own it decides nothing.
+All-pass and all-fail groups are degenerate and skipped, and the build reports
+their share.
+
+**Lesson.** Standardising scales whatever variance a reward has to unit size,
+signal or not. A shaping term small enough to be harmless beside a pass and a
+fail is the whole signal once they are gone: decide which differences a group
+may learn from, rather than letting the normaliser decide.
+
+## 42. The rollouts would have come from a distribution the update never saw
+
+**What happened.** GRPO's collection (v45, before any run) asked the server for
+temperature 1 and nothing else. SGLang fills every sampling parameter a request
+leaves out from the model's `generation_config.json` — its
+`--sampling-defaults model`, the default — and Qwen3.8-27B's says top-k 20 and
+top-p 0.95. So the rollouts would have been sampled from a distribution cut
+off at the twentieth token, while the loss, and the old log-probabilities its
+ratio divides by, are over the full softmax. Nothing would have shown it: the
+ratio starts at 1 either way. The gradient would have been biased toward the
+head of the distribution — a rare token never sampled is never pushed down.
+Found by a review of the change before the run, not by a test: no test runs
+SGLang.
+
+**What it did not touch.** RFT's collections were sampled the same way, so
+their "temperature 1" was temperature 1 inside the top 20 tokens and the top
+0.95 of the mass. That is harmless for rejection sampling, which keeps passing
+episodes whatever sampled them. Every evaluation runs at temperature 0, where
+neither cut matters.
+
+**Fix.** `train_grpo.py collect` sets every one of them — top-p 1, top-k −1,
+min-p 0, no repetition, presence or frequency penalty — and `train_grpo.py
+build` refuses rollouts whose trace headers say otherwise, or a temperature
+other than 1, which the loss assumes.
+
+**Lesson.** A request is not a specification of the sampler: the server
+completes it from defaults the client never named. State every parameter the
+algorithm depends on, and check the record of what was sent, not the intent.
 
 ---
 
