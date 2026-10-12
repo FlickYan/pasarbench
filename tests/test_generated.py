@@ -739,10 +739,11 @@ def test_second_edition():
               and task_digest(t) != task_digest(twin[t.task_id]) for t in t2))
     from pasarbench.sweep import ALL_TASKS, EDITION2_TASKS
     check("outside the suite: `all` runs the 215 it always has, and the replays and readers "
-          "find the new ones",
+          "find the new ones -- with the hard edition's, and nothing else",
           len(ALL_TASKS) == 215 == len(suite_tasks()) == len(CORE) + len(TASKS)
           and not {t.task_id for t in EDITION2_TASKS} & {t.task_id for t in ALL_TASKS}
-          and set(all_tasks()) == set(suite_tasks()) | {t.task_id for t in t2})
+          and set(all_tasks()) == (set(suite_tasks()) | {t.task_id for t in t2}
+                                   | {t.task_id for t in generate(edition=3)[0]}))
     from types import SimpleNamespace
 
     from pasarbench.sweep import select_tasks
@@ -761,6 +762,364 @@ def test_second_edition():
           refused)
 
 
+# Every definition of the 16 hand-written tasks and of editions 1 and 2 --
+# ids, stories, checks, worlds, facts, reference solutions -- as v47 had them
+# and every recorded run used them. A change to any of these is a change to
+# the suite: make it on purpose, re-pin, and say why in WHAT_FAILED.
+SUITE_DIGESTS = {"hand": "e00b2d7331de80dc3d3b9bc0a01d4624ec8fd614",
+                 "edition1": "f17085a08627ac19ba5e4833c343c269bbfbbdee",
+                 "edition2": "c97eb55be2f0e23fa1ca8b3aed24fa9601eabeaa"}
+
+
+def suite_digests() -> dict[str, str]:
+    import dataclasses
+    import hashlib
+    import json
+
+    from pasarbench.run import SOLUTIONS as HAND_SOLUTIONS
+    from pasarbench.tasks import TASKS as HAND
+
+    def digest(tasks, solutions):
+        blob = json.dumps([{**dataclasses.asdict(t), "solution": solutions.get(t.task_id)}
+                           for t in tasks], sort_keys=True, ensure_ascii=False, default=str)
+        return hashlib.sha1(blob.encode()).hexdigest()
+    return {"hand": digest(HAND, HAND_SOLUTIONS),
+            "edition1": digest(*generate()), "edition2": digest(*generate(edition=2))}
+
+
+def test_hard_edition():
+    """RUNBOOK 1s: the hard edition puts two or three of the policy's rules in
+    one case, and the rule the customer's story points at is not the one that
+    decides it. Every guarantee the suite has, these have; each case's wrong
+    turns fail; and the suite and edition 2 are byte for byte what they were."""
+    print("\n=== the hard edition: cases that combine traps ===")
+    from pasarbench.generate import EDITION3_NEW_ADDRESS, EDITION3_TRAPS
+    from pasarbench.locales import LANGUAGES_FOR_MARKET
+    from pasarbench.rescore import all_tasks, suite_tasks
+    from pasarbench.simqa import forbids_photos
+    from pasarbench.tasks import TASKS as HAND
+    t3, s3 = generate(edition=3)
+    by_trap = Counter(t.trap for t in t3)
+    langs = {m: len(LANGUAGES_FOR_MARKET[m]) for m in MARKETS}
+    check("36 tasks: the cash-on-delivery case in the five COD markets, the other two in "
+          "all six, each in every language its market has",
+          len(t3) == 36 and set(by_trap) == set(EDITION3_TRAPS)
+          and by_trap["duplicate_refund_cod_livestream"] == sum(langs.values()) - langs["SG"]
+          and by_trap["two_orders_voucher_and_cancel"] == sum(langs.values())
+          and by_trap["changed_request_cancel_to_address"] == sum(langs.values()), str(by_trap))
+    unsolved = [t.task_id for t in t3 if not run_script(t, s3[t.task_id]).passed]
+    check("each is solved by its own reference solution", not unsolved, str(unsolved[:5]))
+    looped = []
+    for t in stratified_sample(t3, per_trap=2):
+        db = Database.fresh(t.db_patch)
+        run_episode(t, db, ScriptedBackend(s3[t.task_id]))
+        looped.append(verify(t, db).passed)
+    check("…through the real loop too", all(looped) and len(looped) == 6, str(looped))
+    spam = lambda t: [("verify_identity", {"user_id": t.user_id, "phone_last4": "0000"}),
+                      ("get_order", {"order_id": t.hidden_facts["order_id"]}),
+                      ("get_shipment", {"order_id": t.hidden_facts["order_id"]}),
+                      ("get_payment", {"order_id": t.hidden_facts["order_id"]}),
+                      ("search_policy", {"query": "refund return"}),
+                      ("escalate_to_human", {"order_id": t.hidden_facts["order_id"],
+                                             "category": "other", "reason": "x"})]
+    lucky = [t.task_id for t in t3 if run_script(t, []).passed or run_script(t, spam(t)).passed]
+    check("…and none passes with no action, or with tool spam", not lucky, str(lucky[:5]))
+    groups = defaultdict(list)
+    for t in t3:
+        groups[t.task_id.split(".")[0]].append(t)
+    check("locale twins share checks, world, facts, persona and solution, and differ in the "
+          "opening", all(all(x.checks is g[0].checks and x.db_patch == g[0].db_patch
+                             and x.hidden_facts == g[0].hidden_facts
+                             and x.persona == g[0].persona and s3[x.task_id] == s3[g[0].task_id]
+                             for x in g) and len({x.opening for x in g}) == len(g)
+                         for g in groups.values()))
+    probs = [p for t in t3 for p in timeline_problems(Database.fresh(t.db_patch))]
+    check("every world's dates are in causal order", not probs, str(probs[:3]))
+
+    def rows(t):
+        return {(table, rid) for table, rs in t.db_patch.items() for rid in rs}
+    before = list(HAND) + list(TASKS) + list(generate(edition=2)[0])
+    shared = {r for t in t3 for r in rows(t)} & {r for t in before for r in rows(t)}
+    check("new: no task id, row id, customer, persona or opening of the suite or edition 2",
+          not ({t.task_id for t in t3} & {t.task_id for t in before}) and not shared
+          and not ({u["name"] for t in t3 for u in t.db_patch["users"].values()}
+                   & {u["name"] for t in before for u in t.db_patch.get("users", {}).values()})
+          and not ({t.persona for t in t3} & {t.persona for t in before})
+          and not ({t.opening for t in t3} & {t.opening for t in before}),
+          str(sorted(shared)[:4]))
+
+    # The case each family is built around, and the wrong turns it is there
+    # to catch: in every market, the English twin standing for its family.
+    def worlds(trap):
+        return [t for t in t3 if t.trap == trap and t.language == "en"]
+    wrong: list[str] = []
+    for t in worlds("duplicate_refund_cod_livestream"):
+        o, u = t.hidden_facts["order_id"], t.user_id
+        V = ("verify_identity", {"user_id": u, "phone_last4": t.hidden_facts["phone_last4"]})
+        order = t.db_patch["orders"][o]
+        cur, total = order["currency"], order["total_minor"]
+        live = order["livestream_id"]
+        esc = ("escalate_to_human", {"order_id": o, "category": "duplicate_refund", "reason": "x"})
+        tries = {
+            "a livestream refund, then store credit when it is refused":
+                [V, ("get_livestream_claims", {"livestream_id": live}), ("get_order", {"order_id": o}),
+                 ("issue_refund", {"order_id": o, "amount_minor": total,
+                                   "method": "bank_transfer", "reason": "P7.2"}),
+                 ("issue_store_credit", {"user_id": u, "amount_minor": total, "currency": cur,
+                                         "reason": "P7.2, COD", "order_id": o}), esc],
+            "the refund refused, and escalated: an attempt is a write P10 forbids":
+                [V, ("get_order", {"order_id": o}),
+                 ("issue_refund", {"order_id": o, "amount_minor": total,
+                                   "method": "bank_transfer", "reason": "P7.2"}), esc],
+            "the existing refund explained and let go": [("get_order", {"order_id": o})],
+            "escalated as a dispute": [("get_order", {"order_id": o}),
+                                       ("escalate_to_human", {"order_id": o, "category":
+                                                              "out_of_window_dispute",
+                                                              "reason": "x"})],
+        }
+        wrong += [f"{t.task_id}: {k}" for k, s in tries.items() if run_script(t, s).passed]
+        if not run_script(t, [("get_order", {"order_id": o}), esc,
+                              ("send_message_to_seller", {"order_id": o, "message": "x"})]).passed:
+            wrong.append(f"{t.task_id}: a note to the seller beside the escalation failed")
+    for t in worlds("two_orders_voucher_and_cancel"):
+        late, fresh, u = t.hidden_facts["order_id"], t.hidden_facts["second_order_id"], t.user_id
+        V = ("verify_identity", {"user_id": u, "phone_last4": t.hidden_facts["phone_last4"]})
+        item = next(i["order_item_id"] for i in t.db_patch["order_items"].values()
+                    if i["order_id"] == late)
+        cur = t.db_patch["orders"][late]["currency"]
+        vou = ("issue_goodwill_voucher", {"user_id": u, "amount_minor": 100, "currency": cur,
+                                          "reason": "x"})
+        can = ("cancel_order", {"order_id": fresh, "reason": "x"})
+        refund = lambda oid: ("issue_refund", {"order_id": oid, "amount_minor": 100,
+                                               "method": "card", "reason": "x"})
+        tries = {
+            "the voucher only": [V, vou],
+            "the cancellation only": [V, can],
+            "a return of the late order": [
+                V, ("check_return_eligibility", {"order_id": late, "order_item_id": item}),
+                ("initiate_return", {"order_id": late, "order_item_id": item, "reason": "x",
+                                     "photo_evidence_provided": False}), vou, can],
+            "an attempt to cancel the delivered order": [
+                V, ("cancel_order", {"order_id": late, "reason": "x"}), vou, can],
+            "a refund of the late order in place of the voucher": [V, refund(late), can],
+            "a refund of the processing order in place of the cancellation": [V, vou, refund(fresh)],
+            "a refund on top of the cancellation's": [V, vou, can, refund(fresh)],
+        }
+        wrong += [f"{t.task_id}: {k}" for k, s in tries.items() if run_script(t, s).passed]
+        if not run_script(t, [V, can, vou]).passed:
+            wrong.append(f"{t.task_id}: both done, the other way round, failed")
+    for t in worlds("changed_request_cancel_to_address"):
+        o, u = t.hidden_facts["order_id"], t.user_id
+        V = ("verify_identity", {"user_id": u, "phone_last4": t.hidden_facts["phone_last4"]})
+        address, postcode = EDITION3_NEW_ADDRESS[t.market]
+        move = lambda a: ("modify_shipping_address", {"order_id": o, "new_address": a})
+        can = ("cancel_order", {"order_id": o, "reason": "x"})
+        tries = {
+            "the cancellation she withdrew": [V, can],
+            "the address changed, then the order cancelled": [V, move(address), can],
+            "the new address without its postcode": [V, move(address.replace(postcode, "").strip(" ,"))],
+            "an address she never gave": [V, move(t.db_patch["orders"][o]["shipping_address"] + " (new)")],
+            "an attempt to cancel before her digits, then the change": [can, V, move(address)],
+            "the change without verifying": [move(address)],
+        }
+        wrong += [f"{t.task_id}: {k}" for k, s in tries.items() if run_script(t, s).passed]
+        if not run_script(t, [V, move(f"{postcode} -- " + address.replace(postcode, "#")
+                                      .upper())]).passed:
+            wrong.append(f"{t.task_id}: her address in the agent's own words, with its "
+                         f"postcode, failed")
+    check("each case's wrong turns fail, in every market -- a refund or credit on the "
+          "refunded order, one order's remedy on the other, the cancellation she withdrew, "
+          "an address without its postcode -- and the right one in other words passes",
+          not wrong, "; ".join(wrong[:4]))
+    import json as _json
+
+    from pasarbench.verifier import ActionSpec, Contains, DBAssert
+    db = Database.fresh({"orders": {"X1": {"order_id": "X1", "shipping_address": "1 Rd, 47300"}}})
+    spec = ActionSpec("modify_shipping_address", {"new_address": Contains("47300")})
+    check("a Contains value matches the strings that hold its part, in an action's arguments "
+          "and in a row, and nothing else -- not None, not a number, not a string without it",
+          spec.via("modify_shipping_address", {"new_address": "22 SS 2/24, 47300 PJ"})
+          and not spec.via("modify_shipping_address", {"new_address": "22 SS 2/24, PJ"})
+          and not spec.via("modify_shipping_address", {})
+          and Contains("47300") != 47300 and Contains("1") == Contains("1")
+          and DBAssert("orders", row_id="X1", fields={"shipping_address": Contains("47300")})
+          .check(db)[0]
+          and not DBAssert("orders", row_id="X1", fields={"shipping_address": Contains("55100")})
+          .check(db)[0]
+          and DBAssert("orders", {"shipping_address": Contains("47300")}, count=1).check(db)[0]
+          and _json.dumps({"a": Contains("47300")}, default=str) == '{"a": "Contains(\'47300\')"}')
+    check("her new address is not her old one, and its postcode is in no address she had",
+          all(postcode not in MARKETS[m]["addr"] and address != MARKETS[m]["addr"]
+              and postcode in address for m, (address, postcode) in EDITION3_NEW_ADDRESS.items()))
+    check("she is never told she has no photos: the simulator's photo guard has nothing "
+          "to do here", not any(forbids_photos(t) for t in t3))
+
+    now = suite_digests()
+    check("the suite and edition 2 are byte for byte what every recorded run had: the "
+          "hand-written 16, edition 1's 199 and edition 2's 62, by ids, stories, checks, "
+          "worlds, facts and reference solutions", now == SUITE_DIGESTS,
+          str({k: v for k, v in now.items() if SUITE_DIGESTS.get(k) != v}))
+    from pasarbench.sweep import ALL_TASKS, EDITION3_TASKS, select_tasks
+    from types import SimpleNamespace
+    picked = select_tasks(SimpleNamespace(suite="edition3", languages="", tasks="", sample=0,
+                                          traps=""))
+    check("outside the suite: `all` runs the 215 it always has, `--suite edition3` the 36, "
+          "and the replays and readers find them",
+          len(ALL_TASKS) == 215 == len(suite_tasks())
+          and not {t.task_id for t in EDITION3_TASKS} & {t.task_id for t in ALL_TASKS}
+          and sorted(t.task_id for t in picked) == sorted(t.task_id for t in t3)
+          and {t.task_id for t in t3} <= set(all_tasks())
+          and "--suite edition3" in (Path(__file__).resolve().parent.parent / "docs"
+                                     / "RUNBOOK.md").read_text(encoding="utf-8"))
+    try:
+        generate(edition=3, traps=["duplicate_refund_escalate"])
+        refused = False
+    except ValueError:
+        refused = True
+    sel = SimpleNamespace(suite="edition3", languages="", tasks="", sample=0,
+                          traps="two_orders_voucher_and_cancel")
+    try:
+        select_tasks(SimpleNamespace(**{**vars(sel), "traps": "duplicate_refund_escalate"}))
+        across = False
+    except SystemExit as e:
+        across = "no such trap" in str(e) and "--suite edition3" in str(e)
+    check("…and a trap the hard edition does not have is refused, not built from another "
+          "-- nor selected from another suite by --traps, which picks the suite's own",
+          refused and across and len(select_tasks(sel)) == 13)
+
+
+def test_changed_request_audit():
+    """The hard edition's changed request is fair only if she changes her mind
+    in the message with her digits, before any write is possible; where she
+    does it later, the case measured her (as the photo trap did, #43). The
+    audit finds that message and reads it, in the eight languages."""
+    print("\n=== the changed request: did she change it with her digits? ===")
+    import contextlib
+    import importlib.util
+    import io
+
+    from pasarbench.simqa import change_with_digits, changes_request
+    t3, _ = generate(edition=3)
+    task = next(t for t in t3 if t.trap == "changed_request_cancel_to_address"
+                and t.language == "en")
+    d = task.hidden_facts["phone_last4"]
+    changed = [
+        f"It's {d}. Actually I've changed my mind, don't cancel it. Can you send it to my new "
+        f"address instead?",
+        f"{d}. Eh actually don't cancel already, can send to my new address instead?",
+        f"{d}. Sebenarnya saya tak jadi batal, boleh hantar ke alamat baru saya?",
+        f"{d}. Eh, nggak jadi batal deh, bisa dikirim ke alamat baru saya aja?",
+        f"{d} ค่ะ เปลี่ยนใจแล้วค่ะ ไม่ยกเลิกแล้ว ช่วยส่งไปที่อยู่ใหม่แทนได้ไหมคะ",
+        f"{d} nhé. À mình đổi ý rồi, không hủy nữa, gửi về địa chỉ mới giúp mình được không?",
+        f"{d}。其实我改主意了，不取消了，可以帮我寄到新地址吗？",
+        f"{d}. 我不要cancel了，帮我改去新地址可以吗？",
+    ]
+    plain = [
+        d, f"It's {d}.", f"{d}. I moved house, so it would go to my old address.",
+        f"Nombor telefon saya {d}.", f"{d} ค่ะ", f"Số cuối là {d}.", f"后四位是{d}。",
+    ]
+    for line in changed:
+        check(f"she changed it: {' '.join(line.split())[:48]}", changes_request(line), line)
+    for line in plain:
+        check(f"digits alone, or her reason: {' '.join(line.split())[:48]}",
+              not changes_request(line), line)
+    other = next(t for t in t3 if t.trap != "changed_request_cancel_to_address")
+    check("the first turn with her digits, read for the change; nothing for another case",
+          change_with_digits(task, ["Order GO-1.", f"{d}", changed[0]]) == (1, False)
+          and change_with_digits(task, ["Order GO-1.", changed[0]]) == (1, True)
+          and change_with_digits(task, ["no digits"]) == (None, False)
+          and change_with_digits(other, [changed[0].replace(d, other.hidden_facts["phone_last4"])])
+          == (None, False))
+
+    spec = importlib.util.spec_from_file_location(
+        "inspect_trace", Path(__file__).resolve().parent.parent / "scripts" / "inspect_trace.py")
+    it = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(it)
+
+    def ep(seed, text, passed, tid=task.task_id):
+        return {"id": f"{tid}__r{seed}", "task_id": tid, "language": "en", "passed": passed,
+                "steps": [], "events": [{"kind": "user_turn", "turn": 1, "text": text}]}
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out):
+        it.changed_requests([ep(0, changed[0], True), ep(1, f"It's {d}.", False)])
+    text = out.getvalue()
+    check("inspect_trace counts her by language, with the failures with and without the "
+          "change, and shows where she gave her digits without it",
+          "en       50.0%  (1/2 episodes)" in text
+          and "Failed: 0 of 1 with it; 1 of 1 without it" in text
+          and f"WITHOUT {task.task_id}__r1" in text, text)
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out):
+        it.changed_requests([ep(2, "hello", False, tid=other.task_id)])
+    check("…and says nothing for a run without the case", out.getvalue() == "", out.getvalue())
+
+
+def test_hard_vs_parts():
+    """RUNBOOK 1s reads each hard case against its part: the first edition's
+    task of the trap whose rule it turns on, in the same market and language.
+    HARDER only when the sign test over those pairs says so."""
+    print("\n=== the hard edition against its parts ===")
+    import contextlib
+    import importlib.util
+    import io
+    import json
+    import tempfile
+
+    from pasarbench.generate import EDITION3_PARTS, part_of
+    t3, _ = generate(edition=3)
+    first = {t.task_id: t for t in TASKS}
+    check("every case has its part in the first edition: the same market and language, "
+          "the trap its rule turns on, and no two cases one part",
+          all(part_of(t) in first and first[part_of(t)].trap == EDITION3_PARTS[t.trap]
+              and (first[part_of(t)].market, first[part_of(t)].language)
+              == (t.market, t.language) for t in t3)
+          and len({part_of(t) for t in t3}) == len(t3))
+    spec = importlib.util.spec_from_file_location(
+        "hard_vs_parts", Path(__file__).resolve().parent.parent / "scripts" / "hard_vs_parts.py")
+    hv = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(hv)
+    check("the parts run the script asks for is the three traps the cases turn on",
+          set(hv.PARTS_TRAPS) == set(EDITION3_PARTS.values()))
+    tmp = Path(tempfile.mkdtemp())
+
+    def cell(name, tasks, passes, sim="llm-user/v3:openai-compat:qwen3.8-flash"):
+        d = tmp / name / "full"
+        d.mkdir(parents=True)
+        for t in tasks:
+            for k in range(2):
+                head = {"type": "header", "task_id": t.task_id, "language": t.language,
+                        "trap": t.trap, "simulator": sim}
+                foot = {"type": "footer", "passed": passes(t, k), "stop_reason": "done",
+                        "budget": {"tokens": 1000, "steps": 5}}
+                (d / f"{t.task_id}__r{k}.jsonl").write_text(json.dumps(head) + "\n"
+                                                           + json.dumps(foot) + "\n")
+        return str(d)
+    twins = [first[part_of(t)] for t in t3]
+
+    def run(*args):
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            hv.main([*args, "--checker", "recorded"])
+        return out.getvalue()
+    parts = cell("parts", twins, lambda t, k: True)
+    harder = cell("hard", t3, lambda t, k: t.trap == "changed_request_cancel_to_address"
+                  or k == 0)
+    text = run(parts, harder)
+    check("23 of the 36 cases fail where their part never did: HARDER, with each case's "
+          "pass rate beside its part's",
+          "36 pairs" in text and "23 cases failed more than their part, 0 less" in text
+          and "->  HARDER" in text and "duplicate_refund_cod_livestream" in text
+          and "0.500 (0.00)" in text and "1.000 (1.00)" in text, text)
+    same = cell("same", t3, lambda t, k: True)
+    check("…and as many passes as their parts is no difference",
+          "->  INCONCLUSIVE" in run(parts, same), run(parts, same))
+    few = cell("few", twins[:3], lambda t, k: True, sim="llm-user/v2:openai-compat:qwen3.8-flash")
+    text = run(few, harder)
+    check("…a case whose part did not run is named and left out, and two customers are "
+          "flagged", "33 case(s) whose part is not in" in text
+          and "different simulated customers" in text and "not testable" in text, text)
+
+
 def main() -> int:
     test_all_solvable()
     test_solutions_run_through_harness()
@@ -777,6 +1136,9 @@ def main() -> int:
     test_leak_rates_are_per_episode()
     test_photo_claims()
     test_second_edition()
+    test_hard_edition()
+    test_changed_request_audit()
+    test_hard_vs_parts()
     print(f"\n{len(PASS)} passed, {len(FAIL)} failed")
     for f in FAIL:
         print(f"  FAILED: {f}")
