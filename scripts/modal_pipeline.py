@@ -17,6 +17,7 @@ Volume -- the two can be mixed).
     PASAR_ROUND=2 modal run --detach scripts/modal_pipeline.py --stage grpo   # after round 2
     PASAR_ROUND=2 modal run --detach scripts/modal_pipeline.py --stage customer3   # ~30 min
     PASAR_ROUND=2 modal run --detach scripts/modal_pipeline.py --stage edition3    # ~1-2 h
+    PASAR_ROUND=2 modal run --detach scripts/modal_pipeline.py --stage grpo-measure   # ~1 h
 
 The GPU is one B200 unless PASAR_GPU says otherwise when you run the command:
 PASAR_GPU=H200 (one card: cheaper per hour, slower, tighter) or PASAR_GPU=H100:2
@@ -167,7 +168,7 @@ def _run(cmd: list[str], cwd: Path) -> None:
 PASSED_ON = ("AGENT_MODEL", "SIM_MODEL", "SGLANG_ARGS", "PASAR_K", "PASAR_COLLECT_K",
              "PASAR_EPOCHS", "PASAR_TRAIN_MAX_LEN", "PASAR_CUSTOMER", "PASAR_PER_TRAP",
              "PASAR_ROUND", "PASAR_GRPO_ITERS", "PASAR_GRPO_K", "PASAR_GRPO_LR",
-             "PASAR_GRPO_SKIP_TRAPS", "PASAR_E3_CUSTOMER",
+             "PASAR_GRPO_SKIP_TRAPS", "PASAR_GRPO_READING", "PASAR_E3_CUSTOMER",
              "PASAR_GPU", "PASAR_AGENT_POOL_GB", "PASAR_RESERVE_GB", "PASAR_USD_PER_HOUR")
 
 
@@ -283,8 +284,10 @@ def main(stage: str) -> None:
         download.remote()
     elif stage == "test":
         test.remote()
-    elif stage in ("smoke", "stage1", "stage2", "grpo", "customer3", "edition3"):
-        if stage in ("grpo", "customer3", "edition3") and os.environ.get("PASAR_ROUND") != "2":
+    elif stage in ("smoke", "stage1", "stage2", "grpo", "customer3", "edition3",
+                   "grpo-measure"):
+        if (stage in ("grpo", "customer3", "edition3", "grpo-measure")
+                and os.environ.get("PASAR_ROUND") != "2"):
             raise SystemExit(f"{stage} runs on round 2's models: PASAR_ROUND=2 modal run "
                              f"--detach scripts/modal_pipeline.py --stage {stage}")
         check_gpu(GPU)
@@ -296,4 +299,4 @@ def main(stage: str) -> None:
         pull()
     else:
         raise SystemExit(f"unknown stage {stage!r}: download | test | smoke | stage1 | "
-                         f"stage2 | grpo | customer3 | edition3 | pull")
+                         f"stage2 | grpo | customer3 | edition3 | grpo-measure | pull")
