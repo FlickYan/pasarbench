@@ -1,6 +1,6 @@
 # What failed
 
-Forty real defects found while building this. The first fifteen are in
+Forty-five real defects found while building this. The first fifteen are in
 the order of how much damage they would have done; the rest are in the order
 they were found. Every one is reproducible from the git history.
 
@@ -1625,6 +1625,149 @@ other than 1, which the loss assumes.
 **Lesson.** A request is not a specification of the sampler: the server
 completes it from defaults the client never named. State every parameter the
 algorithm depends on, and check the record of what was sent, not the intent.
+
+## 43. The customer sent the photos she was told she did not have
+
+**What happened.** Round 2's base model passed the photo trap 44 times in 70;
+round 1's passed it 69 times. In every one of the 26 failures the agent had
+asked for photos, the customer had said she would send them tonight — and a
+later turn sent them: "(Attached: photo_of_damage.jpg) Here are the photos.",
+"(发送照片) 好了，照片发给你了", "(Gửi ảnh) Đây nhé". Her persona says "You have
+NOT sent photos and cannot right now -- say you will send them tonight. Never
+claim you already attached photos." Told the photos were attached, the agent
+opened the return and refunded, which the trap forbids. Across round 2's three
+runs she said it in 64 of 210 conversations — 26 of the base model's, 32 of the
+fine-tune's, 6 of deepseek's — and all 64 failed. Of the 146 in which she did
+not, none failed but one that an API error ended before its first turn. She
+said it more often outside English: with the base model, in 4 of 5
+conversations in Thai and in Vietnamese and 9 of 35 in English. In round 1's
+three runs she said it once in 210.
+
+**Why.** #38's fix. Customer 2 is told her problem is resolved only once the
+agent says it has done what she needs, and never to end the conversation in a
+message that agrees to something. On the photo trap what she needs, the return,
+waits on photos she does not have. Customer 1 promised them for tonight and
+left; customer 2 agrees, waits, and her next turn is tonight. The rule written
+so that she would wait for a voucher she had accepted made her produce photos
+she had none of — and nothing checked that her persona held: the stage-1 audit
+read her for facts she gave before she was asked, not for things she claimed.
+How often she does it depends on the agent's reply, so in round 2 the trap
+measures, in part, how an agent words "send them when you can".
+
+**What it moved.** The photo trap's verdicts in round 2 are hers: the
+fine-tune's 44 → 38 there is 26 → 32 conversations in which she said it. And
+GRPO, before it ran: the trap's tasks are the ones the base model failed most
+often at temperature 1 (pass rates 0.36 and 0.63 in the two folds'
+collections), so they would have carried much of its signal, and the signal
+would have been whether she said it — training the agent to doubt her rather
+than to apply P3.3. None of the 62 newer tasks GRPO is judged on is of this
+trap.
+
+**Fix.** v46, before GRPO's first run: GRPO leaves the trap out of the tasks it
+trains on (`train_grpo.py tasks --skip-traps`, the photo trap by default,
+recorded in the round's settings so later iterations keep it). The stage-1
+audit (`inspect_trace.py --leaks-only`) counts, by language, the conversations
+in which a customer told she has no photos says she sent them, with the
+failures after and without that line (`simqa.photo_claim`), and
+`compare_cells.py` and RESULTS.md print the same beside every comparison that
+has the trap. The customer herself is not changed yet: a customer 3 who leaves
+once she has promised what she cannot do in the conversation is a new customer,
+and every comparison GRPO is part of needs round 2's. It belongs to the next
+edition, with the audit to check it.
+
+**Lesson.** A simulated customer's rules are shared by every trap: a rule
+written for one is a rule for all of them. After any change to the customer,
+check her persona on every trap, not only the one the change was for.
+
+## 44. Balancing by trap moved the leak; it did not stop it
+
+**What happened.** #31's fix, run as round 2: the fine-tune trained on 20
+passing episodes a trap and fold, picked by today's checks. The aggregate is
+the null expected at this pass rate — base 0.962, the fine-tune 0.954, 11 tasks
+better and 14 worse, p = 0.69 — so the result is the reading fixed before the
+run: every episode the fine-tune failed on a task the base model passed every
+time, 24 of them, read for another trap's answer in the wrong place.
+
+- **Nine are.** Both answers #31 found came back. On customs holds, all four
+  Chinese failures (zh-MY) told the customer the delay was normal for the 11.11
+  sale and to wait — the peak-delay trap's answer — and messaged the seller; the
+  fine-tune messaged the seller in 13 of the trap's 55 conversations (base 7;
+  in round 1, 7 against 3). On out-of-window disputes, one refunded a
+  wrong-colour blouse in full with shipping, "seller discrepancy" — the
+  livestream trap's answer, at the base model's rate (it did so twice in 70).
+  And one answer is new: the photo trap's rule, P3.3, on items that are not
+  high-value. Asked to refund a MYR 186 cash-on-delivery serum, the fine-tune
+  asked for photos "since it is a defect claim on an item worth over SGD 200"
+  in all five conversations (base none). MYR 186 is SGD 56, and
+  `check_return_eligibility` says no photos are needed — the three that failed
+  never called it. On the voucher trap it read THB 1,500 and MYR 190 the same
+  way, and cited the threshold in 25 of the trap's 70 conversations (base 13).
+- **Four claim a write never made**: "the voucher is done", "your case is
+  already escalated", with no call behind either.
+- **Four are the voucher trap's customer choosing a human.** Both models offer
+  "the voucher, or a human agent to review a full refund" in nearly every
+  English offer (base 32 of 35, the fine-tune 34; deepseek none), and here she
+  took the human. Escalating then is what P6.3 and P10 ask for.
+- **Seven are the photo trap's customer saying she had sent the photos** (#43).
+
+By the reading fixed in advance, the shift is still there.
+
+**Why.** Balancing evens how much of each trap the training data holds; it does
+not make an answer stay in its trap. Round 1's mix was whatever passed, and the
+traps the model always solved leaked into their neighbours (#31). Round 2 gave
+every trap the same 20 episodes, so the photo trap — almost absent from round
+1's data — had as many as any other, and its rule leaked in turn, read against
+the item's price in its own currency. The livestream refund fell to the base
+model's rate; the peak-delay "wait" did not.
+
+**What it moved.** Nothing in the aggregate, where a null was the expected
+result; the per-trap table is the result (RESULTS.md, section 6). The
+duplicate-refund trap's gain, 62 → 70, repeats round 1's 64 → 70.
+
+**Fix.** Not another round of RFT: a third balance would move the leak again.
+GRPO learns from the difference between passing and failing rollouts of one
+task, which pushes against a neighbour's answer where it fails, where RFT copies
+an answer wherever it passed. Whether that holds is what GRPO's held-out fold is
+read for, failure by failure, as these were (RUNBOOK phase 4, GRPO).
+
+**Lesson.** Fine-tuning on your successes spreads each success as far as it
+looks applicable. Balancing decides which successes spread, not whether they
+do: read every trap's failures after every fine-tune, the improved traps'
+included.
+
+## 45. The policy offered a cancellation the tools refuse
+
+**What happened.** Reading the originals the planted-mistake judge flagged
+(RUNBOOK, planted mistakes), one was an agent on a customs hold saying "once an
+order is shipped, cancellation is no longer possible under our policy" — two
+turns after offering to cancel it. The customer: "you literally just offered me
+the option to cancel." Both turns follow the policy. P8.3 says a hold beyond
+five days is escalated "and offer the customer the choice to wait or cancel";
+P2.2 says that once an order is shipped "cancellation is NOT possible. Do not
+attempt it." A parcel held at customs is shipped, and `cancel_order` refuses a
+shipped order. In round 2 the agent tried to cancel in 36 of deepseek's 50
+conversations on the generated customs-hold tasks, 9 of the base model's and 10
+of the fine-tune's, and every one was refused.
+
+**Why.** P8.3 was written for the escalation, which is what the trap checks,
+and the choice it offers was never given a way to happen: no rule says who
+cancels, and the tool follows P2.2. No check reads the attempt — the trap
+forbids a refund or store credit, not a refused cancellation — so no verdict
+showed it; a judge reading the conversation did.
+
+**What it moved.** No verdict: the checks ask for the escalation, and a refused
+call writes nothing. The conversations: an agent that follows P8.3 offers what
+it cannot do, and takes it back.
+
+**Fix.** Not in this edition: the customs tasks are among the 62 GRPO is judged
+on, and the world they run in stays as round 2 ran it. The next edition says
+how the cancellation happens — the escalation carries the customer's choice,
+and `cancel_order` is not called — and its customs check reads a refused
+cancellation as the attempt P2.2 forbids.
+
+**Lesson.** A rule that offers the customer something needs a way for it to
+happen. Read the policy as a customer would hear it: every "you can" is a
+promise some tool or person has to keep.
 
 ---
 
