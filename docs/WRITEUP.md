@@ -851,12 +851,15 @@ check assumes.
 
 **"What would you do next?"** Make the suite harder. Strong models pass 91–98%
 of it, and their failures sit in a handful of traps, so a table of frontier
-models would bunch at the top; the next edition combines traps in one case — a
-duplicate refund on a cash-on-delivery livestream order, two orders in one
-chat, a customer who changes her request. Then run models from several labs on
-it, against one customer — a customer who leaves once she has promised what she
-can't do in the conversation (WHAT_FAILED #43). GRPO runs next, from the second
-fine-tune and without the photo trap (RUNBOOK phase 4, GRPO). Along the way:
+models would bunch at the top. The hard edition is built (v48): 36 cases that
+combine traps — a duplicate refund on a cash-on-delivery livestream order, two
+orders in one chat, a customer who changes her request with her phone digits —
+each read against the suite's task of the rule it turns on, in the same market
+and language, so "harder" is a paired test and not an impression (RUNBOOK 1s).
+Then run models from several labs on it, against one customer — a customer who
+leaves once she has promised what she can't do in the conversation (WHAT_FAILED
+#43). GRPO is running, from the second fine-tune and without the photo trap
+(RUNBOOK phase 4, GRPO), and the hard edition gives it room too. Along the way:
 the run the language finding needs — hold a conversation fixed at the moment
 the agent reads the refund and change only its language (RUNBOOK 1r); room for
 the closing phase in the token budget (27 of 456 cut short in the last run,
