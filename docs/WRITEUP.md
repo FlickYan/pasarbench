@@ -488,8 +488,9 @@ the base model passes 96% of the newer tasks, above the 95% at which I had said
 I would hold GRPO back. Half the room I ran it for was the customer's choice.
 And measured afterwards on the tasks it had trained on, it showed no gain there
 either: 91.2% to 92.0%, p = 0.71. One update that small moved nothing I could
-measure.
-<!-- RUNBOOK phase 4, GRPO, "What it found"; WHAT_FAILED #46; RESULTS.md §6: P2-rft-e2 0.919 -> P2-grpo-i1-e2 0.945, 7 better 4 worse, p=0.549; read as P6.3/P10 read them +0.000, 3 better 2 worse; P2-base-e2 0.923 -> 0.961; voucher-trap failures in round 2's seven runs 55, escalations after a declined voucher 48; RUNBOOK phase 4, the learning curve's second point: logs/r2-grpo-measure-i2.txt, P2-grpo-i1-collect -> P2-grpo-i2-collect 0.912 -> 0.920, 16 better 13 worse, p=0.711 -->
+measure. On a hard edition built to give it room, where the base model passes
+86%, it was inconclusive again.
+<!-- RUNBOOK phase 4, GRPO, "What it found"; WHAT_FAILED #46; RESULTS.md §6: P2-rft-e2 0.919 -> P2-grpo-i1-e2 0.945, 7 better 4 worse, p=0.549; read as P6.3/P10 read them +0.000, 3 better 2 worse; P2-base-e2 0.923 -> 0.961; voucher-trap failures in round 2's seven runs 55, escalations after a declined voucher 48; RUNBOOK phase 4, the learning curve's second point: logs/r2-grpo-measure-i2.txt, P2-grpo-i1-collect -> P2-grpo-i2-collect 0.912 -> 0.920, 16 better 13 worse, p=0.711; RUNBOOK phase 4, the hard edition: P2-base-e3 0.861, P2-rft-e3 0.939 -> P2-grpo-i1-e3 0.889, 2 better 5 worse, p=0.453 -->
 
 A verifier is a reward function the moment you train on it, and its quirks
 become the model's habits. The replay that caught this cost seconds. Without
@@ -868,8 +869,9 @@ judged on the 62 newer tasks no model trained on, where the base model passed
 92%. One iteration: +2.6 points, p = 0.55, inconclusive. And half of that 8%
 of room was one trap's customer choosing a human over a voucher, an escalation
 the policy asks for and the check failed; read as the policy reads it, the gain
-is zero and the base model passes 96% (WHAT_FAILED #46). The harder edition is
-where GRPO gets real room.
+is zero and the base model passes 96% (WHAT_FAILED #46). The hard edition gave
+room — the base model passes 86% of it — and there GRPO was inconclusive too,
+−5 points against RFT, p = 0.45.
 
 **"Why didn't you re-run the evaluation after fixing the checker?"** I didn't
 need to. The environment is deterministic, so replaying each episode's tool
@@ -888,26 +890,31 @@ combine traps — a duplicate refund on a cash-on-delivery livestream order, two
 orders in one chat, a customer who changes her request with her phone digits —
 each read against the suite's task of the rule it turns on, in the same market
 and language, so "harder" is a paired test and not an impression (RUNBOOK 1s).
-Then run models from several labs on it, against one customer — a customer who
-leaves once she has promised what she can't do in the conversation (WHAT_FAILED
-#43), checked on round 2's machine: under her no claim of photos reached the
-agent, where the old customer's did in 31 of 70 conversations. GRPO ran one
-iteration from the second fine-tune: inconclusive, and the room it was judged in
-was partly the voucher trap's customer (RUNBOOK phase 4, GRPO; WHAT_FAILED #46)
-— the hard edition gives it room, with that choice read as the policy reads it
-before the run. Measured on the tasks it trained on, the one iteration showed
-no gain there either (0.912 → 0.920, p = 0.71): not an update that learned its
-tasks and didn't carry them over, but one too small to move anything, so the
-next needs more signal before another held-out test. Along the way, each built
-and waiting for its run: the run the language finding needs — hold a
-conversation fixed at the moment the agent reads the refund and change only its
-language (v49, RUNBOOK 1t: 96 recorded conversations rebuilt exactly, each run
-as recorded, translated, and translated back); room for the closing phase in the
-token budget (27 of 456 cut short in the last run; v49, `--closing-room`,
-RUNBOOK 1q); and a model that reads what the customer was told in place of the
-guardrail's phrase list, with the check against the tool log kept mechanical
-(v50, RUNBOOK 1u: calibrated on recorded replies before it holds back a live
-one). Then serving cost.
+On round 2's models it left room — the base model passes 86% of it, against 92%
+of the newer tasks — and was hard where it was built to be: two orders in one
+chat, where the failing agents asked for photos of cushion covers worth about
+SGD 58 as if they were worth over SGD 200, outside a return window most of them
+told the customer was still open, and almost always without the one call that
+would have told them both. In Singapore, where the price is in SGD, no model failed it. Then run
+models from several labs on it, against one customer — a customer who leaves
+once she has promised what she can't do in the conversation (WHAT_FAILED #43),
+checked on round 2's machine: under her no claim of photos reached the agent,
+where the old customer's did in 31 of 70 conversations. GRPO ran one iteration
+from the second fine-tune: inconclusive, and the room it was judged in was
+partly the voucher trap's customer (RUNBOOK phase 4, GRPO; WHAT_FAILED #46); on
+the hard edition, inconclusive again. Measured on the tasks it trained on, the
+one iteration showed no gain there either (0.912 → 0.920, p = 0.71): not an
+update that learned its tasks and didn't carry them over, but one too small to
+move anything, so the next needs more signal before another held-out test. Along
+the way, each built and waiting for its run: the run the language finding needs
+— hold a conversation fixed at the moment the agent reads the refund and change
+only its language (v49, RUNBOOK 1t: 96 recorded conversations rebuilt exactly,
+each run as recorded, translated, and translated back); room for the closing
+phase in the token budget (27 of 456 cut short in the last run; v49,
+`--closing-room`, RUNBOOK 1q); and a model that reads what the customer was told
+in place of the guardrail's phrase list, with the check against the tool log
+kept mechanical (v50, RUNBOOK 1u: calibrated on recorded replies before it holds
+back a live one). Then serving cost.
 
 ### One thing not to do
 
