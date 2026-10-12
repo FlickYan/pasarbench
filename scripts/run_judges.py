@@ -39,7 +39,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
@@ -304,10 +303,11 @@ def main() -> None:
                          "what the agent saw (verified call by call)")
     args = ap.parse_args()
 
-    key = (args.api_key or os.environ.get("PASARBENCH_SIM_API_KEY")
-           or os.environ.get("DASHSCOPE_API_KEY") or os.environ.get("OPENAI_API_KEY"))
+    from pasarbench.sweep import SIM_KEY, key_for, key_hint
+    # The judge's key by the provider its endpoint is on: never another's (v55).
+    key = args.api_key or key_for(args.base_url, SIM_KEY)
     if not key:
-        raise SystemExit("set PASARBENCH_SIM_API_KEY (or DASHSCOPE_API_KEY)")
+        raise SystemExit(f"no key for {args.base_url}: {key_hint(args.base_url, SIM_KEY)}")
 
     extra = json.loads(args.extra_body) if args.extra_body else {}
 
