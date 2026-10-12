@@ -169,7 +169,11 @@ def fold_router(args):
         raise SystemExit("--fold-models needs --folds (the split the models were "
                          "trained on)")
     from .rl.split import load_folds, other_fold
-    folds = load_folds(args.folds, ALL_TASKS)
+    # The suite's own tasks are checked against the split: the 215 against
+    # folds.json, the 62 newer ones against theirs (rl/split.py --suite).
+    pool = {"core": CORE_TASKS, "generated": GEN_TASKS, "all": ALL_TASKS,
+            "edition2": EDITION2_TASKS}[getattr(args, "suite", "all")]
+    folds = load_folds(args.folds, pool)
     trained_on = dict(kv.split("=", 1) for kv in args.fold_models.split(","))
     if set(trained_on) != set(folds["folds"]):
         raise SystemExit(f"--fold-models must name one model per fold "
@@ -230,7 +234,7 @@ def check_served(base_url: str, names: list[str]) -> str:
                f":{bare[0]}." if bare else
                f". It serves {sorted(bases)} with adapters {sorted(adapters)}"
                + (" (name one as <base>:<adapter>)." if sglang else ".")))
-    return f"the server answers every fold model with its own weights: {', '.join(names)}"
+    return f"the server answers every model named with its own weights: {', '.join(names)}"
 
 
 def make_simulator(kind: str, args) -> callable:
@@ -621,8 +625,11 @@ def main() -> None:
                                                         args.allow_same_family)
                                   for m in [args.model, *fold_models]):
             print(note)
-    if fold_models and args.backend == "openai" and _local(args.base_url):
-        print(check_served(args.base_url, fold_models))
+    # An adapter named as --model (GRPO's rollouts of one adapter) is checked
+    # as the fold models are: a wrong name would roll out another policy.
+    served = [*([args.model] if ":" in args.model else []), *fold_models]
+    if served and args.backend == "openai" and _local(args.base_url):
+        print(check_served(args.base_url, served))
 
     tasks = select_tasks(args)
     if not tasks:
