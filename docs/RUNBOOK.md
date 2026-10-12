@@ -1825,8 +1825,8 @@ the verdicts (#43).
 first edition's task of the trap whose rule it turns on, in the same market and
 language (`generate.EDITION3_PARTS`): the duplicate refund, the out-of-window
 voucher, the cancellation. With customer 3, as the next editions run — once the
-customer check has read her (phase 4, customer 3); if that check says to keep
-customer 2, `--customer 2` on both runs here.
+customer check has read her (phase 4, customer 3; read 2026-10-12: she holds);
+if that check says to keep customer 2, `--customer 2` on both runs here.
 
 ```bash
 set -a; . ./.env; set +a
@@ -2639,6 +2639,31 @@ together; RESULTS §6's learning curve gains its second row.
   the customer's.
 - Each fold, and each trap: leads to read, not results.
 
+**What it found** (2026-10-12, `P2-grpo-i2-collect-A` and `-B`, 488 rollouts in
+22 minutes of one B200; `logs/r2-grpo-measure-i2.txt`):
+
+- **The result: NOT SHOWN.** Over the 61 tasks the GRPO adapters passed 0.920
+  of their rollouts and the RFT adapters 0.912: +0.008 a task, 16 tasks better
+  and 13 worse, p = 0.71. Fold A +0.017 (10 better, 7 worse, p = 0.63), fold B
+  +0.000 (6 and 6, p = 1.00).
+- **With the evaluation:** one update of this size moved nothing measurable
+  even on the tasks it trained on. GRPO's null on the newer tasks and the
+  held-out fold is not a gain that failed to carry over; there was no
+  measurable gain to carry. The next design needs more signal before another held-out test: more
+  groups with a pass and a fail (27 of the 61 tasks at the first point, 26 at
+  this one) and more than one iteration.
+- **Beside it (#46):** she declined the voucher and the agent escalated in 3 of
+  the voucher trap's 80 rollouts before and 2 after. Read as P6.3 and P10 read
+  them, 0.918 → 0.924, 15 tasks better and 12 worse, p = 0.70: the same
+  reading.
+- **Leads, not results.** By trap, both folds: down, identity verification 31
+  → 27 of 32 rollouts, all of it fold B's three tasks, and the livestream claim
+  16 → 14 of 16; up, the out-of-window dispute 0.88 → 0.96, the voucher 0.86 →
+  0.93, the duplicate refund 0.83 → 0.88. Groups with nothing to learn moved
+  both ways: fold A 50% → 63%, fold B 61% → 52%. The rollouts stay on the Volume
+  (`traces/P2-grpo-i2-collect-*`); the identity failures are the ones to read
+  before another iteration of anything like this.
+
 ### Customer 3, checked (v47)
 
 Customer 2 sends photos she was told she has none of (WHAT_FAILED #43).
@@ -2675,6 +2700,33 @@ each.
   paired by task: INCONCLUSIVE is expected; worse at p < 0.05 means her new
   rule ends conversations before the agent escalates, and she is changed before
   any edition uses her.
+
+**What it found** (2026-10-12, `P2-c2-check` and `P2-c3-check`, 140 episodes each
+in ten minutes of one B200): **customer 3 holds, and the next editions run with
+her.**
+
+- **Photos: none.** Under customer 3 no claim of photos reached the agent in
+  any of the photo trap's 70 conversations, in any language; under customer 2,
+  in 31 of 70 (English 11 of 35, Malay and Vietnamese 4 of 5 each). Her guard
+  never acted — no turn written again, no conversation ended by it: the rule
+  alone did it.
+- **The trap measures the agent:** 70 of 70 passed under customer 3, against
+  39 under customer 2, all 31 of whose failures came after her claim. No
+  photo-trap failure is left to read: at temperature 0 the base model tried no
+  return, refund, voucher or store credit without the photos, in any
+  conversation.
+- **The duplicate refund: INCONCLUSIVE, as expected.** 64 → 63 of 70, one task
+  moved (DRE-TH.th, 4 → 3 of 5), p = 1.00. Its failures under customer 3 are
+  the agent's: DRE-SG all five times in both cells, the refund explained and
+  never escalated, and two Thai conversations in which the agent offered to
+  pass it to a human and she said never mind — P10 asks for the escalation
+  even when she accepts the explanation.
+- **Shorter conversations:** 35,924 tokens an episode against 48,255 (p =
+  0.004), 6.5 steps against 8.4. She leaves once she has promised what she
+  cannot do in the conversation.
+
+The hard edition runs with her: the `edition3` stage's default, and
+`--customer 3` in 1s.
 
 ### The hard edition on round 2's models (v48)
 
