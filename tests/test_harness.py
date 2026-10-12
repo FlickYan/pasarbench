@@ -798,6 +798,36 @@ def test_closing_check():
     check("…and the cap on customer turns does not end it: no customer is left to take one",
           res.stop_reason == StopReason.DONE and "closing_cut_short" not in rec.events
           and verify(task, db).passed, str(rec.events))
+    # v49: room of its own. In 1q the episode's tokens cut 27 of 456 phases
+    # short, 17 before a step; with closing_room the phase is bounded by its
+    # own steps, and the conversation by everything it was bounded by before.
+    res, _, rec, db, _ = run(plan, "check", budget=Budget(max_steps=2), closing_room=True)
+    r = cl.review(rec.recs, task)
+    check("with room of its own (v49) the phase runs where the episode's budget would have "
+          "cut it before a step, and the header says so",
+          res.stop_reason == StopReason.DONE and r["ran"] and not r["cut"]
+          and verify(task, db).passed and rec.meta.get("closing_room") is True, str(r))
+    cut_calls = cl.review(run(plan, "check", budget=Budget(max_tool_calls=2))[2].recs, task)
+    res, _, rec, db, _ = run(plan, "check", budget=Budget(max_tool_calls=2), closing_room=True)
+    r = cl.review(rec.recs, task)
+    check("…and where the tool calls the conversation left run out in it",
+          cut_calls["cut"] == ["max_tool_calls"] and not r["cut"]
+          and [s["step"] for s in rec.steps if s.get("closing")] == [3, 4], str((cut_calls, r)))
+    res, _, rec, _, _ = run([look, explain] + [look] * 10, "check", closing_room=True)
+    r = cl.review(rec.recs, task)
+    check(f"…but its own cap of {cl.MAX_STEPS} still holds",
+          r["cut"] == ["closing.MAX_STEPS"]
+          and sum(1 for s in rec.steps if s.get("closing")) == cl.MAX_STEPS, str(r))
+    res, _, rec, _, _ = run(plan, "check", budget=Budget(max_tokens=1), closing_room=True)
+    check("…and the conversation is bounded as before: room is for the phase alone",
+          res.stop_reason == StopReason.MAX_TOKENS and "closing_check" not in rec.events,
+          str((res.stop_reason, rec.events)))
+    try:
+        run(plan, "off", closing_room=True)
+        lonely = False
+    except ValueError:
+        lonely = True
+    check("…and room without a closing phase is refused, not ignored", lonely)
 
     backend, cust = ScriptedBackend(list(plan)), Customer()
     sim = LLMUser(cust, persona="a customer", facts={})
@@ -828,6 +858,23 @@ def test_closing_check():
         check("the sweep's --closing reaches every episode's trace header",
               r.returncode == 0 and heads and all(h.get("closing") == "check" for h in heads),
               r.stderr[-500:] or str(heads))
+        mixed = subprocess.run(sweep + ["--closing", "check", "--closing-room", "--resume"],
+                               capture_output=True, text=True, cwd=cwd)
+        alone = subprocess.run(sweep[:-4] + ["--run-id", "z2", "--trace-root", d,
+                                             "--closing-room"],
+                               capture_output=True, text=True, cwd=cwd)
+        r2 = subprocess.run(sweep[:-4] + ["--run-id", "z3", "--trace-root", d, "--closing",
+                                          "check", "--closing-room"],
+                            capture_output=True, text=True, cwd=cwd)
+        heads3 = [json.loads(f.read_text().splitlines()[0])
+                  for f in Path(d).glob("z3/*/*.jsonl")]
+        check("…and --closing-room too, refused alone, and never resumed over episodes run "
+              "without it",
+              r2.returncode == 0 and heads3 and all(h.get("closing_room") is True
+                                                    for h in heads3)
+              and alone.returncode != 0 and "needs --closing" in alone.stderr
+              and mixed.returncode != 0 and "different setup" in mixed.stderr,
+              (r2.stderr[-300:], alone.stderr[-300:], mixed.stderr[-300:]))
         again = subprocess.run(sweep + ["--resume"], capture_output=True, text=True, cwd=cwd)
         check("--resume will not add episodes without the closing check to a cell run with it",
               again.returncode != 0 and "closing 'check'" in again.stdout + again.stderr,
