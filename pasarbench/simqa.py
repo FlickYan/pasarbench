@@ -108,6 +108,58 @@ BREAK_CHARACTER = [
     r"\byou should call\b", r"\bthe tool\b", r"###",
 ]
 
+# -- Photos she does not have -------------------------------------------------
+#
+# The photo trap's customer is told she has none: "You have NOT sent photos and
+# cannot right now -- say you will send them tonight. Never claim you already
+# attached photos." Customer v2 cannot leave until the agent has done what she
+# needs (#38), and what she needs waits on the photos, so tonight comes inside
+# the conversation: "(Attached: photo_of_damage.jpg) Here are the photos." In
+# round 2 every failure on the trap followed such a line and no episode without
+# one failed (WHAT_FAILED #43). The patterns are how she said it there, in all
+# eight languages: a stage direction naming photos or sending, or the photos
+# said to be sent. A promise -- tonight, later, cannot now -- is not a claim.
+NO_PHOTOS = re.compile(r"have NOT sent (?:any )?photos|Never claim you (?:already )?attached",
+                       re.I)
+_PHOTO_WORDS = (r"attach|sent|send|upload|photo|picture|image|gambar|foto|รูป|ภาพ|"
+                r"照片|图片|相片|ảnh|hình")
+_STAGED = re.compile(r"[(\[*（][^)\]*）\n]{0,80}(?:" + _PHOTO_WORDS + r")[^)\]*）\n]{0,80}[)\]*）]",
+                     re.I)
+_SAID_SENT = re.compile(
+    r"here (?:are|is) (?:the|my) (?:photos?|pictures?|images?)"
+    r"|\bi(?:'ve| have) (?:just |already )?(?:sent|attached|uploaded)"
+    r"|\b(?:send|sent) (?:already|liao)\b"
+    r"|(?:ส่ง|แนบ)รูป(?:ภาพ|ถ่าย)?(?:ให้)?แล้ว"
+    r"|照片(?:已经?)?发(?:给你)?了|发送了(?:照片|图片)|已经?(?:发送|上传|发)了?(?:照片|图片)"
+    r"|给你照片了|发给你了"
+    r"|\b(?:dah|sudah) (?:hantar|kirim|lampir)|\bini (?:foto|gambar)nya\b"
+    r"|đã gửi (?:ảnh|hình)|(?:ảnh|hình) (?:đây|nè)", re.I)
+_NOT_YET = re.compile(r"tonight|later|will\b|wait|can't|cannot|nanti|malam|belum|tak (?:boleh|dapat)"
+                      r"|คืนนี้|เดี๋ยว|ไม่ได้|ยังไม่|tối|lát nữa|chưa|không|今晚|晚点|稍后|待会|等|没法|不能",
+                      re.I)
+
+
+def forbids_photos(task) -> bool:
+    """Whether the task's customer is told she has sent no photos."""
+    return bool(NO_PHOTOS.search(getattr(task, "persona", "") or ""))
+
+
+def claims_photos(text: str) -> bool:
+    """A customer turn that says photos are attached or sent -- not one that
+    promises them, nor a stage direction about later."""
+    if any(not _NOT_YET.search(m.group()) for m in _STAGED.finditer(text)):
+        return True
+    return bool(_SAID_SENT.search(text))
+
+
+def photo_claim(task, customer_turns: list[str]) -> int | None:
+    """For a customer told she has no photos: the first of her turns (0 = the
+    first after the opening) that says she sent them, or None. None as well
+    for every other task."""
+    if not forbids_photos(task):
+        return None
+    return next((i for i, t in enumerate(customer_turns) if claims_photos(t or "")), None)
+
 
 @dataclass
 class LeakReport:
