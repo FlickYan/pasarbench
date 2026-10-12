@@ -38,6 +38,7 @@ from .exposure import schema_tokens
 from .context import ContextStrategy, FullContext
 from . import closing as closing_check
 from . import guardrail as claim_guard
+from ..claim_reader import issue as reader_issue
 from ..tasks import task_digest, world_digest
 from .prompts import system_prompt
 from .simulator import SilentUser, UserSimulator
@@ -64,6 +65,7 @@ def run_episode(
     guardrail: str = "off",
     closing: str = "off",
     closing_room: bool = False,
+    claim_reader=None,
 ) -> EpisodeResult:
     if guardrail not in claim_guard.MODES:
         raise ValueError(f"guardrail must be one of {claim_guard.MODES}, not {guardrail!r}")
@@ -71,6 +73,8 @@ def run_episode(
         raise ValueError(f"closing must be one of {closing_check.MODES}, not {closing!r}")
     if closing_room and closing == "off":
         raise ValueError("closing_room gives the closing phase room: it needs a closing mode")
+    if (guardrail == "reader") != (claim_reader is not None):
+        raise ValueError("the reader guardrail reads with a claim_reader, and only it does")
     simulator = simulator or SilentUser()
     context = context or FullContext()
     budget = budget or Budget()
@@ -128,6 +132,10 @@ def run_episode(
         "agent_temperature": getattr(backend, "temperature", None),
         # Only when on, so the headers of every run before it stay as they were.
         **({"guardrail": guardrail} if guardrail != "off" else {}),
+        # The model the reader guardrail read with (v50): a run read by one is
+        # not another's.
+        **({"claim_reader": getattr(claim_reader, "model", "?")}
+           if guardrail == "reader" else {}),
         **({"closing": closing} if closing != "off" else {}),
         # What the guard compares (closing.GUARD_VERSION): a run under one is
         # not another's. Absent from runs before v41, which compared version 1.
@@ -267,9 +275,23 @@ def run_episode(
         # back: the customer never sees it, and the agent gets a note instead
         # of a customer turn (harness/guardrail.py).
         held = None
-        if guardrail == "claims" and not resp.tool_calls and closed_at is None:
+        read = None
+        issue = None
+        unread = None
+        if guardrail != "off" and not resp.tool_calls and closed_at is None:
             notes = sum(1 for m in state.messages if m.hidden)
-            claims = claim_guard.unbacked(resp.content or "", db.action_log)
+            if guardrail == "reader":
+                # The reader's server fails as the agent's does: the episode
+                # ends as a server error, which --resume runs again (v50).
+                try:
+                    got = claim_reader.read(resp.content or "")
+                except Exception as e:  # noqa: BLE001 -- one bad call must not kill a sweep
+                    unread = f"claim reader: {type(e).__name__}: {e}"
+                else:
+                    read = [tuple(c) for c in got["claims"]]
+                    issue = reader_issue(got)
+            claims = ([] if unread else
+                      claim_guard.unbacked(resp.content or "", db.action_log, read))
             if claims and notes < claim_guard.MAX_NOTES:
                 state.messages[-1].hidden = True
                 held = {"claims": [list(c) for c in claims],
@@ -286,8 +308,16 @@ def run_episode(
             latency_ms=latency_ms, budget=tracker.snapshot(),
             n_tools=len(names), schema_tokens=schema_tokens(names),
             tool_names=list(names), guardrail=held, closing=closed_at is not None,
+            claims_read=None if read is None else [list(c) for c in read],
+            reader_issue=issue,
         ))
         trace.step(steps[-1].to_dict())
+        if unread:
+            # After the step, so the trace keeps the reply that went unread.
+            error = unread
+            trace.event("backend_error", error=error, step=tracker.steps)
+            stop = StopReason.BACKEND_ERROR
+            break
 
         if resp.tool_calls:
             continue
