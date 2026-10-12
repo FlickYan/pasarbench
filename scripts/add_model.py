@@ -84,7 +84,7 @@ CANDIDATES: dict[str, tuple[str, ...]] = {
     "zai": ("glm-5.3-flash", "glm-5.3-flashx", "glm-4.7-flash"),
     "mimo": ("mimo-v2.6-flash",),
     "xai": ("grok-4.3", "grok-4.20-0309-non-reasoning"),
-    "deepseek": ("deepseek-v4-pro",),
+    "deepseek": ("deepseek-v4-pro", "deepseek-flash"),
     "openai": (), "google": (), "anthropic": (), "mistral": (), "openrouter": (),
     "together": (), "groq": (),
 }
