@@ -21,6 +21,7 @@ and then any of:
     pn.run("grpo", round=2)     # GRPO from round 2's adapters, after its stage 2 (v45)
     pn.run("customer3", round=2)   # customer 3 against customer 2, ~30 min (v47)
     pn.run("edition3", round=2)    # the hard edition: base, RFT, GRPO, ~1-2 h (v48)
+    pn.run("grpo-measure", round=2)   # GRPO on its own training tasks, ~1 h (v52)
     pn.status()         # what is running or done (a notebook sees other containers'
                         # writes as of its start: check a job from a new session)
     pn.read("logs/smoke-projection.txt")    # print a file (head=, tail= for long ones)
@@ -62,7 +63,7 @@ VENV = Path(os.environ.get("PASAR_NB_VENV") or
 REPO = "pasarbench"
 LOCK = "logs/.stage-lock.json"
 STALE = 15 * 60
-STAGES = ("smoke", "stage1", "stage2", "grpo", "customer3", "edition3")
+STAGES = ("smoke", "stage1", "stage2", "grpo", "customer3", "edition3", "grpo-measure")
 # What pack() archives: what the report and the audits read (as modal_pipeline.pull).
 RESULTS = ["logs", "data/splits", "data/rft/stats.json", "data/run_settings.env",
            "traces/P-smoke", "traces/P-base", "traces/P-rft", "traces/P-ref",
@@ -534,6 +535,8 @@ def run(stage: str, force: bool = False, round: int | None = None) -> None:
     if stage == "edition3" and env.get("PASAR_ROUND") != "2":
         raise SystemExit("the hard edition runs on round 2's models: "
                          "pn.run('edition3', round=2)")
+    if stage == "grpo-measure" and env.get("PASAR_ROUND") != "2":
+        raise SystemExit("GRPO's learning curve is round 2's: pn.run('grpo-measure', round=2)")
     if not _gpus():
         raise SystemExit("this notebook has no GPU: open the compute profile (sidebar), pick "
                          "B200 x1 (or H200 x1), let the kernel restart, run pn.setup() again")
@@ -567,6 +570,9 @@ def launch(stage: str, wait_min: float = 30, dry_run: bool = False,
     if stage == "edition3" and env.get("PASAR_ROUND") != "2":
         raise SystemExit("the hard edition runs on round 2's models: "
                          "pn.launch('edition3', round=2)")
+    if stage == "grpo-measure" and env.get("PASAR_ROUND") != "2":
+        raise SystemExit("GRPO's learning curve is round 2's: "
+                         "pn.launch('grpo-measure', round=2)")
     work = paths()["work"]
     cmd = [sys.executable, "-m", "modal", "run", "--detach", "scripts/modal_pipeline.py",
            "--stage", stage]
