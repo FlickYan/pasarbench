@@ -1421,7 +1421,7 @@ def test_customer_waits():
           "those runs recorded", got == pinned and old.name == "llm-user:openai-compat:m"
           and "agrees to" not in old._system(), str(got))
     try:
-        LLMUser(B(), persona="P", facts={}, customer=3)
+        LLMUser(B(), persona="P", facts={}, customer=4)
         refused = False
     except ValueError:
         refused = True
@@ -1448,6 +1448,105 @@ def test_customer_waits():
           str(len(picked)))
 
 
+def test_customer_3():
+    """WHAT_FAILED #43. Customer 2 may not leave until the agent has done what she
+    needs; on the photo trap that waits on photos she was told she does not
+    have, and she sent them anyway -- "(Attached: photo.jpg)" -- in 64 of round
+    2's 210 conversations there, every one a failure. Customer 3 leaves once she
+    has promised something she cannot do in the conversation, and a turn that
+    still claims photos her persona forbids is written again, then ends the
+    conversation. Customer 2 stays the default, its prompt byte for byte, and
+    the trace says when the guard acted."""
+    print("\n=== customer 3: a promise ends it, and no photos she does not have ===")
+    import hashlib
+    import json
+    import tempfile
+    from types import SimpleNamespace
+
+    from pasarbench.harness.simulator import CUSTOMER, ENDING, NO_PHOTOS_NOTE, LLMUser
+    from pasarbench.harness.trace import TraceWriter
+    from pasarbench.harness.types import ModelResponse
+    from pasarbench.sweep import make_simulator
+
+    class FB:
+        """A customer model that says what it is given, in order."""
+        name = "openai-compat:m"
+
+        def __init__(self, *replies):
+            self.replies, self.calls = list(replies), []
+
+        def chat(self, convo, tools=None):
+            self.calls.append([m.content for m in convo])
+            # When its lines run out, she leaves.
+            return ModelResponse(content=self.replies.pop(0) if self.replies else "###END###")
+
+    pinned = {"en": "59a2ef7eef961a9e", "id": "aa34c118c28c825a", "zh-SG": "0f7d3993bc4df3c3"}
+    got = {lang: hashlib.sha256(LLMUser(FB(), persona="P", language=lang, customer=2,
+                                        facts={"order_id": "O1", "phone_last4": "1234"})
+                                ._system().encode()).hexdigest()[:16] for lang in pinned}
+    check("customer 2 is still the default, and her prompt is round 2's, byte for byte",
+          CUSTOMER == 2 and got == pinned, str(got))
+    three = LLMUser(FB(), persona="P", facts={}, customer=3)
+    check("customer 3 is customer 2 and one rule more -- a promise for later ends it -- "
+          "under a name of her own",
+          three.name == "llm-user/v3:openai-compat:m" and ENDING[3].startswith(ENDING[2])
+          and "you will do something later -- send photos" in three._system()
+          and ENDING[2] in three._system(), three.name)
+
+    task = BY_ID["T07"]                   # the photo trap: "Never claim you already attached"
+    said = "(Attached: photo_1.jpg) Here are the photos. Please process the return."
+    promise = "I can't send them now, I'll send them tonight."
+    convo = [Message(role="system", content="..."), Message(role="user", content=task.opening),
+             Message(role="assistant", content="Please send photos of the torn strap.")]
+    fb = FB(said, promise)
+    cust = LLMUser(fb, persona=task.persona, facts={}, customer=3)
+    reply = cust.respond(convo, 1)
+    check("a turn claiming the photos her persona forbids is written again with the rule "
+          "restated in her instructions, and the second answer is the one given",
+          reply == (promise, False) and len(fb.calls) == 2
+          and fb.calls[1][0].endswith(NO_PHOTOS_NOTE) and not fb.calls[0][0].endswith(
+              NO_PHOTOS_NOTE) and cust.last_guard == "photos: written again",
+          str((reply, cust.last_guard)))
+    fb = FB(said, "[Attached: photo_2.jpg]")
+    cust = LLMUser(fb, persona=task.persona, facts={}, customer=3)
+    check("…claimed twice, the conversation ends: she has nothing she can do here",
+          cust.respond(convo, 1) == ("", True)
+          and cust.last_guard == "photos: claimed twice, ended")
+    fb = FB(promise)
+    cust = LLMUser(fb, persona=task.persona, facts={}, customer=3)
+    check("…a promise passes untouched, one call",
+          cust.respond(convo, 1) == (promise, False) and len(fb.calls) == 1
+          and cust.last_guard is None)
+    fb = FB(said)
+    two = LLMUser(fb, persona=task.persona, facts={}, customer=2)
+    other = LLMUser(FB(said), persona=BY_ID["T05"].persona, facts={}, customer=3)
+    check("…customer 2 says what she said in round 2, and a customer allowed photos is "
+          "never second-guessed",
+          two.respond(convo, 1) == (said, False) and len(fb.calls) == 1
+          and other.respond(convo, 1) == (said, False) and other.last_guard is None)
+
+    def turns(customer):
+        tmp = tempfile.mkdtemp()
+        tw = TraceWriter(root=tmp, run_id="c")
+        agent = ScriptedBackend(["Please send photos of the torn strap first."])
+        run_episode(task, Database.fresh(task.db_patch), agent, trace=tw,
+                    simulator=LLMUser(FB(said, promise), persona=task.persona, facts={},
+                                      customer=customer))
+        tw.close()
+        f = next(Path(tw.dir).glob("*.jsonl"))
+        return [r for r in map(json.loads, f.read_text().splitlines())
+                if r.get("kind") == "user_turn"]
+    t3, t2 = turns(3), turns(2)
+    check("the trace says when the guard acted, and nothing for any other customer",
+          t3 and t3[0].get("guard") == "photos: written again" and t3[0]["text"] == promise
+          and t2 and "guard" not in t2[0] and t2[0]["text"] == said, str((t3, t2)))
+    args = SimpleNamespace(sim_url="http://127.0.0.1:9/v1", base_url="http://127.0.0.1:9/v1",
+                           sim_api_key="", api_key="", sim_model="m", sim_extra_body="",
+                           extra_body="", gate_facts=False, customer=3)
+    check("the sweep builds customer 3 when a run asks for her",
+          make_simulator("openai", args)(task).name.startswith("llm-user/v3:"))
+
+
 def main() -> int:
     test_reference_through_loop()
     test_budgets_bite()
@@ -1462,6 +1561,7 @@ def main() -> int:
     test_context_keeps_the_closing_note()
     test_cancellation_settles()
     test_customer_waits()
+    test_customer_3()
     print(f"\n{len(PASS)} passed, {len(FAIL)} failed")
     for f in FAIL:
         print(f"  FAILED: {f}")
