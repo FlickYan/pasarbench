@@ -201,10 +201,23 @@ same transcript, tool results and policy, had credited the agent the first
 time: it "offered a goodwill voucher per P6.2 with accurate currency
 calculation".
 
+Then I gave the judge answers to find. Labels with almost no violations
+calibrate nothing, so I made the violations: one mistake planted in a copy of a
+transcript the database passed — another customer's order read out, a total no
+tool gave, a 30-day return window, the identity check taken out — beside the
+untouched original. Against a bar fixed before the run, four of nine criteria
+passed: leaks, invented facts, an unexplained escalation, rudeness. The worst was
+the one about an action. With the identity check taken out, the rubric judge
+flagged it once in 20, quoting the agent's request for the digits as the check;
+the 1–5 judge passed 19 of those 20 copies. To a judge, asking for a check is
+the check.
+
 The lesson is not that LLM judges are useless. It is that whether an action
 happened is a question about state, and state can be checked. Check outcomes
 against the database and claimed actions against the tool log — mechanically —
-and keep the LLM judge for what can't be checked: tone, clarity, language.
+and keep the LLM judge for what can't be checked: tone, clarity, language —
+calibrated too, since on planted mistakes it caught every rude line, but only
+two in three English sentences dropped into a reply in another language.
 
 So I built that check into the agent. A guardrail reads each reply before the
 customer does; if it claims an action no tool call in the conversation has
@@ -358,6 +371,19 @@ of them messaged the seller — the right answer to a *different* trap, the
 livestream one, which it already passed nearly every time and so trained on in
 full.
 
+So I ran it again the way that called for: the training data balanced by trap,
+twenty passing conversations each, picked by the corrected checks, against a
+fixed customer. The same null — 0.962 against 0.954, 11 tasks better and 14
+worse, p = 0.69 — and what I had committed to in advance was the failures, not
+the number. The livestream refund fell back to the base model's rate. The sale
+delay's answer still turned up on customs holds — "it's 11.11, the delay is
+normal, please wait" — in four Chinese conversations. And there was a new one:
+the photo trap, now as present in the data as any other, lent out its rule.
+Asked to refund a MYR 186 serum, the fine-tune asked for photos "since it's an
+item worth over SGD 200" in all five conversations; MYR 186 is SGD 56, and the
+base model never asked. Balancing decides which successes spread. It doesn't
+stop them spreading.
+
 A verifier is a reward function the moment you train on it, and its quirks
 become the model's habits. The replay that caught this cost seconds. Without
 it, the headline would have been a fine-tune that "improved", and an API model
@@ -435,7 +461,7 @@ doing it twice.
 - **Enforce in the harness what a prompt can only ask.** Told not to repeat a
   call, the agent repeated it; refused, it stopped. And the refusal has to read
   a call the way the policy does: an amount is part of a payment.
-- **Write down what failed.** The project's failure log has 40 entries; most
+- **Write down what failed.** The project's failure log has 45 entries; most
   were found by refusing a number that couldn't be right.
 
 ## Limits
@@ -450,8 +476,9 @@ instrument as the leak detector — so its counts are a floor: in the re-run, th
 one failure it couldn't read told the customer, in Vietnamese, that the case
 had gone to the complaints team. It hadn't. The guardrail shares that blind
 spot, and its live test is one run of 192 conversations. The Thai and
-Vietnamese translations are not native-reviewed. The fine-tune is one run of
-one recipe.
+Vietnamese translations are not native-reviewed. The fine-tune is one recipe
+run twice, and the second's photo-trap numbers are the simulated customer's: told
+she had no photos, she sent them anyway once she could not leave.
 
-The code, the trace generators, and all 40 failures are in the repo:
+The code, the trace generators, and all 45 failures are in the repo:
 [github.com/FlickYan/pasarbench](https://github.com/FlickYan/pasarbench).
