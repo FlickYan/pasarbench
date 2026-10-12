@@ -390,6 +390,37 @@ Checks:
 - ✓ `P2-rft-e2`: 310/310 episodes answered by the adapter that did not train on the task's fold
 - ✓ `P2-grpo-i1`: 1075/1075 episodes answered by the adapter that did not train on the task's fold
 
+### The hard edition, on round 2's models
+
+Its 36 combined cases (`--suite edition3`, RUNBOOK 1s), which no model trained on, at temperature 0 under one customer; each adapter answers its own half of their split:
+
+| model | run | cases | pass^1 | pass^k |
+|---|---|---|---|---|
+| base | `P2-base-e3` | 36 | 0.861 | 0.806 (k=5) |
+| RFT | `P2-rft-e3` | 36 | 0.939 | 0.833 (k=5) |
+| GRPO, 1 iteration | `P2-grpo-i1-e3` | 36 | 0.889 | 0.833 (k=5) |
+
+- **Room:** the base model passes 0.861, below 0.95, so the rest is read.
+- **RFT on combined cases**, RFT against the base model, paired by case: **INCONCLUSIVE** — +0.078; 6 tasks better, 3 worse, p=0.508.
+- **GRPO**, against RFT, paired by case — beside GRPO's own result on the 62 newer tasks, never instead of it: **INCONCLUSIVE** — -0.050; 2 tasks better, 5 worse, p=0.453.
+
+| case | base | RFT | GRPO, 1 iteration |
+|---|---|---|---|
+| `changed_request_cancel_to_address` | 65/65 | 65/65 | 65/65 |
+| `duplicate_refund_cod_livestream` | 49/50 | 50/50 | 50/50 |
+| `two_orders_voucher_and_cancel` | 41/65 | 54/65 | 45/65 |
+
+*The customer:* in every changed-request conversation her phone digits came with her change of mind, as her persona has it: the case measures the model.
+
+*The voucher choice:* offered the voucher on the two orders, she never declined it; there was nothing to read as P6.3 and P10 read it.
+
+Checks:
+
+- ✓ one customer in every run: `llm-user/v3:openai-compat:RedHatAI/gemma-4-31B-it-FP8-Dynamic`
+- ✓ agent temperature 0 in every run
+- ✓ `P2-rft-e3`: 180/180 episodes answered by the adapter that did not train on the task's fold
+- ✓ `P2-grpo-i1-e3`: 180/180 episodes answered by the adapter that did not train on the task's fold
+
 ### Round 1, as context
 
 *Another simulated customer and older tools than round 2's: its numbers are never paired against round 2's.*
