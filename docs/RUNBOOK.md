@@ -1646,6 +1646,46 @@ through. The guarded closing check can be turned on for the whole suite. What is
 left is not the guard's: on the longest tasks the episode's token budget runs
 out before the closing phase begins.
 
+**Room for the closing phase (v49).** Each step's prompt is the whole
+conversation by then, so a long case can reach the closing phase with nothing
+left of the episode's 120,000 tokens. `--closing-room` bounds the phase by its
+own six steps: the episode's steps, tool calls and tokens end with the
+conversation, its time does not, and the conversation runs exactly as it did.
+Opt-in and recorded — the trace header carries `closing_room`, `--resume` will
+not mix runs with and without it, and `compare_cells.py` flags a pair that
+differ. To see what the budget hid, 1q again with it:
+
+```bash
+set -a; . ./.env; set +a
+TASKS=$(python scripts/naming_tasks.py --rest)
+python -m pasarbench.sweep \
+  --backend openai --model deepseek-v4-pro --base-url https://api.deepseek.com/v1 \
+  --extra-body '{"thinking":{"type":"disabled"}}' \
+  --simulator openai --sim-model qwen3.8-flash \
+  --sim-url https://dashscope-intl.aliyuncs.com/compatible-mode/v1 \
+  --sim-extra-body '{"reasoning_effort":"low"}' \
+  --suite all --tasks "$TASKS" --strategies full --exposure search-300 -k 3 \
+  --policy-mode preload-named --closing guard --closing-room --run-id U-room --workers 8
+python scripts/closing_report.py traces/U-room/full+search-300 > U-room.txt
+python scripts/compare_cells.py traces/U-guard/full+search-300 \
+  traces/U-room/full+search-300 >> U-room.txt
+```
+
+**The reading, fixed before the run** (2026-10-12):
+
+- **The budget.** No closing phase cut short by the episode's steps, tool calls
+  or tokens; one cut by its own six steps or by the wall clock is read.
+- **Safe, as 1q was:** no case passed as its customer left it and failed at the
+  end, no forbidden call first made after the note, and every refusal and every
+  payment of another amount read beside the call it followed.
+- **What the budget hid.** Every phase that runs here where U-guard's tokens cut
+  it is read, and the case it rescues, if it does — U-guard's three cases that
+  failed as their customer left them and lost their phase to the budget
+  (CCRTOM-MY__r0, LCOW-MY.zh-MY__r0, LCOW-MY__r2) first.
+- **Context, not a test of room.** U-guard against U-room, paired: the
+  conversations are drawn again, so a difference there is not room's alone.
+- **Secondary:** tokens per episode, and the closing phases' own.
+
 ### 1r. Why does the duplicate refund fail outside English? (recorded runs, no API spend)
 
 1j found a lead after its run, and 1m saw it hold on new tasks: the
@@ -1796,18 +1836,20 @@ CUSTOMER=(--simulator openai --sim-model qwen3.8-flash
           --sim-url https://dashscope-intl.aliyuncs.com/compatible-mode/v1
           --sim-extra-body '{"reasoning_effort":"low"}' --customer 3)
 python -m pasarbench.sweep "${AGENT[@]}" "${CUSTOMER[@]}" --suite edition3 \
-  --strategies full -k 3 --run-id H-dsk --workers 8
+  --strategies full -k 3 --run-id V-dsk --workers 8
 python -m pasarbench.sweep "${AGENT[@]}" "${CUSTOMER[@]}" --suite generated \
   --traps duplicate_refund_escalate,out_of_window_offer_voucher,cancel_while_processing \
-  --strategies full -k 3 --run-id H-dsk-parts --workers 8
-python scripts/hard_vs_parts.py traces/H-dsk-parts/full traces/H-dsk/full > H-dsk.txt
-python scripts/inspect_trace.py traces/H-dsk/full --leaks-only >> H-dsk.txt
+  --strategies full -k 3 --run-id V-dsk-parts --workers 8
+python scripts/hard_vs_parts.py traces/V-dsk-parts/full traces/V-dsk/full > V-dsk.txt
+python scripts/inspect_trace.py traces/V-dsk/full --leaks-only >> V-dsk.txt
 ```
 
 225 episodes an agent: 108 on the cases, 117 on their parts (the three
 Singapore duplicate refunds among them have no case — Singapore has no cash on
 delivery — and are not paired). Another agent runs
-the same two commands with its own `AGENT=(...)` and run ids, against the same
+the same two commands with its own `AGENT=(...)` and run ids — `V-<agent>` and
+`V-<agent>-parts`: V is the next letter no run has (v48 named them H-, which is
+the context ablation's) — against the same
 customer; the sweep refuses an agent of the customer's family (a Qwen agent here
 needs another customer, and then every agent compared with it runs with that
 one). The Qwen3.8-27B base model and its fine-tunes run the hard edition on the
@@ -1839,6 +1881,95 @@ that difference stated.
   English — on a case whose story is not the refund. A lead to read, not a test.
 - **Not a verdict on the suite.** A case failing more than its part says the
   combination is harder for that agent, not that the suite was easy everywhere.
+
+### 1t. Is it the language? The same conversation, translated (API only, no GPU)
+
+1r found that deepseek-v4-pro makes P10's escalation of a refund already paid in
+59% of English conversations and 2–8% of Malay and Chinese ones, that every
+local-language twin made it less often than its English twin, and that it
+decides in the turn it reads the refund. What recorded runs cannot separate is
+the language from everything else that differs between twin conversations: each
+language's customer wrote her own words, and the agent answered them with its
+own. v49 holds a conversation fixed at that moment and changes only its language
+(`pasarbench/swap.py`, `scripts/language_swap.py`).
+
+**The prefixes.** Every recorded duplicate-refund conversation of
+deepseek-v4-pro that can be rebuilt exactly, up to and including its first
+lookup of the order, whose result lists the refund: the system prompt, her turns,
+its replies and calls, every payload replayed and checked against the digest the
+run recorded, and the world as those calls left it. In the recorded runs, 449 can
+be — runs from v19 on (earlier ones record no digests), under the full context
+and no claim guardrail; the Philippines has no other language. Eight are chosen
+from each of 12 groups — each language other than English, recorded in it and
+swapped into English, or recorded in English and swapped into it — spread over
+the group's tasks and never by what the agent did: 96. Checked before any spend
+(`language_swap.py check`, no API): continued from each of the 96, the agent's
+first call is shown exactly as many messages as the recording's next step was,
+and exactly its tools — under tool search too, rebuilt from the searches before
+the lookup.
+
+**The arms.** `orig`, the conversation as recorded; `swap`, every turn of hers
+and reply of its translated into the other language; `back`, translated there
+and back. `swap` and `back` have both been through the translator and differ only
+in their language, so they are the test; `orig` against `back` is what the
+translator alone does. The system prompt and the policy (in English, as always),
+the tools, their payloads and the world are the same in all three. The
+translator is qwen3.8-flash — the customer's model, not the agent's family — at
+temperature 0, behind one cache, so every arm reads the same translation of each
+text. Within a direction the arms differ in translation steps too (`back` has
+two, `swap` one), and the two directions differ the other way: pooled, the steps
+balance, and the reading below asks for the same sign in each direction alone.
+
+**The decision.** The agent continues from the prefix at the recording's
+temperature and request flags, under its tool exposure, until it next speaks to
+the customer — no customer reply and no closing phase: 341 of the 342
+escalations 1r counted came in that turn. Escalated: `escalate_to_human` called
+and run in it.
+
+```bash
+set -a; . ./.env; set +a
+python scripts/language_swap.py prefixes traces --out data/swap/W-prefixes.jsonl
+python scripts/language_swap.py check data/swap/W-prefixes.jsonl     # no API: 96, 0 shown otherwise
+python scripts/language_swap.py run data/swap/W-prefixes.jsonl --run-id W-swap --dry-run
+python scripts/language_swap.py run data/swap/W-prefixes.jsonl --run-id W-swap
+python scripts/language_swap.py report data/swap/W-swap > W.txt
+```
+
+864 continuations (96 prefixes, three arms, k = 3) — about 5 million prompt
+tokens of deepseek-v4-pro — and 666 translations, each once. The keys are the
+sweep's: the agent's from `DEEPSEEK_API_KEY`, the translator's from
+`DASHSCOPE_API_KEY`, and the one is never sent to the other's provider. If the
+run stops, run it again: the cache keeps every translation, and continuations
+already written are not run again. The traces go under `data/swap/`, not
+`traces/`: they are not conversations of the suite, and no reader of `traces/`
+should count them. Read `data/swap/W-swap/arms.md` first — every prefix's words
+in all three arms, side by side; Thai and Vietnamese above all, whose suite
+translations no native speaker has reviewed either.
+
+**The reading, fixed before the run** (2026-10-12, before any arm ran):
+
+- **First, the reproduction.** The `orig` arm must agree with the recording, by
+  the majority of its three runs, on at least 75% of the prefixes. If it does
+  not, either the prefixes are not what the agent saw or its decision is too
+  noisy at temperature 0 to test this way: nothing else is read, and that is
+  the result.
+- **The test (primary).** English or Singlish against the other language, both
+  translated, escalation paired by prefix, sign test over the 96. LANGUAGE if
+  English escalates more at p < 0.05 and the difference has the same sign in
+  both directions, each tested apart (their p-values reported, not required to
+  resolve). A difference in one direction only is the translator's direction,
+  not the language, and is reported as that.
+- **The translator.** `orig` against `back`, paired: INCONCLUSIVE is expected. If
+  it resolves, translation alone moves the decision, and the test is reported
+  with that beside it.
+- **If not the language** (INCONCLUSIVE): the gap 1r found lives in what differs
+  between twin conversations — her words, the agent's earlier replies — and not
+  in the language it reads the refund in. A run that swaps those one at a time
+  is the next one.
+- **Secondary.** By language; with the category the policy names
+  (`duplicate_refund`).
+- **Not tested.** The policy's own language, which stays English in every arm;
+  any agent but deepseek-v4-pro.
 
 ### Publishing the traces (v44)
 
