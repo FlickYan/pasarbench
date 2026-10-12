@@ -1013,10 +1013,19 @@ def test_changed_request_audit():
         f"{d} nhé. À mình đổi ý rồi, không hủy nữa, gửi về địa chỉ mới giúp mình được không?",
         f"{d}。其实我改主意了，不取消了，可以帮我寄到新地址吗？",
         f"{d}. 我不要cancel了，帮我改去新地址可以吗？",
+        # Malay as round 2's customer wrote it (P2-rft-e3 and P2-grpo-i1-e3,
+        # CRCTA3-MY.ms), which the patterns before v54 missed.
+        f"{d}. Tapi jap, saya rasa saya tak nak cancel lah. Saya nak simpan rak buku tu, cuma "
+        f"saya nak tukar alamat penghantaran ke rumah baru saya.",
+        f"{d}. Eh kejap, saya rasa saya tak nak cancel dah. Boleh tak kalau saya nak teruskan "
+        f"order tapi tukar alamat penghantaran?",
+        f"{d}. Eh, aku nggak mau batal deh, bisa ganti alamat pengiriman?",
     ]
     plain = [
         d, f"It's {d}.", f"{d}. I moved house, so it would go to my old address.",
         f"Nombor telefon saya {d}.", f"{d} ค่ะ", f"Số cuối là {d}.", f"后四位是{d}。",
+        f"{d}. Saya baru pindah rumah, nanti barang sampai ke alamat lama.",
+        f"{d}. Saya sudah pindah, nanti dikirim ke alamat lama.",
     ]
     for line in changed:
         check(f"she changed it: {' '.join(line.split())[:48]}", changes_request(line), line)
