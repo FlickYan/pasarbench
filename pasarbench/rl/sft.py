@@ -76,7 +76,10 @@ def read_trace(path: str | Path) -> dict[str, Any]:
     foot = next((r for r in reversed(recs) if r.get("type") == "footer"), {})
     msgs = next((r for r in recs if r.get("type") == "messages"), None)
     return {"path": str(path), "header": head, "footer": foot, "messages": msgs,
-            "steps": [r for r in recs if r.get("type") == "step"]}
+            "steps": [r for r in recs if r.get("type") == "step"],
+            # Everything in the order written, the customer's turns included:
+            # what a reading of the conversation needs (rl/grpo.py, the voucher).
+            "records": recs}
 
 
 def chat_kwargs(header: dict[str, Any]) -> dict[str, Any]:
