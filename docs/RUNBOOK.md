@@ -1736,6 +1736,110 @@ conversations — the customer's words, the agent's own earlier replies. That
 needs a run that holds the conversation fixed and changes only its language, at
 the moment the agent reads the refund.
 
+### 1s. Is the hard edition harder than its parts? (API only, no GPU)
+
+Strong models pass 91–98% of the suite, and their failures sit in a handful of
+traps: a table of frontier models would bunch at the top. v48 adds a hard
+edition — 36 cases that each put two or three of the policy's rules in one
+conversation, where the rule the customer's story points at is not the one that
+decides it. Never part of the suite (`generate(edition=3)`, `--suite edition3`).
+
+| case | tasks | her story points at | what decides it | the wrong turns it catches |
+|---|---|---|---|---|
+| a livestream dress, cash on delivery, refunded already (`DRCL3-*`) | 10: the five COD markets | P7.2 — the seller misrepresented it on his live: window waived, full refund | P10 — refunded already: escalate `duplicate_refund` and take no other write action | the refund (refused: cash on delivery), the store credit after it, no escalation |
+| two orders in one chat (`TOVAC3-*`) | 13 | return the cushion covers delivered three weeks ago; cancel the water bottle ordered three days ago | P6: no return, a goodwill voucher, which she accepts; P2.1: cancel the processing order | one remedy without the other; one order's remedy on the other |
+| a customer who changes her request (`CRCTA3-*`) | 13 | cancel a processing bookshelf order | with her phone digits, she changes her mind: keep it, send it to her new address (P9.1) | the cancellation she withdrew; an address without its postcode |
+
+The same guarantees as the suite (`tests/test_generated.py`): every case solved
+by its reference solution, through the real loop too; none by an agent that does
+nothing or one that calls every tool; locale twins identical but for the
+opening; dates in causal order; a new customer in every market, new products,
+ids of their own. And the wrong turns above fail, in every market, while the
+right answer in other words passes. The suite and the second edition are byte
+for byte what every recorded run had: their definitions are pinned by digest,
+and a change to them fails the tests.
+
+Three things about the checks:
+
+- **An attempted payout counts.** P10 says escalate "and take no other write
+  action"; on cash on delivery the refund an agent reaches for can only be
+  refused, so the attempt is what a check can see. The same in the other two
+  cases: a refund, credit or cancellation tried and refused is forbidden — on
+  the changed request, before her digits it breaks P1.1, after them it is the
+  request she withdrew.
+- **The new address is checked by its postcode** (`verifier.Contains`): the agent
+  may write the rest in its own words or language, but not drop the part a
+  courier needs, nor make one up.
+- **Her change of mind comes with her digits.** Every write needs them (P1.1),
+  so it reaches the agent before any write can be made — if the customer says it
+  where her persona puts it. `inspect_trace.py` reads each conversation for that
+  (section 4b, eight languages); a failure where her digits came without the
+  change is hers, as the photo trap's were (WHAT_FAILED #43).
+
+No customs case: P8.3 offers a cancellation P2.2 refuses (WHAT_FAILED #45), and
+settling that changes the policy text every edition's agent reads — it waits for
+a policy version of its own. No photo case: there the simulator's photos decided
+the verdicts (#43).
+
+**The run, per agent: the hard edition and its parts.** Each case's part is the
+first edition's task of the trap whose rule it turns on, in the same market and
+language (`generate.EDITION3_PARTS`): the duplicate refund, the out-of-window
+voucher, the cancellation. With customer 3, as the next editions run — once the
+customer check has read her (phase 4, customer 3); if that check says to keep
+customer 2, `--customer 2` on both runs here.
+
+```bash
+set -a; . ./.env; set +a
+AGENT=(--backend openai --model deepseek-v4-pro --base-url https://api.deepseek.com/v1
+       --extra-body '{"thinking":{"type":"disabled"}}')
+CUSTOMER=(--simulator openai --sim-model qwen3.8-flash
+          --sim-url https://dashscope-intl.aliyuncs.com/compatible-mode/v1
+          --sim-extra-body '{"reasoning_effort":"low"}' --customer 3)
+python -m pasarbench.sweep "${AGENT[@]}" "${CUSTOMER[@]}" --suite edition3 \
+  --strategies full -k 3 --run-id H-dsk --workers 8
+python -m pasarbench.sweep "${AGENT[@]}" "${CUSTOMER[@]}" --suite generated \
+  --traps duplicate_refund_escalate,out_of_window_offer_voucher,cancel_while_processing \
+  --strategies full -k 3 --run-id H-dsk-parts --workers 8
+python scripts/hard_vs_parts.py traces/H-dsk-parts/full traces/H-dsk/full > H-dsk.txt
+python scripts/inspect_trace.py traces/H-dsk/full --leaks-only >> H-dsk.txt
+```
+
+225 episodes an agent: 108 on the cases, 117 on their parts (the three
+Singapore duplicate refunds among them have no case — Singapore has no cash on
+delivery — and are not paired). Another agent runs
+the same two commands with its own `AGENT=(...)` and run ids, against the same
+customer; the sweep refuses an agent of the customer's family (a Qwen agent here
+needs another customer, and then every agent compared with it runs with that
+one). The Qwen3.8-27B base model and its fine-tunes run the hard edition on the
+GPU, with the Gemma customer (phase 4, the hard edition): beside these, with
+that difference stated.
+
+**The reading, fixed before the run** (2026-10-12, before any agent ran a case):
+
+- **Harder (primary), per agent.** `hard_vs_parts.py`: each case against its
+  part, pass^1 paired, sign test. HARDER at p < 0.05 with the cases failing
+  more. Anything else is reported as it comes — "not shown harder for this
+  agent" — and the README's line on the hard edition says so.
+- **Where it is hard.** The per-case table beside it, and every failure read and
+  named by its wrong turn: on the refunded order, no escalation, a refund tried,
+  or store credit; on the two orders, a remedy missing or one order's remedy on
+  the other; on the changed request, the cancellation, no address change, or an
+  address without its postcode. A failure that is none of these is described as
+  it is.
+- **The customer.** Section 4b of `inspect_trace.py`: each changed-request
+  failure where her digits came without the change is listed and not counted
+  against the agent, and if there are more than two such episodes for an agent,
+  that case's number for that agent is the customer's, reported as such.
+- **Separation, with two agents or more.** `compare_cells.py` on each pair of
+  agents, on the cases and on the parts: the hard edition separates two agents
+  the parts do not if their paired comparison resolves on the cases (p < 0.05)
+  and not on the parts.
+- **Secondary.** The refunded livestream order by language, twin against twin:
+  1r's lead — deepseek-v4-pro drops the duplicate-refund escalation outside
+  English — on a case whose story is not the refund. A lead to read, not a test.
+- **Not a verdict on the suite.** A case failing more than its part says the
+  combination is harder for that agent, not that the suite was easy everywhere.
+
 ### Publishing the traces (v44)
 
 Every recorded run as a Hugging Face dataset: one JSON line per episode, its
@@ -2230,6 +2334,41 @@ each.
   rule ends conversations before the agent escalates, and she is changed before
   any edition uses her.
 
+### The hard edition on round 2's models (v48)
+
+The hard edition's 36 cases (1s), which no model trained on, on round 2's
+machine after the customer check: the base model, the RFT adapters and, if GRPO
+has run, its last iteration's, each at temperature 0, K times a case, under one
+customer — customer 3, or `PASAR_E3_CUSTOMER=2` if her check said to keep
+customer 2 (recorded at the first run and held after it). Runs of their own:
+`P2-base-e3`, `P2-rft-e3`, `P2-grpo-i1-e3`; the cases are shared out between
+each pair of adapters by their own split (`data/splits/folds-e3.json`), as the
+62 newer tasks are.
+
+```bash
+PASAR_ROUND=2 bash scripts/gpu_pipeline.sh edition3   # or pn.run("edition3", round=2)
+```
+
+`logs/r2-edition3.txt`: base against RFT and RFT against GRPO, paired by task,
+then the changed request's audit for each run. About an hour and a half of one
+B200 (~$15): 540 episodes and three server starts. A rerun skips the runs
+already finished.
+
+**The reading, fixed before the run** (2026-10-12, while GRPO ran and before
+any of its results were read):
+
+- **Room first.** If the base model passes 95% or more of the cases, the hard
+  edition gives no room at temperature 0 either: reported as that, and nothing
+  more is read from it.
+- **RFT on combined cases.** RFT against the base model, paired: whether round
+  2's fine-tune carries over to cases that combine the traps it trained on.
+  BETTER or WORSE at p < 0.05, otherwise INCONCLUSIVE.
+- **GRPO (secondary to its own result).** GRPO against RFT, paired, read the
+  same way. GRPO's result stays the one fixed before it ran, on the 62 newer
+  tasks; this one is reported beside it, never instead of it.
+- **The customer.** As in 1s: changed-request failures where her digits came
+  without the change are hers, listed and not counted against a model.
+
 ---
 
 # Running on a shared cluster
@@ -2273,6 +2412,8 @@ Phase 4  on 1x B200 (Modal or Lambda, GPU_GUIDE.md):   ~10-20 hours
          weights, smoke, stage1, read the audit and the
          checks, then stage2; round 2 the same (v44)
          grpo, from round 2's adapters (v45)            ~4-6 hours
+         customer3, then edition3 (v47, v48)            ~2 hours
+Phase 1  the hard edition against its parts (1s)       per agent, 225 episodes
 Phase 3  serving comparison on the same node           optional
 ```
 
