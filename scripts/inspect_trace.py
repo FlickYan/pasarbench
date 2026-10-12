@@ -298,10 +298,10 @@ def same_tasks(eps: list[dict], tasks: dict) -> list[dict]:
 
 
 def _tasks() -> dict:
-    """Every task a trace can name: the hand-written ones and both editions."""
+    """Every task a trace can name: the hand-written ones and all three editions."""
     from pasarbench.generate import generate
     from pasarbench.tasks import BY_ID
-    return {**BY_ID, **{t.task_id: t for t in generate()[0] + generate(edition=2)[0]}}
+    return {**BY_ID, **{t.task_id: t for ed in (1, 2, 3) for t in generate(edition=ed)[0]}}
 
 
 def leaks(eps: list[dict], pattern_set: str = "current") -> None:
@@ -441,6 +441,58 @@ def photos(eps: list[dict]) -> None:
         print("  none -- the photo trap measures the agent")
 
 
+def changed_requests(eps: list[dict]) -> None:
+    """The hard edition's changed request (RUNBOOK 1s): her persona changes her
+    mind -- keep the order, send it to her new address -- in the message that
+    gives her phone digits, before any write is possible. Where she changed it
+    later, or never, an agent that cancelled did what she had asked: those
+    failures are the customer's, as the photo trap's were (#43). Silent for a
+    run without the case."""
+    try:
+        tasks = _tasks()
+    except Exception as ex:                                  # noqa: BLE001
+        print(f"  (could not load tasks: {ex})")
+        return
+    from collections import defaultdict
+
+    from pasarbench.simqa import CHANGED_REQUEST, change_with_digits
+    rows = []
+    for e in eps:
+        task = tasks.get(e["task_id"])
+        if task is None or task.trap != CHANGED_REQUEST:
+            continue
+        turns = [ev.get("text") or "" for ev in e["events"] if ev.get("kind") == "user_turn"]
+        i, changed = change_with_digits(task, turns)
+        rows.append((e, None if i is None else turns[i], changed))
+    if not rows:
+        return
+    print("\n" + "=" * 72)
+    print("4b. DID THE CUSTOMER WHO CHANGES HER REQUEST CHANGE IT WITH HER DIGITS?")
+    print("=" * 72)
+    per = defaultdict(lambda: [0, 0])
+    for e, _, changed in rows:
+        per[e.get("language", "?")][0] += changed
+        per[e.get("language", "?")][1] += 1
+    print("  her digits came with the change, BY LANGUAGE:")
+    for lang, (k, n) in sorted(per.items()):
+        print(f"    {lang:7s} {k / n:6.1%}  ({k}/{n} episodes)")
+    did = [(e, s) for e, s, c in rows if c]
+    late = [(e, s) for e, s, c in rows if s is not None and not c]
+    never = [e for e, s, _ in rows if s is None]
+    print(f"\n  episodes {len(rows)}: with the change {len(did)}, digits without it "
+          f"{len(late)}, no digits {len(never)}. Failed: "
+          f"{sum(not e['passed'] for e, _ in did)} of {len(did)} with it; "
+          f"{sum(not e['passed'] for e, _ in late)} of {len(late)} without it")
+    for e, s in late[:3]:
+        print(f"  WITHOUT {e['id']} [{e.get('language', '?')}]: {' '.join(s.split())[:110]!r}")
+    if late:
+        print("  !! read those before counting their failures against the agent: the "
+              "pattern may have missed her words, or she changed her mind after the agent "
+              "could act")
+    else:
+        print("  none without it -- the case measures the agent")
+
+
 def cache_and_cost(eps: list[dict]) -> None:
     print("\n" + "=" * 72)
     print("4. TOKENS, CACHE, AND WHAT THE FULL SWEEP WILL COST")
@@ -562,7 +614,8 @@ def main() -> None:
                     help="v1 = the list before WHAT_FAILED #26, to reproduce it")
     ap.add_argument("--leaks-only", action="store_true",
                     help="print only the simulated customer's audit: leaks, unanswered "
-                         "requests, and photos she says she sent but has not")
+                         "requests, photos she says she sent but has not, and, in the "
+                         "hard edition, whether she changed her request with her digits")
     args = ap.parse_args()
 
     files = sorted(glob.glob(os.path.join(args.trace_dir, "*.jsonl")))
@@ -574,6 +627,7 @@ def main() -> None:
         markup(eps)
         leaks(eps, args.ask_patterns)
         photos(eps)
+        changed_requests(eps)
         return
 
     config(eps)
@@ -592,6 +646,7 @@ def main() -> None:
     empties(eps)
     leaks(eps, args.ask_patterns)
     photos(eps)
+    changed_requests(eps)
     cache_and_cost(eps)
     growth(eps)
 
