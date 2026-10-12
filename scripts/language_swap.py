@@ -12,10 +12,10 @@ changed and nothing else, and the agent asked again (pasarbench/swap.py).
     # 3. the reading
     python scripts/language_swap.py report data/swap/W-swap
 
-Keys come from the environment, as the sweep's do: the agent's from
-PASARBENCH_API_KEY / DEEPSEEK_API_KEY / ..., the translator's from
-PASARBENCH_SIM_API_KEY / DASHSCOPE_API_KEY / ... -- and one provider's key is
-never sent to another.
+Keys come from the environment, as the sweep's do, each by the provider its
+endpoint is on: the agent's from DEEPSEEK_API_KEY (or PASARBENCH_API_KEY), the
+translator's from DASHSCOPE_API_KEY (or PASARBENCH_SIM_API_KEY) -- and one
+provider's key is never sent to another.
 """
 
 from __future__ import annotations
@@ -150,19 +150,18 @@ def _extra(raw: str) -> dict:
 def _keys(a) -> tuple[str, str]:
     """(the agent's key, the translator's): each from its own variables, and
     never one provider's for another."""
-    from pasarbench.sweep import API_KEY_ENV, SIM_KEY_ENV, resolve_api_key, resolve_sim_api_key
-    local = lambda u: any(h in u for h in ("localhost", "127.0.0.1", "0.0.0.0"))  # noqa: E731
-    agent = "EMPTY" if local(a.base_url) else resolve_api_key()
-    if agent in ("", "EMPTY") and not local(a.base_url):
-        raise SystemExit(f"no key for {a.base_url}: set one of {', '.join(API_KEY_ENV)}")
-    if local(a.translator_url):
+    from pasarbench.sweep import SIM_KEY, _local, key_for, key_hint
+    agent = key_for(a.base_url)
+    if not agent:
+        raise SystemExit(f"no key for {a.base_url}: {key_hint(a.base_url)}")
+    if _local(a.translator_url):
         return agent, "EMPTY"
     if a.translator_url == a.base_url:
         return agent, agent
-    tr = resolve_sim_api_key()
+    tr = key_for(a.translator_url, SIM_KEY)
     if not tr:
         raise SystemExit(f"the translator is on {a.translator_url} and no key is set for it: "
-                         f"set one of {', '.join(SIM_KEY_ENV)}. The agent's key is not sent "
+                         f"{key_hint(a.translator_url, SIM_KEY)}. The agent's key is not sent "
                          f"to another provider.")
     return agent, tr
 
