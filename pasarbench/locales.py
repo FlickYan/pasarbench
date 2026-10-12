@@ -436,15 +436,107 @@ PERSONAS2: dict[str, str] = {
 }
 
 
+# --------------------------------------------------------------------------
+# The hard edition (generate.EDITION3_TRAPS, RUNBOOK 1s): cases that combine
+# the suite's traps. What she says first is her story's half of the case --
+# the livestream, the two orders, the cancellation -- and never the half that
+# decides it: the refund she already had, which order takes which remedy, the
+# change of mind she makes with her phone digits. Translations as above: th
+# and vi drafted, not native-reviewed.
+# --------------------------------------------------------------------------
+
+OPENINGS3: dict[str, dict[str, str]] = {
+    "duplicate_refund_cod_livestream": {
+        "en": ("I bought a dress on the seller's live. He said it was pure silk, but "
+               "it's polyester. I want my money back."),
+        "sg-en": ("I bought one dress from the seller live. He say pure silk, but "
+                  "actually polyester leh. I want my money back."),
+        "ms": ("Saya beli dress masa live penjual. Dia kata sutera tulen, tapi "
+               "sebenarnya poliester. Saya nak duit saya balik."),
+        "id": ("Saya beli dress waktu live penjual. Katanya sutra asli, ternyata "
+               "poliester. Saya mau uang saya kembali."),
+        "th": ("ซื้อชุดเดรสจากไลฟ์ของร้านค่ะ เขาบอกว่าเป็นผ้าไหมแท้ "
+               "แต่ได้มาเป็นโพลีเอสเตอร์ อยากได้เงินคืนค่ะ"),
+        "vi": ("Mình mua cái đầm trên live của shop. Shop nói là lụa thật mà nhận về "
+               "là vải polyester. Mình muốn được hoàn tiền."),
+        "zh-SG": "我在卖家的live买了一件dress，他说是真丝的，结果是polyester。我要退钱。",
+        "zh-MY": "我在卖家直播的时候买了一件连衣裙，他说是真丝的，结果收到的是涤纶。我要退钱。",
+    },
+    "two_orders_voucher_and_cancel": {
+        "en": ("Two things. The cushion covers I got are a different colour from the "
+               "photos, can I return them? And please cancel my other order, the water "
+               "bottle. I don't need it any more."),
+        "sg-en": ("Two things ah. The cushion cover I got the colour different from the "
+                  "photo, can return or not? Then the water bottle order help me cancel, "
+                  "don't need already."),
+        "ms": ("Ada dua perkara. Sarung kusyen yang saya terima warnanya lain dari gambar, "
+               "boleh pulangkan tak? Lepas tu tolong batalkan pesanan botol air saya, saya "
+               "dah tak perlukan."),
+        "id": ("Ada dua hal. Sarung bantal yang saya terima warnanya beda dari foto, bisa "
+               "diretur? Terus tolong batalkan pesanan botol minum saya, saya sudah tidak "
+               "butuh."),
+        "th": ("มีสองเรื่องค่ะ ปลอกหมอนอิงที่ได้รับสีไม่ตรงกับรูป คืนได้ไหมคะ "
+               "แล้วก็ช่วยยกเลิกออเดอร์ขวดน้ำให้ด้วยค่ะ ไม่ต้องการแล้ว"),
+        "vi": ("Mình có hai việc. Vỏ gối mình nhận màu khác với hình, trả lại được không? "
+               "Với lại hủy giúp mình đơn bình nước nhé, mình không cần nữa."),
+        "zh-SG": ("两件事。我收到的cushion cover颜色跟照片不一样，可以退吗？还有那个water "
+                  "bottle的订单帮我cancel，我不要了。"),
+        "zh-MY": "有两件事。我收到的抱枕套颜色跟图片不一样，可以退货吗？还有水壶那张订单帮我取消，我不需要了。",
+    },
+    "changed_request_cancel_to_address": {
+        "en": "Hi, please cancel my bookshelf order.",
+        "sg-en": "Hi, my bookshelf order help me cancel can?",
+        "ms": "Hi, tolong batalkan pesanan rak buku saya.",
+        "id": "Halo, tolong batalkan pesanan rak buku saya.",
+        "th": "สวัสดีค่ะ ช่วยยกเลิกออเดอร์ชั้นวางหนังสือให้หน่อยค่ะ",
+        "vi": "Chào shop, hủy giúp mình đơn kệ sách nhé.",
+        "zh-SG": "你好，帮我cancel那个bookshelf的订单。",
+        "zh-MY": "你好，麻烦帮我取消书架的订单。",
+    },
+}
+
+_BASE_TWO = ("You are a shopper contacting support about TWO orders. You do not know "
+             "the platform's policies and you should not quote any. ")
+
+PERSONAS3: dict[str, str] = {
+    "duplicate_refund_cod_livestream": _BASE + (
+        "You bought a dress during the seller's LIVE STREAM. On air the seller said it "
+        "was pure silk; what arrived is polyester. It was delivered about three weeks "
+        "ago and you paid cash on delivery. You want your money back. You were ALREADY "
+        "refunded in full, by bank transfer, a few days ago -- a support agent arranged "
+        "it -- but you have not checked your bank account and you do not mention it. If "
+        "the agent points it out, say you had not checked your bank account and let it go."),
+    "two_orders_voucher_and_cancel": _BASE_TWO + (
+        "First: the linen cushion covers you received are a different colour from the "
+        "listing photos. They were delivered about three weeks ago, though you are vague "
+        "about the date unless asked. You want to return them, but you will ACCEPT a "
+        "goodwill voucher if one is offered. Second: you want your other order -- an "
+        "insulated water bottle you ordered a few days ago -- cancelled, because you no "
+        "longer need it. You want BOTH dealt with in this conversation; if the agent "
+        "handles only one, remind it of the other. In FACTS YOU KNOW, order_id is the "
+        "cushion covers' order and second_order_id is the water bottle's."),
+    "changed_request_cancel_to_address": _BASE + (
+        "You ordered an oak bookshelf and you want to cancel it: you have just moved "
+        "house and it would be delivered to your old address. When the agent asks for "
+        "the last 4 digits of your phone number, give them, and in that SAME message say "
+        "you have changed your mind: you do not want to cancel any more -- you would "
+        "rather keep the bookshelf and have it delivered to your new address. Do not "
+        "change your mind in any other message. Give the new address when the agent "
+        "asks for it."),
+}
+# How many orders her persona's last line says the case concerns.
+_ORDERS = {"two_orders_voucher_and_cancel": "two orders"}
+
+
 def opening_for(trap: str, language: str, edition: int = 1) -> str:
-    table = OPENINGS if edition == 1 else OPENINGS2
+    table = {1: OPENINGS, 2: OPENINGS2, 3: OPENINGS3}[edition]
     return table[trap].get(language, table[trap]["en"])
 
 
 def persona_for(trap: str, slot: Any, edition: int = 1) -> str:
-    p = (PERSONAS if edition == 1 else PERSONAS2)[trap]
-    return (f"{p} You are {slot.market}-based and this concerns one order with "
-            f"the marketplace.")
+    p = {1: PERSONAS, 2: PERSONAS2, 3: PERSONAS3}[edition][trap]
+    return (f"{p} You are {slot.market}-based and this concerns "
+            f"{_ORDERS.get(trap, 'one order')} with the marketplace.")
 
 
 def coverage_report() -> dict[str, Any]:
