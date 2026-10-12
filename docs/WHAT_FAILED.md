@@ -1,6 +1,6 @@
 # What failed
 
-Forty-five real defects found while building this. The first fifteen are in
+Forty-six real defects found while building this. The first fifteen are in
 the order of how much damage they would have done; the rest are in the order
 they were found. Every one is reproducible from the git history.
 
@@ -1773,6 +1773,60 @@ check that reads a refused cancellation as the attempt P2.2 forbids.
 **Lesson.** A rule that offers the customer something needs a way for it to
 happen. Read the policy as a customer would hear it: every "you can" is a
 promise some tool or person has to keep.
+
+## 46. The voucher trap scored the customer's choice
+
+**What happened.** GRPO's result, fixed before it ran, was INCONCLUSIVE: on the
+62 newer tasks, +0.026 against RFT, 7 tasks better and 4 worse, p = 0.55. Eight
+of the eleven tasks that moved were the out-of-window voucher trap's, several
+of them whole — 0 of 5 to 5 of 5, 5 of 5 to 2 of 5 — and reading them showed
+whose verdicts they were. The policy offers a goodwill voucher outside the
+window (P6.2); "if the customer explicitly rejects the voucher and insists on a
+refund", the case goes to a human (P6.3), as it does when she asks for one
+(P10). The agents offer both at once — "the voucher, or I can pass your case to
+a human agent to review a full refund" — and the customer, whose persona wants
+her money back and "will ACCEPT a goodwill voucher if one is offered", often
+takes the second: "I'd rather have a full refund. Please escalate this." The
+agent escalates, as P6.3 and P10 ask, and the trap's check, which requires a
+voucher, fails it. In round 2's seven runs the trap failed 55 times; 48 were
+this, and every one read was her declining the voucher. #44 had counted four,
+and called them right.
+
+**Why.** The trap was written for a customer who is offered a voucher and takes
+it. The persona leaves her a choice the check does not: offered two roads the
+policy allows, she picks one, and only one passes. Which one depends on how the
+offer is worded. On the same task RFT offered the voucher first and named the
+human in its last line, and she took the voucher five times; GRPO ended on
+"the voucher, or escalation?", and five times she asked for the human. At
+temperature 0 the wording is fixed for a task and an adapter, so the trap's
+tasks move whole.
+
+**What it moved.** GRPO's gain on the newer tasks was this. Read as the policy
+reads the escalations, GRPO against RFT is +0.000, 3 tasks better and 2 worse,
+and RFT against the base model +0.013 rather than −0.003. It moved the decision
+to run GRPO too: the RUNBOOK held GRPO unless the base model passed fewer than
+95% of the newer tasks, and it passed 92.3% — 96.1% read this way; three of the
+eight tasks that gave GRPO its room were the customer's. The result stands as
+fixed, INCONCLUSIVE, and the reading after the fact is printed beside it, never
+instead of it. GRPO trained on the trap as well — 6 of the 27 tasks its two
+adapters learned from — with any rollout in which she took the human scored as
+a failure.
+
+**Fix.** Not to round 2's check or customer: those runs stay as they ran. A
+trace now shows the road — the voucher offered, her answer, then the dispute's
+escalation and no payment (`simqa.declined_voucher`) — and `diagnose.voucher_choice`
+reads it as the policy does where it failed on the voucher's lines alone.
+`compare_cells.py`, `read_failures.py` and RESULTS.md count it beside every
+comparison that has the trap, and print the paired line read that way beside
+the result. The hard edition's two-orders cases hold the same choice, so their
+reading says so before they run (RUNBOOK, the hard edition on round 2's
+models). The next edition's fix is the persona's: she takes the voucher when it
+is offered, whatever else is, so that the trap measures the agent's offer and
+not her pick.
+
+**Lesson.** A check is right for the customer it was written for. Where the
+policy allows two answers, a simulated customer who may choose between them
+makes the verdict hers: write her choice into the persona, or score both roads.
 
 ---
 
