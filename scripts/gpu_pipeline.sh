@@ -6,6 +6,7 @@
 #   bash scripts/gpu_pipeline.sh stage1   # split, baseline, collection, examples, checks
 #     ...read logs/sim_audit.txt, logs/check-A.txt, data/rft/stats.json...
 #   bash scripts/gpu_pipeline.sh stage2   # two LoRAs, held-out eval (+ reference if keyed)
+#   PASAR_ROUND=2 bash scripts/gpu_pipeline.sh grpo   # GRPO from round 2's adapters (v45)
 #
 # PASAR_ROUND=2 runs the same stages again as round 2 (v44): the second
 # fine-tune, its data balanced by trap (WHAT_FAILED #31), under today's customer
@@ -13,6 +14,10 @@
 # hardest traps. Its runs, files and adapters have names of their own (P2-*,
 # data/rft2, checkpoints/rft2-*, logs/r2-*, data/run2_settings.env), so round
 # 1's stay as they are, here and on the laptop (RUNBOOK phase 4, round 2).
+#
+# `grpo` (round 2 only) continues each fold's adapter with GRPO on that fold's
+# tasks, then evaluates the result on what no model trained on: the held-out
+# fold and the 62 newer tasks (RUNBOOK phase 4, GRPO).
 #
 # Run inside tmux (or a notebook cell, or a Modal job). After a crash, an
 # eviction or a dropped connection, run the same stage again: sweeps resume per
@@ -94,6 +99,13 @@ TRAIN_MAX_LEN="${PASAR_TRAIN_MAX_LEN:-$(saved PASAR_TRAIN_MAX_LEN)}"; TRAIN_MAX_
 # round 1's recipe, at most three a task (WHAT_FAILED #31).
 PER_TRAP="${PASAR_PER_TRAP:-$(saved PASAR_PER_TRAP)}"
 if [ -z "$PER_TRAP" ]; then if [ "$ROUND" = 1 ]; then PER_TRAP=0; else PER_TRAP=20; fi; fi
+# GRPO (the grpo stage): iterations a fold -- run the stage again with more to
+# continue from the last one -- rollouts a task, and the learning rate. The
+# first grpo run records its rollouts a task with the round's settings, and
+# every later iteration uses the same.
+GRPO_ITERS="${PASAR_GRPO_ITERS:-1}"
+GRPO_K="${PASAR_GRPO_K:-$(saved PASAR_GRPO_K)}";          GRPO_K="${GRPO_K:-8}"
+GRPO_LR="${PASAR_GRPO_LR:-2e-5}"
 
 # How the servers share this machine (scripts/gpu_plan.py): two or more GPUs,
 # one server each; one large GPU (B200, H200), both on it, the agent first.
@@ -171,6 +183,24 @@ wait_ready() {  # port name log pid
     sleep 5
   done
   echo "!! $2 not ready after 30 minutes; see $3"; exit 1
+}
+
+finished() {  # $1 = a run cell: how many of its episodes ran to the end
+  "$PY" - "$1" <<'EOF'
+import json, sys
+from pathlib import Path
+n = 0
+for f in Path(sys.argv[1]).glob("*.jsonl"):
+    try:
+        last = json.loads([l for l in f.read_text(encoding="utf-8").splitlines()
+                           if l.strip()][-1])
+    except (IndexError, ValueError):
+        continue                     # empty, or cut off mid-line
+    # A server error ends an episode with a footer too, and the sweep runs it
+    # again on resume: not finished.
+    n += last.get("type") == "footer" and last.get("stop_reason") != "backend_error"
+print(n)
+EOF
 }
 
 serve_agent() {  # $1 = a serve_sglang.sh mode; the agent alone, on GPU 0
@@ -336,15 +366,123 @@ EOF
     echo "  traces/$P-base traces/$P-rft traces/$P-ref traces/$P-collect data/splits data/$RFT/stats.json"
     ;;
 
+  grpo)
+    # GRPO from round 2's fine-tunes (RUNBOOK phase 4, GRPO). For each fold,
+    # PASAR_GRPO_ITERS iterations, starting from checkpoints/rft2-<fold>: the
+    # adapter served, its rollouts on the fold's tasks it can learn from, their
+    # advantages, the servers stopped, one pass of the policy gradient. Then
+    # the last iteration's adapters on what no model trained on -- the held-out
+    # fold, paired with traces/P2-rft, and the 62 newer tasks, with the RFT
+    # adapters and the base model beside them. Run it again after a failure, or
+    # with more iterations: finished iterations, sweeps and evaluations are kept.
+    if [ "$ROUND" != 2 ]; then
+      echo "!! GRPO continues round 2's fine-tunes: run it as PASAR_ROUND=2 (docs/GPU_GUIDE.md, GRPO)" >&2
+      exit 1
+    fi
+    for F in A B; do
+      if [ ! -f "checkpoints/$RFT-$F/adapter_config.json" ]; then
+        echo "!! no checkpoints/$RFT-$F: GRPO starts from round 2's adapters (its stage 2 first)" >&2
+        exit 1
+      fi
+    done
+    for d in "traces/$P-collect/full" "traces/$P-rft/full" "traces/$P-base-e2/full"; do
+      if [ ! -d "$d" ]; then
+        echo "!! no $d: GRPO picks its tasks from round 2's collection and is compared with" >&2
+        echo "   its evaluation and its base run on the newer tasks" >&2
+        exit 1
+      fi
+    done
+    if [ -n "$(saved PASAR_GRPO_K)" ] && [ "$GRPO_K" != "$(saved PASAR_GRPO_K)" ]; then
+      echo "!! PASAR_GRPO_K=$GRPO_K, but GRPO's first iteration ran with $(saved PASAR_GRPO_K) ($SETTINGS)." >&2
+      exit 1
+    fi
+    if [ -z "$(saved PASAR_GRPO_K)" ]; then printf 'PASAR_GRPO_K=%s\n' "$GRPO_K" >> "$SETTINGS"; fi
+    stop
+    layout
+    ACCUM=$(( NGPU > 1 ? (32 + NGPU / 2) / NGPU : 32 )); [ "$ACCUM" -ge 1 ] || ACCUM=1
+    if [ "$NGPU" -gt 1 ]; then launch=(accelerate launch --num_processes "$NGPU" --multi_gpu)
+    else launch=("$PY"); fi
+    G=grpo2
+    mkdir -p "data/$G/stats" "data/$G/examples"
+    echo "GRPO: $GRPO_ITERS iteration(s) a fold, $GRPO_K rollouts a task, learning rate $GRPO_LR"
+    if [ ! -f "data/$G/stats/tasks-A.json" ] || [ ! -f "data/$G/stats/tasks-B.json" ]; then
+      # Once: the tasks stay the same from iteration to iteration.
+      $PY scripts/train_grpo.py tasks --collect "traces/$P-collect/full" -k "$GRPO_K" \
+        --out-dir "data/$G/stats" 2>&1 | tee "logs/${LP}grpo-tasks.log"
+    fi
+    for F in A B; do
+      prev="checkpoints/$RFT-$F"
+      for i in $(seq 1 "$GRPO_ITERS"); do
+        out="checkpoints/$G-i$i-$F"
+        if [ -f "$out/adapter_config.json" ]; then
+          echo "$out already trained; skipping"; prev="$out"; continue
+        fi
+        ex="data/$G/examples/i$i-$F.jsonl"; st="data/$G/stats/i$i-$F.stats.json"
+        name="pasar-$(basename "$prev")"
+        if [ ! -f "$st" ]; then           # written last: a build cut short is built again
+          echo "== fold $F, iteration $i: rollouts of $name" | tee -a "logs/${LP}grpo-$F.log"
+          export LORA="$prev"
+          serve lora
+          $PY scripts/train_grpo.py collect --adapter "$name" -k "$GRPO_K" \
+            --tasks-file "data/$G/stats/tasks-$F.json" --run-id "$P-grpo-i$i-collect-$F" \
+            2>&1 | tee -a "logs/${LP}grpo-$F.log"
+          $PY scripts/train_grpo.py build --run "traces/$P-grpo-i$i-collect-$F/full" \
+            --served-model "$AGENT_MODEL:$name" --server http://localhost:8000 \
+            --max-len "$TRAIN_MAX_LEN" --out "$ex" --stats "$st" 2>&1 | tee -a "logs/${LP}grpo-$F.log"
+          stop
+        fi
+        echo "== fold $F, iteration $i: the update -> $out" | tee -a "logs/${LP}grpo-$F.log"
+        "${launch[@]}" scripts/train_rft.py train --objective grpo --init "$prev" \
+          --data "$ex" --out "$out" --resume --epochs 1 --lr "$GRPO_LR" --warmup-steps 3 \
+          --max-len "$TRAIN_MAX_LEN" --grad-accum "$ACCUM" 2>&1 | tee -a "logs/${LP}grpo-$F.log"
+        prev="$out"
+      done
+    done
+    N="$GRPO_ITERS"
+    # The newer tasks' own split, which only shares them out between the two
+    # adapters: neither trained on any of them.
+    $PY -m pasarbench.rl.split --suite edition2 > /dev/null
+    export RFT_NAME="$G-i$N"            # serve_sglang.sh rft: checkpoints/grpo2-iN-A and -B
+    serve rft
+    $PY scripts/train_rft.py eval -k "$K" --adapter-prefix "pasar-$G-i$N-" --run-id "$P-grpo-i$N" \
+      2>&1 | tee -a "logs/${LP}grpo-eval.log"
+    $PY scripts/train_rft.py eval -k "$K" --suite edition2 --adapter-prefix "pasar-$G-i$N-" \
+      --run-id "$P-grpo-i$N-e2" 2>&1 | tee -a "logs/${LP}grpo-eval.log"
+    e2_done="$(finished "traces/$P-rft-e2/full")" || e2_done=0
+    if [ "${e2_done:-0}" -lt "$(( 62 * K ))" ]; then   # once, for every N
+      export RFT_NAME="$RFT"
+      serve rft
+      $PY scripts/train_rft.py eval -k "$K" --suite edition2 --adapter-prefix "pasar-$RFT-" \
+        --run-id "$P-rft-e2" 2>&1 | tee -a "logs/${LP}grpo-eval.log"
+    fi
+    export RFT_NAME="$RFT"
+    stop
+    {
+      echo "== GRPO ($N iteration(s)) against RFT on the held-out fold, paired by task"
+      $PY scripts/compare_cells.py "traces/$P-rft/full" "traces/$P-grpo-i$N/full"
+      echo; echo "== the 62 newer tasks, which no model trained on: base -> RFT"
+      $PY scripts/compare_cells.py "traces/$P-base-e2/full" "traces/$P-rft-e2/full"
+      echo; echo "== the 62 newer tasks: RFT -> GRPO ($N iteration(s))"
+      $PY scripts/compare_cells.py "traces/$P-rft-e2/full" "traces/$P-grpo-i$N-e2/full"
+    } > "logs/${LP}grpo-compare-i$N.txt" 2>&1 || echo "!! a comparison failed; the runs are complete"
+    echo
+    echo "GRPO done. Read, in this order:"
+    echo "  logs/${LP}grpo-compare-i$N.txt  the paired comparisons (the result; RUNBOOK phase 4, GRPO)"
+    echo "  data/$G/stats/i*-A.stats.json  each iteration's groups, and the policy's pass rate on its tasks"
+    ;;
+
   settings)
     echo "agent $AGENT_MODEL | customer $SIM_MODEL | round $ROUND: runs $P-*, adapters checkpoints/$RFT-A and -B"
     echo "PASAR_K=$K PASAR_COLLECT_K=$COLLECT_K PASAR_EPOCHS=$EPOCHS PASAR_TRAIN_MAX_LEN=$TRAIN_MAX_LEN PASAR_CUSTOMER=$PASAR_CUSTOMER PASAR_PER_TRAP=$PER_TRAP" \
          "($([ -f "$SETTINGS" ] && echo "stage 1 recorded in $SETTINGS" || echo "stage 1 not run yet"))"
+    if [ "$ROUND" = 2 ]; then
+      echo "grpo: PASAR_GRPO_ITERS=$GRPO_ITERS PASAR_GRPO_K=$GRPO_K PASAR_GRPO_LR=$GRPO_LR"
+    fi
     "$PY" scripts/gpu_plan.py show
     ;;
 
   *)
-    echo "usage: bash scripts/gpu_pipeline.sh smoke | stage1 | stage2 | settings" >&2
+    echo "usage: bash scripts/gpu_pipeline.sh smoke | stage1 | stage2 | grpo | settings" >&2
     exit 1
     ;;
 esac
