@@ -262,11 +262,25 @@ the agent the first time: it "offered a goodwill voucher per P6.2 with accurate
 currency calculation".
 <!-- first run: WHAT_FAILED #33; re-run: RESULTS.md §4 -->
 
+Then I gave the judge answers to find. Labels with almost no violations
+calibrate nothing, so I made the violations: one mistake planted in a copy of a
+transcript the database passed — another customer's order read out, a total no
+tool gave, a 30-day return window, the identity check taken out — beside the
+untouched original. Against a bar fixed before the run, four of nine criteria
+passed: leaks, invented facts, an unexplained escalation, rudeness. The worst was
+the one about an action. With the identity check taken out, the rubric judge
+flagged it once in 20, quoting the agent's request for the digits as the check;
+the 1–5 judge passed 19 of those 20 copies. To a judge, asking for a check is
+the check.
+<!-- RUNBOOK, planted mistakes, "What it found"; judge_calibration.py report: verification_before_action caught 1/20, the 1-5 judge 18/20 -> 19/20; trusted: no_data_leak, no_hallucinated_facts, escalation_explained, tone_professional -->
+
 The lesson is not that LLM judges are useless. It is that whether an action
 happened is a question about state, and state can be checked. Check outcomes
 against the database, check claimed actions against the tool log —
 mechanically — and keep the LLM judge for what can't be checked: tone,
-clarity, language.
+clarity, language — calibrated too, since on planted mistakes it caught every
+rude line, but only two in three English sentences dropped into a reply in
+another language.
 
 So I built that check into the agent. A guardrail reads each reply before the
 customer does; if it claims an action no tool call in the conversation has
@@ -441,6 +455,20 @@ livestream one, which it already passed nearly every time and so trained on in
 full.
 <!-- RESULTS.md §6 per-trap table; WHAT_FAILED #31 -->
 
+So I ran it again the way that called for: the training data balanced by trap,
+twenty passing conversations each, picked by the corrected checks, against a
+fixed customer. The same null — 0.962 against 0.954, 11 tasks better and 14
+worse, p = 0.69 — and what I had committed to in advance was the failures, not
+the number. The livestream refund fell back to the base model's rate. The sale
+delay's answer still turned up on customs holds — "it's 11.11, the delay is
+normal, please wait" — in four Chinese conversations. And there was a new one:
+the photo trap, now as present in the data as any other, lent out its rule.
+Asked to refund a MYR 186 serum, the fine-tune asked for photos "since it's an
+item worth over SGD 200" in all five conversations; MYR 186 is SGD 56, and the
+base model never asked. Balancing decides which successes spread. It doesn't
+stop them spreading.
+<!-- RUNBOOK phase 4, round 2, "What it found"; WHAT_FAILED #44: compare_cells.py traces/P2-base/full traces/P2-rft/full; T02 photos asked 5/5 RFT, 0/5 base; CHE-MY.zh-MY r1-r4 -->
+
 A verifier is a reward function the moment you train on it, and its quirks
 become the model's habits. The replay that caught this cost seconds. Without
 it, the headline would have been a fine-tune that "improved" and an API model
@@ -484,8 +512,8 @@ doing it twice.
 
 ### What failed
 
-`docs/WHAT_FAILED.md` has 40 entries. Most were found by running experiments
-and refusing a number that couldn't be right. Three more:
+`docs/WHAT_FAILED.md` has 45 entries. Most were found by running experiments
+and refusing a number that couldn't be right. Four more:
 
 **The ceiling was below the floor.** The oracle arm — by design the best case —
 scored below the full registry. I had defined what a task needs as "what the
@@ -518,6 +546,17 @@ The tools now check their inputs, and every run replays under the checks it
 ran under — re-scored, all 10,684 recorded episodes come out as before.
 <!-- WHAT_FAILED #35; bounds: K named 0.801 -> at most 0.871, control 0.439 -> at most 0.474; P-ref 0.913 -> at most 0.932 against 0.979, p=0.0115; I-tools2 and the fine-tune unchanged; C-clean/D-nozh largest paired gap 6.2 points, every p >= 0.25; rescore v25 vs v27 over 10,684 episodes: 0 differences -->
 
+**The customer sent photos she didn't have.** The simulated customer used to
+say "yes, I'll take the voucher" and leave before the agent could issue it, so
+I told her to wait for what she'd agreed to. On the photo trap she is told she
+has no photos and will send them tonight — and now that she couldn't leave,
+tonight arrived inside the conversation: "(Attached: photo_of_damage.jpg) Here
+are the photos." The agent opened the return. She did it in 64 of 210
+conversations in the second round, every one of them failed, and the trap's
+score became a measure of her. One trap's fix was another trap's bug, and
+nothing checked that her persona still held; now the audit does.
+<!-- WHAT_FAILED #43: claims 26/70 base, 32/70 RFT, 6/70 deepseek, all failed; round 1: 1 in 210 -->
+
 ### Limits
 
 Each tool arm is 32 tasks, so these tests see large effects only; several
@@ -531,13 +570,14 @@ Vietnamese, that the case had gone to the complaints team. It hadn't. The
 guardrail shares that blind spot: three guarded failures told the customer
 something in words it doesn't read — a voucher promised and never issued, a
 review implied with no escalation, "your case has been flagged" — and its live
-test is one run of 192 conversations. The Thai and
-Vietnamese translations are not native-reviewed. The fine-tune is one run of one
-recipe; a second, with training data balanced across traps, is designed but not
-run. Serving cost is built but not measured.
+test is one run of 192 conversations. The Thai and Vietnamese translations are
+not native-reviewed. The fine-tune is one recipe run twice; the second, with
+training data balanced across traps, moved the leak rather than stopping it,
+and its photo-trap numbers are the simulated customer's. Serving cost is built
+but not measured.
 <!-- RESULTS.md §3 paired table (pairs 13–16); audit_tool_arms.py §3 header; traces/J-preload OOWDE-VN.vi__r2: "Trường hợp của bạn đã được chuyển lên bộ phận xử lý khiếu nại", escalate_to_human never searched for, never called; traces/L2-claims OOWOV-VN__r1, DRE-PH__r1, HPRR-PH__r2 (RUNBOOK 1i, v25) -->
 
-The code, the trace generators, and all 40 failures are in the repo.
+The code, the trace generators, and all 45 failures are in the repo.
 
 ---
 
@@ -790,11 +830,13 @@ paired test, and why several verdicts say INCONCLUSIVE.
 **"So did RFT work?"** Not measurably, once the checker was fixed: +0.3 points,
 p = 0.84. What it did do is move behaviour between traps — better at escalating
 duplicate refunds, worse at out-of-window disputes, where it copied the
-livestream trap's answer. The next run would build its data with the corrected
-checks and balance it by trap, and I'd read the per-trap table as the result.
-GRPO is built but can't show much here: at 0.98 the held-out tasks are nearly
-saturated for this model. So it trains where the model fails at temperature 1
-and is judged on the 62 newer tasks no model trained on — and the harder
+livestream trap's answer. So the second run built its data with the corrected
+checks and balanced it by trap, and I read the per-trap table as the result:
+the same null, and the leak moved — the photo trap, newly well represented,
+lent its rule to a cash-on-delivery refund. GRPO is built but can't show much
+here: at 0.96 the held-out tasks are nearly saturated for this model. So it
+trains where the model fails at temperature 1 and is judged on the 62 newer
+tasks no model trained on, where the base model passes 92% — and the harder
 edition would give it more room.
 
 **"Why didn't you re-run the evaluation after fixing the checker?"** I didn't
@@ -812,8 +854,9 @@ of it, and their failures sit in a handful of traps, so a table of frontier
 models would bunch at the top; the next edition combines traps in one case — a
 duplicate refund on a cash-on-delivery livestream order, two orders in one
 chat, a customer who changes her request. Then run models from several labs on
-it, against one customer. The second fine-tune, its data balanced by trap, is
-running (RUNBOOK phase 4, round 2), and GRPO follows it (v45). Along the way:
+it, against one customer — a customer who leaves once she has promised what she
+can't do in the conversation (WHAT_FAILED #43). GRPO runs next, from the second
+fine-tune and without the photo trap (RUNBOOK phase 4, GRPO). Along the way:
 the run the language finding needs — hold a conversation fixed at the moment
 the agent reads the refund and change only its language (RUNBOOK 1r); room for
 the closing phase in the token budget (27 of 456 cut short in the last run,
