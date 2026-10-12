@@ -143,13 +143,16 @@ python -m pasarbench.sweep \
 export DEEPSEEK_API_KEY=sk-...        # then pass NO --api-key flag
 ```
 
-The sweep searches `PASARBENCH_API_KEY`, `DEEPSEEK_API_KEY`, `OPENAI_API_KEY`,
-`DASHSCOPE_API_KEY`, `TOGETHER_API_KEY`, `GROQ_API_KEY` in that order for the
-agent, and `PASARBENCH_SIM_API_KEY`, `DASHSCOPE_API_KEY`, ... for a simulated
-customer on another provider. It fails immediately with guidance if none is
-set rather than sending a request and handing you a 401, and it refuses to
-send the agent's key to the customer's provider when the customer's key is
-missing.
+Each key is found by the endpoint it goes to (v55; WHAT_FAILED #47):
+`PASARBENCH_API_KEY` (this run's agent key) or `PASARBENCH_SIM_API_KEY` (the
+customer's, which the claim reader and the translator share) when set;
+otherwise the variable of the provider that endpoint is on — `DEEPSEEK_API_KEY`
+for api.deepseek.com, `DASHSCOPE_API_KEY` for DashScope, `OPENAI_API_KEY` for
+api.openai.com, and `GEMINI_API_KEY`, `ANTHROPIC_API_KEY`, `MISTRAL_API_KEY`,
+`XAI_API_KEY`, `OPENROUTER_API_KEY`, `TOGETHER_API_KEY`, `GROQ_API_KEY` for
+theirs. Never another provider's: with only `DEEPSEEK_API_KEY` set, an agent on
+api.openai.com gets no key and the sweep stops, naming the variable to set,
+rather than sending a request and handing you a 401. A local server gets none.
 
 **Do not pass `--api-key sk-...` on a shared cluster.** Command-line arguments
 land in `/proc/<pid>/cmdline`, which is world-readable — any other user on the
@@ -1855,6 +1858,87 @@ needs another customer, and then every agent compared with it runs with that
 one). The Qwen3.8-27B base model and its fine-tunes run the hard edition on the
 GPU, with the Gemma customer (phase 4, the hard edition): beside these, with
 that difference stated.
+
+**Another lab's model, one command** (v55; v56):
+
+```bash
+python scripts/add_model.py
+```
+
+It asks for the provider (OpenAI, Google, Anthropic, Mistral, xAI, Z.ai,
+Xiaomi MiMo, OpenRouter, Together, Groq, DeepSeek, or any OpenAI-compatible
+endpoint), the model's name and its API key. The key is typed at a hidden
+prompt — or taken from the provider's own variable, in `.env` or the shell,
+under any of the names it goes by (`ZAI_API_KEY` or `GLM_API_KEY` for Z.ai,
+`MIMO_API_KEY` for Xiaomi, `XAI_API_KEY` or `GROK_API_KEY` for xAI;
+`pasarbench.sweep.PROVIDER_KEYS`), if you say so — never shown and never put on
+a command line: the two runs get it in their environment with every other
+`*_API_KEY` taken out, so it goes to that provider and nowhere else
+(WHAT_FAILED #47). The customer's key is `PASARBENCH_SIM_API_KEY` or
+`DASHSCOPE_API_KEY`, as the sweep reads it, or typed. Before the runs the model
+looks an order up with its 20 tools and answers from what
+the tool returned — two short requests, the loop every step of a run is — so a
+wrong key or model name, a model that takes no tools or no temperature 0, or a
+setting the provider refuses stops it there, nothing spent. Then the two sweeps
+above, as `V-<name>` and `V-<name>-parts`, against customer 3, and
+`V-<name>.txt`: the two commands' reading, and this model against every model
+already run, on the cases and on the parts — the separation line below. A run
+that stopped, or left conversations an API error ended, is finished by the same
+command again; no reading is written until none is left. It refuses a key that
+is another provider's variable's, a Qwen model, a retired model its provider
+still answers for with another one (xAI's fast models since 2026-05-15, served
+by Grok 4.3), and a name that holds another model's runs. `--provider`,
+`--model` and `--name` skip the questions; `--dry-run` shows the plan and sends
+nothing.
+
+Every model runs at temperature 0 with reasoning off where its provider has a
+switch: DeepSeek's and MiMo's `thinking: disabled`, Grok 4.3's
+`reasoning_effort: none`. GLM-5.3-Flash has none — it always reasons — so it
+runs at `reasoning_effort: low` with 4,096 tokens a step (the others 2,048),
+and its line in any table says so. To xAI each request carries one
+`x-grok-conv-id` a conversation, so that its steps reach the server that cached
+the steps before them (v56).
+
+**Which keys work, which models** (v56; v57), before any run:
+
+```bash
+python scripts/add_model.py --check
+```
+
+For every provider whose key is set: the models the key lists, and its newest
+fast models (`CANDIDATES` in the script, and up to three more of that tier the
+key lists) each put through the same two requests, with their tokens and what
+the provider's cache served of the second; and the customer's key, found as the
+sweep finds it (`PASARBENCH_SIM_API_KEY`, else `DASHSCOPE_API_KEY`). It writes
+`models_check.txt`, which names the variables and holds no key. The script
+reads `.env` itself (v57), as `set -a; . ./.env` would, keeping what the shell
+has set already. When a provider of `CANDIDATES` has no key, it says by name
+only what `.env` sets and which of its lines the shell does not read — a space
+round the `=`, a line that is not `NAME=value`, an empty value, a name nothing
+reads — then asks for the key at a hidden prompt (Enter skips), tries it, and
+if a request with it worked offers to save it to `.env` under the name the runs
+read, in place of a misspelt line; `.env` is left readable by you alone. A key
+that is another provider's variable's is refused before it is sent.
+
+**What one model's 1s costs** — list prices read 2026-10-13; token counts from
+DeepSeek's runs of the parts, the cases' by Qwen's ratio of the cases to their
+parts. An agent's 225 conversations send about 7.8M prompt tokens in about 1,600
+requests and get about 0.13M back, more for a model that reasons. Each request
+repeats the one before it and adds a step: 97.6% of DeepSeek's prompt tokens
+came from its cache. Another model's tokenizer counts the same text
+differently, and another model takes more steps or fewer. The customer,
+Qwen3.8-Flash, is well under $0.30 a model.
+
+| agent | $ per 1M tokens: input / cached / output | 1s, nine in ten prompt tokens cached | none cached |
+|---|---|---|---|
+| GLM-5.3-Flash (reasons; taken as 100–600 tokens a request) | 0.15 / 0.03 / 0.50 | $0.5–0.9 | $1.3–1.7 |
+| GLM-5.3-FlashX (the same, faster) | 0.37 / 0.075 / 1.25 | $1.1–2.2 | $3.2–4.3 |
+| MiMo-V2.6-Flash, reasoning off | 0.14 / ~0.003 / 0.28 | $0.16 | $1.1 |
+| Grok 4.3, reasoning none | 1.25 / 0.20 / 2.50 | $2.7 | $10 |
+
+GLM-4.7-Flash is free, at the free tier's rate limits. xAI's fast models were
+retired on 2026-05-15, and Grok 4.7 Fast is not on its public API: Grok 4.3 is
+its cheapest general model, and the one xAI names in their place.
 
 **The reading, fixed before the run** (2026-10-12, before any agent ran a case):
 
