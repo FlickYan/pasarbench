@@ -7,6 +7,8 @@
 #     ...read logs/sim_audit.txt, logs/check-A.txt, data/rft/stats.json...
 #   bash scripts/gpu_pipeline.sh stage2   # two LoRAs, held-out eval (+ reference if keyed)
 #   PASAR_ROUND=2 bash scripts/gpu_pipeline.sh grpo   # GRPO from round 2's adapters (v45)
+#   PASAR_ROUND=2 bash scripts/gpu_pipeline.sh customer3   # customer 3 against 2 (v47)
+#   PASAR_ROUND=2 bash scripts/gpu_pipeline.sh edition3    # the hard edition (v48)
 #
 # PASAR_ROUND=2 runs the same stages again as round 2 (v44): the second
 # fine-tune, its data balanced by trap (WHAT_FAILED #31), under today's customer
@@ -110,6 +112,10 @@ GRPO_LR="${PASAR_GRPO_LR:-2e-5}"
 # default the photo trap, whose verdicts follow the customer (WHAT_FAILED #43).
 GRPO_SKIP="${PASAR_GRPO_SKIP_TRAPS:-$(saved PASAR_GRPO_SKIP_TRAPS)}"
 GRPO_SKIP="${GRPO_SKIP:-high_value_photo_required_first}"
+# The hard edition's customer (the edition3 stage): customer 3, whom the next
+# editions run with, once the customer3 stage has checked her; 2 if that check
+# says to keep customer 2 (RUNBOOK 1s). Recorded at its first run, like GRPO's.
+E3_CUSTOMER="${PASAR_E3_CUSTOMER:-$(saved PASAR_E3_CUSTOMER)}"; E3_CUSTOMER="${E3_CUSTOMER:-3}"
 
 # How the servers share this machine (scripts/gpu_plan.py): two or more GPUs,
 # one server each; one large GPU (B200, H200), both on it, the agent first.
@@ -515,18 +521,98 @@ EOF
     echo "Customer 3 checked. Read logs/${LP}customer3.txt (RUNBOOK phase 4, customer 3)."
     ;;
 
+  edition3)
+    # The hard edition (RUNBOOK 1s): 36 cases that combine the suite's traps,
+    # which no model trained on, under one customer -- customer 3 once the
+    # customer3 stage has checked her. The base model, round 2's RFT adapters
+    # and, if GRPO has run, its last iteration's, each at temperature 0, K
+    # times a task; then base -> RFT and RFT -> GRPO paired by task, and the
+    # changed request's audit of each run. Runs of their own: $P-base-e3,
+    # $P-rft-e3, $P-grpo-iN-e3. Run it again after a failure: finished runs
+    # are not served again, and the sweeps resume.
+    if [ "$ROUND" != 2 ]; then
+      echo "!! the hard edition runs on round 2's models: PASAR_ROUND=2" >&2
+      exit 1
+    fi
+    for F in A B; do
+      if [ ! -f "checkpoints/$RFT-$F/adapter_config.json" ]; then
+        echo "!! no checkpoints/$RFT-$F: the hard edition runs round 2's adapters (its stage 2 first)" >&2
+        exit 1
+      fi
+    done
+    if [ "$E3_CUSTOMER" = 3 ] && [ ! -d "traces/$P-c3-check/full" ]; then
+      echo "!! customer 3 has not been checked: run the customer3 stage and read" >&2
+      echo "   logs/${LP}customer3.txt first (RUNBOOK phase 4, customer 3) -- or, if that" >&2
+      echo "   check said to keep customer 2, PASAR_E3_CUSTOMER=2 (RUNBOOK 1s)" >&2
+      exit 1
+    fi
+    if [ -n "$(saved PASAR_E3_CUSTOMER)" ] && [ "$E3_CUSTOMER" != "$(saved PASAR_E3_CUSTOMER)" ]; then
+      echo "!! PASAR_E3_CUSTOMER=$E3_CUSTOMER, but the hard edition's first run had customer $(saved PASAR_E3_CUSTOMER) ($SETTINGS)." >&2
+      exit 1
+    fi
+    if [ -z "$(saved PASAR_E3_CUSTOMER)" ]; then printf 'PASAR_E3_CUSTOMER=%s\n' "$E3_CUSTOMER" >> "$SETTINGS"; fi
+    E3_N="$($PY -c 'from pasarbench.generate import generate; print(len(generate(edition=3)[0]))')"
+    left() {  # $1 = a run id: whether it has episodes still to run
+      local n; n="$(finished "traces/$1/full")" || n=0
+      [ "${n:-0}" -lt "$(( E3_N * K ))" ]
+    }
+    echo "the hard edition: $E3_N tasks x $K, customer $E3_CUSTOMER"
+    layout
+    $PY -m pasarbench.rl.split --suite edition3 > /dev/null
+    if left "$P-base-e3"; then
+      serve agent
+      $PY scripts/train_rft.py baseline -k "$K" --suite edition3 --customer "$E3_CUSTOMER" \
+        --run-id "$P-base-e3" 2>&1 | tee -a "logs/${LP}edition3.log"
+    fi
+    if left "$P-rft-e3"; then
+      export RFT_NAME="$RFT"
+      serve rft
+      $PY scripts/train_rft.py eval -k "$K" --suite edition3 --customer "$E3_CUSTOMER" \
+        --adapter-prefix "pasar-$RFT-" --run-id "$P-rft-e3" 2>&1 | tee -a "logs/${LP}edition3.log"
+    fi
+    G=grpo2; N="$GRPO_ITERS"; runs=("$P-base-e3" "$P-rft-e3")
+    if [ -f "checkpoints/$G-i$N-A/adapter_config.json" ] && [ -f "checkpoints/$G-i$N-B/adapter_config.json" ]; then
+      if left "$P-grpo-i$N-e3"; then
+        export RFT_NAME="$G-i$N"
+        serve rft
+        $PY scripts/train_rft.py eval -k "$K" --suite edition3 --customer "$E3_CUSTOMER" \
+          --adapter-prefix "pasar-$G-i$N-" --run-id "$P-grpo-i$N-e3" 2>&1 | tee -a "logs/${LP}edition3.log"
+      fi
+      runs+=("$P-grpo-i$N-e3")
+    else
+      echo "(no checkpoints/$G-i$N-A and -B: the hard edition runs without GRPO's adapters)"
+    fi
+    export RFT_NAME="$RFT"
+    stop
+    {
+      echo "== the hard edition, which no model trained on: base -> RFT, paired by task"
+      $PY scripts/compare_cells.py "traces/$P-base-e3/full" "traces/$P-rft-e3/full"
+      if [ "${#runs[@]}" -gt 2 ]; then
+        echo; echo "== the hard edition: RFT -> GRPO ($N iteration(s))"
+        $PY scripts/compare_cells.py "traces/$P-rft-e3/full" "traces/$P-grpo-i$N-e3/full"
+      fi
+      for r in "${runs[@]}"; do
+        echo; echo "== $r: did the customer who changes her request change it with her digits?"
+        $PY scripts/inspect_trace.py "traces/$r/full" --leaks-only | sed -n '/^4b\. /,$p'
+      done
+    } > "logs/${LP}edition3.txt" 2>&1 || echo "!! a comparison failed; the runs are complete"
+    echo
+    echo "The hard edition ran. Read logs/${LP}edition3.txt (RUNBOOK 1s)."
+    ;;
+
   settings)
     echo "agent $AGENT_MODEL | customer $SIM_MODEL | round $ROUND: runs $P-*, adapters checkpoints/$RFT-A and -B"
     echo "PASAR_K=$K PASAR_COLLECT_K=$COLLECT_K PASAR_EPOCHS=$EPOCHS PASAR_TRAIN_MAX_LEN=$TRAIN_MAX_LEN PASAR_CUSTOMER=$PASAR_CUSTOMER PASAR_PER_TRAP=$PER_TRAP" \
          "($([ -f "$SETTINGS" ] && echo "stage 1 recorded in $SETTINGS" || echo "stage 1 not run yet"))"
     if [ "$ROUND" = 2 ]; then
       echo "grpo: PASAR_GRPO_ITERS=$GRPO_ITERS PASAR_GRPO_K=$GRPO_K PASAR_GRPO_LR=$GRPO_LR PASAR_GRPO_SKIP_TRAPS=$GRPO_SKIP"
+      echo "edition3: PASAR_E3_CUSTOMER=$E3_CUSTOMER"
     fi
     "$PY" scripts/gpu_plan.py show
     ;;
 
   *)
-    echo "usage: bash scripts/gpu_pipeline.sh smoke | stage1 | stage2 | grpo | customer3 | settings" >&2
+    echo "usage: bash scripts/gpu_pipeline.sh smoke | stage1 | stage2 | grpo | customer3 | edition3 | settings" >&2
     exit 1
     ;;
 esac
