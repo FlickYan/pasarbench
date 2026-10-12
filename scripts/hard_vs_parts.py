@@ -5,7 +5,7 @@ market and language, so the language is held fixed; a sign test over the
 pairs. The hard edition is HARDER for an agent only if its cases fail more
 often than their parts, task by task, at p < 0.05.
 
-    python scripts/hard_vs_parts.py traces/H-dsk-parts/full traces/H-dsk/full
+    python scripts/hard_vs_parts.py traces/V-dsk-parts/full traces/V-dsk/full
 
 The first cell is a run of the parts --
 
@@ -42,8 +42,8 @@ def _rates(eps: list[dict]) -> tuple[float, float, int]:
 
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-    ap.add_argument("parts", help="a run of the parts, e.g. traces/H-dsk-parts/full")
-    ap.add_argument("hard", help="a run of the hard edition, e.g. traces/H-dsk/full")
+    ap.add_argument("parts", help="a run of the parts, e.g. traces/V-dsk-parts/full")
+    ap.add_argument("hard", help="a run of the hard edition, e.g. traces/V-dsk/full")
     ap.add_argument("--checker", choices=["current", "recorded"], default="current",
                     help="today's checks on the replayed episodes (default) or the "
                          "verdicts the runs recorded")
