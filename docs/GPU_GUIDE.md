@@ -273,6 +273,26 @@ edition3`, then `--stage pull`. About an hour and a half of one B200 (~$15): 540
 episodes at temperature 0 and three server starts. Run it again after a failure:
 finished runs are not served again.
 
+## GRPO on its own tasks — optional (v52, ~1 hour)
+
+Whether GRPO's one iteration learned the tasks it trained on, which its
+evaluation cannot say (RUNBOOK phase 4, GRPO, the learning curve's second
+point; its reading is fixed there). The GRPO adapters roll out on their own
+training tasks as the next iteration would — 488 conversations at temperature
+1 — and are built and counted, not trained on and not evaluated. Independent of
+the customer check and the hard edition; any order.
+
+```python
+pn.run("grpo-measure", round=2)                   # or pn.launch("grpo-measure", round=2)
+pn.read("logs/r2-grpo-measure-i2.txt", head=60)
+pn.pack()
+```
+
+As a Modal job: `PASAR_ROUND=2 modal run --detach scripts/modal_pipeline.py --stage
+grpo-measure`, then `--stage pull`. About an hour of one B200 (~$7). Its
+rollouts stay on the Volume, as GRPO's do; the comparison and the stats come
+back with `pull`.
+
 ---
 
 ## Step 0 — on your laptop, before anything else
