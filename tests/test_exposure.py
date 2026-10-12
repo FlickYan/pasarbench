@@ -2046,6 +2046,369 @@ def test_language_swap():
         os.environ.update(keys)
 
 
+def test_add_model():
+    """v55: one more model on the hard edition with one command (scripts/
+    add_model.py; RUNBOOK 1s). Its key is typed, and sent only to its own
+    endpoint: the runs get it in their environment with every other provider's
+    key taken out (WHAT_FAILED #47); a key that is another provider's is
+    refused; a Qwen model is refused, the customer being one; and the reading
+    is written only once no conversation is left that an API error ended."""
+    print("\n=== add_model: one more model, its key to its own endpoint ===")
+    import contextlib
+    import importlib.util
+    import io
+    import json
+    import os
+    import tempfile
+    from pathlib import Path
+    from types import SimpleNamespace
+
+    from pasarbench.generate import EDITION3_PARTS
+    root = Path(__file__).resolve().parent.parent
+    spec = importlib.util.spec_from_file_location("add_model", root / "scripts" / "add_model.py")
+    am = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(am)
+    cwd = os.getcwd()
+    keys = {k: os.environ.pop(k) for k in list(os.environ) if k.endswith("_API_KEY")}
+    try:
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            rc = am.main(["--provider", "openai", "--model", "gpt-x", "--dry-run"])
+        text = out.getvalue()
+        parts = ",".join(dict.fromkeys(EDITION3_PARTS.values()))
+        check("the plan: the 36 cases and their parts as RUNBOOK 1s runs them, against "
+              "customer 3, resumable, on the provider's endpoint",
+              rc == 0 and "--suite edition3 --run-id V-gpt-x" in text
+              and f"--traps {parts} --run-id V-gpt-x-parts" in text
+              and "--customer 3" in text and "--sim-model qwen3.8-flash" in text
+              and "--resume" in text and "--base-url https://api.openai.com/v1" in text, text)
+
+        def plan(*argv):
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                am.main([*argv, "--dry-run"])
+            return out.getvalue()
+        glm = plan("--provider", "zai", "--model", "glm-5.3-flash")
+        mimo = plan("--provider", "mimo", "--model", "mimo-v2.6-flash")
+        grok = plan("--provider", "xai", "--model", "grok-4.3")
+        check("Z.ai, Xiaomi and xAI each at its own endpoint: GLM-5.3-Flash, which cannot stop "
+              "reasoning, at low effort with 4,096 tokens a step; MiMo, and Grok 4.3, with "
+              "reasoning off",
+              "--base-url https://api.z.ai/api/paas/v4 --extra-body "
+              '{"reasoning_effort":"low"} --max-tokens 4096' in glm
+              and "--run-id V-glm-5.3-flash\n" in glm
+              and "--base-url https://api.xiaomimimo.com/v1 --extra-body "
+                  '{"thinking":{"type":"disabled"}} --simulator' in mimo
+              and "--max-tokens" not in mimo
+              and "--base-url https://api.x.ai/v1 --extra-body "
+                  '{"reasoning_effort":"none"} --simulator' in grok, glm + mimo + grok)
+
+        tmp = Path(tempfile.mkdtemp())
+        am.ROOT = tmp
+        ran = []
+
+        def fake_run(cmd, env=None, stdout=None, stderr=None):
+            ran.append((cmd, env))
+            if stdout is not None:
+                stdout.write("read\n")
+            return SimpleNamespace(returncode=0)
+
+        am.subprocess = SimpleNamespace(run=fake_run, STDOUT=-2)
+        am.preflight = lambda backend, url, model, key, extra, max_tokens=2048: model + "-served"
+        os.environ.update(DEEPSEEK_API_KEY="sk-dsk", DASHSCOPE_API_KEY="sk-ds")
+        for run in ("V-dsk", "V-dsk-parts"):
+            (tmp / "traces" / run / "full").mkdir(parents=True)
+            (tmp / "traces" / run / "full" / "T__r0.jsonl").write_text(
+                json.dumps({"type": "header", "requested_model": "deepseek-v4-pro"}) + "\n"
+                + json.dumps({"type": "footer", "stop_reason": "done"}) + "\n")
+        answers = iter(["y"])
+        with contextlib.redirect_stdout(io.StringIO()):
+            rc = am.main(["--provider", "openai", "--model", "gpt-x"],
+                         ask=lambda prompt: next(answers),
+                         secret=lambda prompt: "sk-oai-typed")
+        sweeps = [(c, e) for c, e in ran if "pasarbench.sweep" in c]
+        others = [(c, e) for c, e in ran if "pasarbench.sweep" not in c]
+        check("the typed key reaches the two runs as this run's key, with no other "
+              "provider's key beside it and in no command line",
+              rc == 0 and len(sweeps) == 2
+              and all(e["PASARBENCH_API_KEY"] == "sk-oai-typed"
+                      and e["PASARBENCH_SIM_API_KEY"] == "sk-ds"
+                      and "DEEPSEEK_API_KEY" not in e and "DASHSCOPE_API_KEY" not in e
+                      for _, e in sweeps)
+              and not any(k in " ".join(c) for c, _ in ran
+                          for k in ("sk-oai-typed", "sk-ds", "sk-dsk")), ran[:2])
+        check("…its reading and, for each model run before it, the pairing on the cases "
+              "and on the parts, each run with no key at all",
+              (tmp / "V-gpt-x.txt").exists()
+              and any(c[-2:] == ["traces/V-dsk/full", "traces/V-gpt-x/full"] for c, _ in others)
+              and any(c[-2:] == ["traces/V-dsk-parts/full", "traces/V-gpt-x-parts/full"]
+                      for c, _ in others)
+              and all(not any(k.endswith("_API_KEY") for k in e) for _, e in others),
+              [c for c, _ in others])
+
+        def refused(argv, typed="sk-oai-typed"):
+            try:
+                with contextlib.redirect_stdout(io.StringIO()):
+                    am.main(argv, ask=lambda prompt: "n", secret=lambda prompt: typed)
+                return ""
+            except SystemExit as e:
+                return str(e)
+        check("another provider's key typed in is refused before anything is sent",
+              "DEEPSEEK_API_KEY" in refused(["--provider", "openai", "--model", "gpt-y"],
+                                            typed="sk-dsk"))
+        check("a Qwen model is refused: the customer is one",
+              "is a Qwen model" in refused(["--provider", "openrouter", "--model",
+                                            "qwen/qwen-max"]))
+        check("a retired model its provider answers for with another is refused, with the "
+              "one to run",
+              "Run grok-4.3." in refused(["--provider", "xai", "--model",
+                                          "grok-4-1-fast-non-reasoning"]))
+        check("a name that holds another model's runs is refused",
+              "already holds deepseek-v4-pro" in refused(["--provider", "openai", "--model",
+                                                         "gpt-z", "--name", "dsk"]))
+        (tmp / "traces" / "V-gpt-x" / "full").mkdir(parents=True)
+        (tmp / "traces" / "V-gpt-x" / "full" / "T__r0.jsonl").write_text(
+            json.dumps({"type": "header", "requested_model": "gpt-x"}) + "\n"
+            + json.dumps({"type": "footer", "stop_reason": "backend_error"}) + "\n")
+        (tmp / "V-gpt-x.txt").unlink()
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            rc = am.main(["--provider", "openai", "--model", "gpt-x", "--yes"],
+                         ask=lambda prompt: "y", secret=lambda prompt: "sk-oai-typed")
+        check("a conversation an API error ended: run it again, and no reading until then",
+              rc == 1 and "ended on a server or API error" in out.getvalue()
+              and not (tmp / "V-gpt-x.txt").exists(), out.getvalue()[-300:])
+    finally:
+        os.chdir(cwd)
+        for k in [k for k in os.environ if k.endswith("_API_KEY")]:
+            os.environ.pop(k)
+        os.environ.update(keys)
+
+
+def test_add_model_check():
+    """v56: which keys work and which models, before any run (add_model.py
+    --check): each provider whose key is set, the models its key lists, and
+    its newest fast models looked at the way a run uses them -- an order looked
+    up with a tool, and an answer from what the tool returned. The file it
+    writes names the variables, never their values."""
+    print("\n=== add_model --check: which keys work, which models ===")
+    import contextlib
+    import importlib.util
+    import io
+    import json
+    import os
+    import tempfile
+    import threading
+    from http.server import BaseHTTPRequestHandler, HTTPServer
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parent.parent
+    spec = importlib.util.spec_from_file_location("add_model", root / "scripts" / "add_model.py")
+    am = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(am)
+    seen = []
+
+    class Fake(BaseHTTPRequestHandler):
+        def log_message(self, *a):
+            pass
+
+        def _send(self, obj):
+            body = json.dumps(obj).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def do_GET(self):
+            self._send({"data": [{"id": "fast-1"}, {"id": "big-2"}]})
+
+        def do_POST(self):
+            req = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+            seen.append(req)
+            if any(m["role"] == "tool" for m in req["messages"]):
+                msg = {"role": "assistant", "content": "It has shipped with J&T Express."}
+            else:
+                msg = {"role": "assistant", "content": None, "tool_calls": [
+                    {"id": "c1", "type": "function",
+                     "function": {"name": "get_order", "arguments": '{"order_id": "GO-10001"}'}}]}
+            self._send({"model": req["model"], "choices": [{"message": msg,
+                                                           "finish_reason": "stop"}],
+                        "usage": {"prompt_tokens": 1000, "completion_tokens": 20,
+                                  "prompt_tokens_details": {"cached_tokens": 900 * (
+                                      len(seen) > 1)}}})
+
+    srv = HTTPServer(("127.0.0.1", 0), Fake)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    url = f"http://127.0.0.1:{srv.server_port}/v1"
+    try:
+        r = am.probe("openai", url, "fast-1", "EMPTY", '{"thinking":{"type":"disabled"}}')
+        check("the probe is the loop a run is: the order looked up with a tool, the tool's "
+              "answer sent back, an answer from it -- with the model's settings, at "
+              "temperature 0, its 20 tools",
+              r["tool"] == "get_order" and r["answered"] and r["requests"] == 2
+              and r["prompt"] == 2000 and r["cached"] == (900, 1000) and len(seen) == 2
+              and seen[0]["thinking"] == {"type": "disabled"} and seen[0]["temperature"] == 0
+              and len(seen[0]["tools"]) == 20
+              and seen[1]["messages"][-1]["role"] == "tool", (r, seen[-1]["messages"][-2:]))
+        check("…and the models a key lists, from its /models",
+              am.listed_models(url, "EMPTY") == ["big-2", "fast-1"])
+    finally:
+        srv.shutdown()
+
+    check("GLM-5.3 and its Flash cannot stop reasoning: low effort and room for it; every "
+          "other model of the table with reasoning off where its provider has a switch",
+          am.settings_for("zai", "glm-5.3-flash") == ('{"reasoning_effort":"low"}', 4096)
+          and am.settings_for("zai", "glm-4.7-flash")[0] == '{"thinking":{"type":"disabled"}}'
+          and am.settings_for("mimo", "mimo-v2.6-flash")[0] == '{"thinking":{"type":"disabled"}}'
+          and am.settings_for("xai", "grok-4.3") == ('{"reasoning_effort":"none"}', 2048)
+          and am.settings_for("xai", "grok-4.20-0309-non-reasoning") == ("", 2048))
+
+    tmp = Path(tempfile.mkdtemp())
+    am.ROOT = tmp
+    keys = {k: os.environ.pop(k) for k in list(os.environ) if k.endswith("_API_KEY")}
+    calls = []
+
+    def fake_probe(backend, url, model, key, extra, max_tokens=2048):
+        calls.append((url, model, key, extra, max_tokens))
+        if model == "grok-3-mini":
+            raise RuntimeError("HTTP 404 from https://api.x.ai/v1/chat/completions: no model "
+                               "for key xai-secret-1")
+        return {"served": model, "requests": 2, "tool": "get_order", "answered": True,
+                "prompt": 9000, "completion": 80, "seconds": 1.5, "cached": (4000, 4500)}
+
+    am.probe = fake_probe
+    am.listed_models = lambda url, key: ([
+        "grok-4.3", "grok-4.20-0309-reasoning", "grok-4-1-fast-non-reasoning", "grok-2-mini",
+        "grok-3-mini", "grok-5-fast", "grok-4.8-mini", "grok-imagine-image-fast"]
+        if "x.ai" in url else ["glm-5.3-flash", "glm-4.5-air"])
+    try:
+        os.environ.update(GROK_API_KEY="xai-secret-1", GLM_API_KEY="glm-secret-2\r",
+                          DASHSCOPE_API_KEY="ds-secret-3", MIMO_KEY="mimo-secret-4")
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            rc = am.main(["--check"], ask=lambda prompt: "n", secret=lambda prompt: "")
+        text = (tmp / "models_check.txt").read_text(encoding="utf-8")
+        check("--check finds each provider's key under the names it goes by, tries its newest "
+              "fast models the key lists, says which it skipped and why one failed",
+              rc == 0 and "key from GROK_API_KEY" in text and "key from GLM_API_KEY" in text
+              and "grok-4.3                         OK" in text
+              and 'settings {"reasoning_effort":"none"}' in text
+              and "grok-4.20-0309-non-reasoning     not in your key's list" in text
+              and "grok-3-mini                      FAIL HTTP 404" in text
+              and "no model for key <key>" in text
+              and "glm-5.3-flash                    OK" in text
+              and "glm-5.3-flashx                   not in your key's list" in text
+              and 'settings {"reasoning_effort":"low"}' in text
+              and "The customer, qwen3.8-flash on DashScope, key from DASHSCOPE_API_KEY: OK"
+              in text, text)
+        tried = [m for u, m, _, _, _ in calls if "x.ai" in u]
+        check("…and the fast models its key lists beyond those, newest first, three at most: "
+              "no image model, no retired one, no model of another tier",
+              tried == ["grok-4.3", "grok-5-fast", "grok-4.8-mini", "grok-3-mini"]
+              and [m for u, m, _, _, _ in calls if "z.ai" in u] == ["glm-5.3-flash"], tried)
+        check("a key under a name nothing reads is named, with the name to give it; a line "
+              "end after a key is not sent",
+              "MIMO_KEY is set, but nothing here reads that name: for Xiaomi (MiMo), name it "
+              "MIMO_API_KEY" in text
+              and all("\r" not in k for _, _, k, _, _ in calls), text)
+        check("…each key sent only to its own provider, and the file naming the variables, "
+              "never their values",
+              all((("x.ai" in u) == (k == "xai-secret-1")) and (("z.ai" in u) == (k == "glm-secret-2"))
+                  and (("dashscope" in u) == (k == "ds-secret-3")) for u, _, k, _, _ in calls)
+              and "API key variables set (names only): DASHSCOPE_API_KEY, GLM_API_KEY, "
+                  "GROK_API_KEY" in text
+              and not any(v in text for v in ("xai-secret-1", "glm-secret-2", "ds-secret-3",
+                                              "mimo-secret-4")),
+              calls)
+
+        # v57: the keys a .env held under names the shell or the runs do not read,
+        # typed at --check instead, tried, and saved under the name the runs read.
+        tmp2 = Path(tempfile.mkdtemp())
+        am.ROOT = tmp2
+        (tmp2 / ".env").write_text("DEEPSEEK_API_KEY=sk-dsk-9\nPASARBENCH_SIM_API_KEY=ds-sim-8\n"
+                                   "ZAI_API_KEY = zai-typo-7\nmimo-bare-6\nGROK=grok-misnamed-5\n")
+        for k in [k for k in os.environ if k.endswith("_API_KEY")] + ["MIMO_KEY"]:
+            os.environ.pop(k, None)
+        os.environ.update(DEEPSEEK_API_KEY="sk-dsk-9", PASARBENCH_SIM_API_KEY="ds-sim-8")
+        calls.clear()
+        typed = {"xAI": "sk-dsk-9", "Z.ai": "zai-new-4", "Xiaomi": "mimo-bad-3"}
+        asked = []
+
+        def secret(prompt):
+            asked.append(prompt.split(" API key")[0])
+            return next((v for k, v in typed.items() if prompt.startswith(k)), "")
+
+        def fake_probe2(backend, url, model, key, extra, max_tokens=2048):
+            calls.append((url, model, key, extra, max_tokens))
+            if key == "mimo-bad-3":
+                raise RuntimeError(f"HTTP 401 from {url}/chat/completions: bad key {key}")
+            return {"served": model, "requests": 2, "tool": "get_order", "answered": True,
+                    "prompt": 9000, "completion": 80, "seconds": 1.5, "cached": (4000, 4500)}
+        am.probe = fake_probe2
+        am.listed_models = lambda url, key: ("HTTP 401: invalid key" if key == "mimo-bad-3"
+                                             else ["glm-5.3-flash"] if "z.ai" in url
+                                             else ["deepseek-v4-pro"])
+        with contextlib.redirect_stdout(io.StringIO()):
+            rc = am.main(["--check"], ask=lambda prompt: "y", secret=secret)
+        text = (tmp2 / "models_check.txt").read_text(encoding="utf-8")
+        env_after = (tmp2 / ".env").read_text(encoding="utf-8")
+        check("v57: with keys missing, --check says by name only what .env sets and which "
+              "lines the shell does not read -- a space round '=', a line that is not "
+              "NAME=value, a name nothing reads -- and never a value",
+              rc == 0 and "No key in this shell for xAI (Grok), Z.ai (GLM), Xiaomi (MiMo)." in text
+              and ".env sets (names only): DEEPSEEK_API_KEY, PASARBENCH_SIM_API_KEY, GROK" in text
+              and "line 3: ZAI_API_KEY has a space round its '='" in text
+              and "line 4: not NAME=value, so the shell does not read it" in text
+              and "GROK: nothing here reads that name -- for xAI (Grok), name it XAI_API_KEY"
+              in text, text)
+        check("…asks for each missing key, refuses one that is another provider's before "
+              "sending it, and saves a key that worked under the name the runs read, in "
+              "place of the misspelt line, readable by you alone",
+              asked == ["xAI (Grok)", "Z.ai (GLM)", "Xiaomi (MiMo)"]
+              and "that is the key in DEEPSEEK_API_KEY, another provider's -- not sent" in text
+              and not any("x.ai" in u for u, _, _, _, _ in calls)
+              and "saved to .env as ZAI_API_KEY" in text
+              and "ZAI_API_KEY=zai-new-4\n" in env_after and "zai-typo-7" not in env_after
+              and "DEEPSEEK_API_KEY=sk-dsk-9\n" in env_after and "GROK=grok-misnamed-5" in env_after
+              and (tmp2 / ".env").stat().st_mode & 0o077 == 0
+              and os.environ.get("ZAI_API_KEY") == "zai-new-4", (asked, env_after))
+        check("…a typed key no request worked with is not saved, and the customer's key is "
+              "found as the sweep finds it, PASARBENCH_SIM_API_KEY first; no key in the file",
+              "no request with it worked, so it is not saved" in text
+              and "MIMO_API_KEY" not in env_after
+              and "The customer, qwen3.8-flash on DashScope, key from PASARBENCH_SIM_API_KEY: OK"
+              in text and any(k == "ds-sim-8" and "dashscope" in u for u, _, k, _, _ in calls)
+              and not any(v in text for v in ("sk-dsk-9", "ds-sim-8", "zai-new-4", "mimo-bad-3",
+                                              "zai-typo-7", "mimo-bare-6", "grok-misnamed-5")),
+              text)
+
+        tmp3 = Path(tempfile.mkdtemp())
+        (tmp3 / ".env").write_text('DEEPSEEK_API_KEY=sk-from-file\n'
+                                   'export ZAI_API_KEY="zai.v57" # Z.ai\n'
+                                   'XAI_API_KEY=xai#7 # xAI\nMIMO_API_KEY = spaced\n')
+        for k in [k for k in os.environ if k.endswith("_API_KEY")]:
+            os.environ.pop(k)
+        os.environ["DEEPSEEK_API_KEY"] = "sk-from-shell"
+        loaded = am.load_dotenv(tmp3 / ".env")
+        src = (root / "scripts" / "add_model.py").read_text()
+        check("v57: the script reads .env itself, as `set -a; . ./.env` would -- quotes and a "
+              "comment after a space taken off, a line with a space round '=' not read -- and "
+              "keeps what this shell set, saying so by name when the two differ",
+              loaded == ["ZAI_API_KEY", "XAI_API_KEY"] and os.environ["ZAI_API_KEY"] == "zai.v57"
+              and os.environ["XAI_API_KEY"] == "xai#7"
+              and os.environ["DEEPSEEK_API_KEY"] == "sk-from-shell"
+              and "MIMO_API_KEY" not in os.environ
+              and any("this shell's value is not .env's for DEEPSEEK_API_KEY" in n
+                      for n in am.env_report(tmp3 / ".env"))
+              and 'load_dotenv(ROOT / ".env")\n    raise SystemExit(main())' in src, loaded)
+    finally:
+        os.environ.pop("MIMO_KEY", None)
+        for k in [k for k in os.environ if k.endswith("_API_KEY")]:
+            os.environ.pop(k)
+        os.environ.update(keys)
+
+
 def test_export_hf():
     """v44 publishes the recorded runs as a Hugging Face dataset: one line per
     episode with its setup and verdict as columns beside the whole trace, a
@@ -2346,6 +2709,8 @@ def main() -> int:
     test_photo_claims_compared()
     test_voucher_choice_compared()
     test_read_failures()
+    test_add_model()
+    test_add_model_check()
     test_export_hf()
     print(f"\n{len(PASS)} passed, {len(FAIL)} failed")
     for f in FAIL:
