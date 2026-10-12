@@ -297,10 +297,14 @@ def run_episode(
         tracker.turns += 1
         state.turn = tracker.turns
         su = getattr(simulator, "usage", None)
+        # Customer 3's guard, when it acted on this turn (WHAT_FAILED #43);
+        # nothing is added for any other customer.
+        guard = getattr(simulator, "last_guard", None)
         trace.event("user_turn", turn=state.turn, ended=ended, text=reply,
                     sim_usage=({"prompt": su.prompt_tokens,
                                 "completion": su.completion_tokens,
-                                "cached": su.cached_tokens} if su else None))
+                                "cached": su.cached_tokens} if su else None),
+                    **({"guard": guard} if guard else {}))
         if ended:
             if closing != "off":
                 # The customer's last words, then the note (closing.py): the
