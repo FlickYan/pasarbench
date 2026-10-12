@@ -1838,6 +1838,38 @@ tracking numbers do not replay (#33).
 - **Read before believing.** The originals it flags are false alarms or real
   violations: the report quotes the first five of each, and they are read.
 
+**What it found** (2026-10-12; all 390 items judged, two answers missing and
+read as satisfied; RESULTS §4):
+
+- **Four of the nine criteria can be left to the judge**: `no_data_leak` (20
+  of 20 caught, none of 210 originals flagged), `no_hallucinated_facts` (20 of
+  20; 3 of 210), `escalation_explained` (17 of 20; none) and
+  `tone_professional` (20 of 20; none). The other five score nothing:
+  `policy_accurate` 13 of 20, `no_unfounded_promise` 11 of 20,
+  `outcome_communicated` 12 of 19, `language_match` 12 of 19 — and
+  `verification_before_action` 1 of 20. With the identity check taken out, the
+  judge credited the verification anyway, quoting the agent's request for the
+  digits: it read a check asked for as a check made.
+- **What else a plant set off**: the wrong policy was flagged as an invented
+  fact 8 times, and the silent escalation as an untold outcome 11 times (the
+  expected pair).
+- **The 1–5 judge** still scored 4 or 5 on the planted copy for an English
+  sentence in a Thai or Malay reply 20 times in 20, a missing identity check 19,
+  a silent escalation 15, a promise of tomorrow 11, the wrong policy 9, an
+  invented total 5, a rude line 4 — and a leak never.
+- **Read**: of the 24 originals the rubric judge flagged, 10 are violations no
+  database check sees — a THB 1,500 item called "over SGD 200" (deepseek, the
+  misreading of WHAT_FAILED #44), the photo threshold given as "PHP 200
+  equivalent", store credit without the shipping a damaged item's refund
+  includes (P4.6), refunds promised on cancellations that the tools before v31
+  never made (#37), three writes tried before verification (the tool refused
+  each), a voucher issued and never mentioned, and an English reply to a
+  customer writing Chinese. 13 are false alarms — 9 of `outcome_communicated`'s
+  10 say no message confirms a cancellation or voucher, under the message that
+  does. One is the policy's own conflict: P8.3 offers a customs-held customer
+  the choice to cancel, and P2.2 and the tool refuse a shipped order
+  (WHAT_FAILED #45).
+
 ---
 
 # Phase 3 — serving (optional, same node)
@@ -1998,6 +2030,39 @@ python scripts/audit_tool_arms.py traces/P2-rft >> R2.txt
 - **Context, not comparison:** round 1's numbers beside these — another customer
   and older tools, so not paired against round 2.
 
+**What it found** (2026-10-12; WHAT_FAILED #43, #44):
+
+- **The trap shift is still there.** The fine-tune failed 24 episodes on tasks
+  the base model passed all five times. Nine are another trap's answer in the
+  wrong place: the peak-delay trap's "wait" on a customs hold in all four zh-MY
+  failures ("11.11, a normal delay"; the seller messaged in 13 of the trap's 55
+  conversations, base 7), the livestream trap's full refund once on an
+  out-of-window dispute (at the base model's rate, 2 in 70), and a new one —
+  the photo trap's P3.3 on a MYR 186 cash-on-delivery serum, "over SGD 200"
+  (SGD 56; photos asked for in 5 of 5, base 0), the same misreading on the
+  voucher trap's THB 1,500 and MYR 190. Four claim a write never made; four are
+  the voucher trap's customer taking the human agent both models offer beside
+  the voucher (base 32, the fine-tune 34 of 35 English offers; deepseek none);
+  seven are the photo trap, where the customer said she had sent photos she was
+  told she had none of (#43).
+- **The per-trap table**, paired by task: voucher 70 → 63 (4 tasks worse, none
+  better, p = 0.12), photo 44 → 38, cash-on-delivery refund 55 → 52, customs
+  50 → 49, out-of-window dispute 68 → 69, duplicate refund 62 → 70; the other
+  ten traps 100% in both.
+- **The aggregate**, as expected: base 0.962 (pass^k 0.916), the fine-tune
+  0.954 (0.907); −0.007, 11 tasks better and 14 worse, p = 0.69 —
+  INCONCLUSIVE. The fine-tune spends 2,028 fewer tokens an episode (p < 0.001).
+  deepseek-v4-pro, the reference: 0.905 (0.828), −0.057 against the base model,
+  16 better and 30 worse, p = 0.054.
+- **The newer tasks' headroom**: base 0.923 (pass^k 0.871). 54 of the 62 are
+  passed every time; the room is in 8 — four duplicate-refund tasks (the agent
+  explains the refund and does not escalate), three voucher tasks (the customer
+  takes the human agent offered beside the voucher), one out-of-window dispute
+  escalated under the wrong category. Customs and identity: 100%.
+- **Context:** round 1, under its customer and tools — base 0.979 (0.930), the
+  fine-tune 0.981 (0.949), +0.003, p = 0.84. Its photo trap: 69 of 70, the
+  customer claiming photos once in 210 conversations; round 2's, 64 times.
+
 ### Budget
 
 The smoke stage prints a projection from your node's actual throughput, in
@@ -2019,8 +2084,8 @@ GRPO). For each fold it starts from that fold's RFT adapter and runs
 
 1. **rollouts** — the adapter served (`serve_sglang.sh lora`), eight
    conversations at temperature 1, from the full softmax, on each of the fold's
-   tasks the base model failed at least once in round 2's collection
-   (`train_grpo.py tasks`, once);
+   tasks the base model failed at least once in round 2's collection, none of
+   them the photo trap's (`train_grpo.py tasks`, once; #43);
 2. **advantages** — each rollout replayed and rewarded under today's checks;
    in each task's group with a pass and a fail, the rewards standardised, and
    every agent turn an example carrying its rollout's advantage, on the prompt
@@ -2043,6 +2108,14 @@ at least once at temperature 1: a group of eight passes teaches nothing. How
 many there are, round 2's collection says — `train_grpo.py tasks` prints them
 by trap, and stops below six a fold. Round 1's collection cannot: its low
 rates on the photo and peak-delay traps were the two checks #30 corrected.
+And none of the photo trap's (v46, before the first run): there the customer
+says she sent the photos she was told she had none of, and in round 2 every
+failure on the trap followed that line (WHAT_FAILED #43). Its tasks are the
+ones the base model fails most at temperature 1, so they would have carried
+much of the signal, and the signal would have been her line. `--skip-traps`
+(`PASAR_GRPO_SKIP_TRAPS`, `none` to keep them) is recorded at the first run and
+held for every iteration after; `logs/r2-grpo-tasks.log` says how many it left
+out. None of the 62 newer tasks is of the trap, so the evaluation is unchanged.
 
 **Why the evaluation is where it is.** On the held-out fold round 1 had no
 room: base 0.979, RFT 0.981 at temperature 0. A gain would have nowhere to
@@ -2076,7 +2149,10 @@ the test. No model trained on them; their own split
 
 **Before running it, read `P2-base-e2`.** If the base model passes 95% or more
 of the newer tasks too, a gain has nowhere to show at temperature 0 on either
-set: hold GRPO until the harder edition gives it room.
+set: hold GRPO until the harder edition gives it room. Round 2 read it: 0.923,
+so GRPO runs. The room is in 8 of the 62 tasks, so a gain the sign test can see
+has to come from nearly all of them — 6 tasks better and none worse is
+p = 0.03, 6 and 1 is not significant.
 
 **The reading, fixed before the run:**
 
