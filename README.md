@@ -6,7 +6,8 @@ and a second edition of 62 for its five hardest traps — across 6 markets and 8
 language varieties, 20 tools (303 with distractors), one policy document, and
 verification on final database state rather than text. And a hard edition of 36
 cases that combine the traps, read against their parts (v48): round 2's base
-model passes 86% of them, against 92% of the newer tasks.
+model passes 86% of them, against 92% of the newer tasks; on five API models
+from four labs it is not harder than its parts (RUNBOOK 1s).
 
 Because verification is programmatic, it is also a **reward function** — so the
 same artefact measures agents and trains them.
@@ -90,6 +91,19 @@ re-scored by replaying their tool calls (`scripts/rescore.py`).
   failures had not made it. In Singapore, where the price is in SGD, no model
   failed the case; in Indonesia, at IDR 700,000, the base model failed it every
   time ([RUNBOOK phase 4, the hard edition](docs/RUNBOOK.md)).
+- **On five API models the hard edition is not harder than its parts, and the
+  parts separate them better.** DeepSeek-V4-Pro and V4.1-Flash, MiMo-V2.6-Flash,
+  Grok 4.3 and GLM-5.3-Flash, under one customer: no agent's cases fail more
+  than their parts (DeepSeek-V4-Pro's fail less, p = 0.039), and no two agents
+  are separated by the cases where the parts do not — the parts separate
+  DeepSeek-V4-Pro from three of the others, by the duplicate refund it fails 18
+  times in 30 alone and 5 in 30 inside the livestream story. The two cases that
+  held round 2's 27B models hold none of these but Grok. Reading the failures
+  found two broken instruments: every generated profile's phone ends in other
+  digits than the ones that verify her ([WHAT_FAILED #48](docs/WHAT_FAILED.md)),
+  and the voucher choice's reader took a refused voucher for one she declined
+  ([#49](docs/WHAT_FAILED.md)). The five agents cost about $6 in all
+  ([RUNBOOK 1s](docs/RUNBOOK.md)).
 - **Search-based tool exposure cost 22% more tokens and bought nothing**: 11.5
   points below exposing all 20 tools (7 tasks worse, 1 better, p = 0.07 — it
   read p = 0.021 before the checker fix). Of 21 times a failed episode needed a
@@ -199,7 +213,7 @@ re-scored by replaying their tool calls (`scripts/rescore.py`).
 | Post-training round 2: a fine-tune balanced by trap; GRPO | round 2 done: no aggregate change, the leak moved (WHAT_FAILED #44); GRPO, one iteration: INCONCLUSIVE on the 62 newer tasks (+0.026, p = 0.55) and on the held-out fold, and +0.000 once the voucher trap's escalations after a declined voucher are read as the policy reads them (#46); on its own 61 training tasks, measured afterwards: NOT SHOWN (0.912 → 0.920, p = 0.71) |
 | The language swap: a recorded conversation held fixed where the agent reads the refund, only its language changed (RUNBOOK 1t) | built (v49): 96 conversations rebuilt and checked against their recordings; not yet run |
 | A model that reads the claims in any language, in place of the English list (RUNBOOK 1u) | built (v50): its calibration set drawn, 619 recorded replies; not yet read |
-| A hard edition of combined cases; a multi-model baseline | hard edition built (v48): 36 cases outside the suite, `--suite edition3`, their reading fixed (RUNBOOK 1s; on round 2's models, phase 4); its customer, customer 3, checked (WHAT_FAILED #43); on round 2's models: room (base 0.861), RFT and GRPO INCONCLUSIVE, hard in one case; on API models, not yet run — one command adds a model (`scripts/add_model.py`, v55; `--check` for which keys and models work, v56) |
+| A hard edition of combined cases; a multi-model baseline | hard edition built (v48): 36 cases outside the suite, `--suite edition3`, their reading fixed (RUNBOOK 1s; on round 2's models, phase 4); its customer, customer 3, checked (WHAT_FAILED #43); on round 2's models: room (base 0.861), RFT and GRPO INCONCLUSIVE, hard in one case; on five API models (2026-10-13): not harder than its parts for any, and it separates no two the parts do not (RESULTS §8) — one command adds a model (`scripts/add_model.py`, v55; `--check` for which keys and models work, v56) |
 | Serving cost | paused |
 
 ---
@@ -223,9 +237,9 @@ python -m tests.test_generated    # 196 checks over all 199 generated tasks, the
 python -m tests.test_rescore      # 29 re-scoring invariants: the pre-v19 world, replay by digest and by length, the same tool errors on every Python, nothing re-scored on a guess
 python -m tests.test_context      # 39 context-strategy + analysis invariants
 python -m tests.test_judge        # 102 judge + agreement-statistics invariants, judged against today's checks, and the planted-mistake calibration
-python -m tests.test_exposure     # 254 tool-scaling + diagnosis invariants, the tool-naming experiment and its confirmation tasks, the guardrail's report and dry run, the closing check's report, its costs, two closing notes compared by task and the record each episode was given, the closing guard's refusals and its dry run, one run's closing phase read on its own, each case before and after it and what each customer last said, a write a database check needs told from one no check sees, readers that skip its case note, how episodes ended and what cancellations settled, listed, cells compared across tool versions, customers, closing room or claim reader flagged, episodes a server error ended, the duplicate-refund trap by language, twin against twin, a recorded conversation held fixed where the agent reads the refund and only its language changed (RUNBOOK 1t), the claim reader calibrated on recorded replies and a live run read as it was read (1u), a customer's claimed photos counted in both cells, and the voucher she declined for a human, with the paired line read as P6.3 and P10 read it (WHAT_FAILED #46), every failure on a task the control always passed set out to be read, another lab's model added with one command, its key typed and sent to its own endpoint only, which keys and models work checked before it with no key written down, a missing key asked for and saved to .env under the name the runs read, .env read by name only, each run's own record of why it stopped, and the traces packed as a dataset with nothing in them that must stay on this machine
+python -m tests.test_exposure     # 255 tool-scaling + diagnosis invariants, the tool-naming experiment and its confirmation tasks, the guardrail's report and dry run, the closing check's report, its costs, two closing notes compared by task and the record each episode was given, the closing guard's refusals and its dry run, one run's closing phase read on its own, each case before and after it and what each customer last said, a write a database check needs told from one no check sees, readers that skip its case note, how episodes ended and what cancellations settled, listed, cells compared across tool versions, customers, closing room or claim reader flagged, episodes a server error ended, the duplicate-refund trap by language, twin against twin, a recorded conversation held fixed where the agent reads the refund and only its language changed (RUNBOOK 1t), the claim reader calibrated on recorded replies and a live run read as it was read (1u), a customer's claimed photos counted in both cells, and the voucher she declined for a human, with the paired line read as P6.3 and P10 read it (WHAT_FAILED #46) and a refused voucher never read as one she declined (#49), every failure on a task the control always passed set out to be read, another lab's model added with one command, its key typed and sent to its own endpoint only, which keys and models work checked before it with no key written down, a missing key asked for and saved to .env under the name the runs read, .env read by name only, each run's own record of why it stopped, and the traces packed as a dataset with nothing in them that must stay on this machine
 python -m tests.test_serving      # 54 metrics (SGLang and vLLM), cost and quality-guard invariants
-python -m tests.test_report       # 89 report invariants: paired verdicts, ties, replication, calibration and its planted mistakes, noise floor, post-training with one customer and one tool version, round 2 first and round 1 as context, GRPO read as fixed before it ran and the voucher trap's escalations read as the policy reads them beside it, its learning curve's measured point, the hard edition on round 2's models read as fixed before it ran, both scorings in every section, a figure that matches its numbers and drops a title they stop bearing out
+python -m tests.test_report       # 94 report invariants: paired verdicts, ties, replication, calibration and its planted mistakes, noise floor, post-training with one customer and one tool version, round 2 first and round 1 as context, GRPO read as fixed before it ran and the voucher trap's escalations read as the policy reads them beside it, its learning curve's measured point, the hard edition on round 2's models read as fixed before it ran, the hard edition against its parts on several labs' models and which pairs only the cases separate (section 8), both scorings in every section, a figure that matches its numbers and drops a title they stop bearing out
 python -m tests.test_training     # 258 checks: split, customer family, collection and resume, examples (Qwen3 and Qwen3.8 formats) against an SGLang-like server, adapter routing, the LoRA probe, serve and Modal scripts, one-GPU memory plans, the notebook helper (progress in place, an interrupt-proof cleanup, a pack of only what is new since the last), the CUDA compiler, run settings, LoRA steps on Qwen3 and Qwen3.8's hybrid architecture, training data picked by today's checks, a push script that keeps runs and keys off GitHub, closing-check runs refused as training data, one simulated customer in every step, kept from stage 1 to stage 2, server errors reported, round 2's training data balanced by trap and its runs named apart from round 1's, GRPO's build, update and stage, its tasks without the photo trap, its reward's reading of the voucher she declined (WHAT_FAILED #46) and its learning curve measured on its own tasks (grpo-measure), the customer check, the hard edition's stage (195 without transformers/torch)
 
 python -m pasarbench.sweep --backend scripted --suite all
@@ -556,13 +570,17 @@ careful reader notices.
 - **Prose-only policy rules are unverifiable by state checks.** P1.4 (never
   disclose another customer's data) cannot be checked by looking at the
   database; those tasks were left out rather than checked badly.
-- **The hard edition has run on one model family.** Its 36 cases pass their
-  reference solutions and fail the wrong turns each was built for, in every
-  market, and on round 2's Qwen models they leave room; whether they are harder
-  for an agent than their parts is RUNBOOK 1s's question, for the API models,
-  not yet run. One case — the customer who changes her request with her phone
+- **The hard edition is hard for small fine-tuned models, not for API models.**
+  Its 36 cases pass their reference solutions and fail the wrong turns each was
+  built for, in every market; on round 2's Qwen models they leave room, and on
+  five API models they are not harder than their parts (RUNBOOK 1s). An edition
+  that separates API models needs combinations that defeat them. Its worlds, like
+  every generated task's, give the customer's profile a phone that does not end
+  in her verifying digits (WHAT_FAILED #48), left as every run had them until the
+  next edition. One case — the customer who changes her request with her phone
   digits — is only fair where the simulated customer says it there, which
-  `inspect_trace.py` reads (section 4b); on round 2's models she always did.
+  `inspect_trace.py` reads (section 4b); she did, on round 2's models and on
+  these.
 - **GRPO ran one iteration, and its test set had less room than it seemed.**
   The rollouts, advantages and update (`scripts/train_grpo.py`,
   `pasarbench/rl/grpo.py`, the `grpo` stage) were tested end to end on toy
