@@ -222,6 +222,30 @@ evaluated under its own names (`P2-grpo-i2`): `os.environ["PASAR_GRPO_ITERS"] =
 task left that it sometimes fails: that is a result, not an error — send me the
 logs.
 
+On the laptop, after `pn.pack()` and the download, `python scripts/make_report.py`
+puts GRPO's result in RESULTS.md, section 6 (RUNBOOK phase 4, GRPO, "Where to
+read it").
+
+**Put a newer version on the Volume only between stages.** A stage reads its
+scripts as it goes — bash reads `gpu_pipeline.sh` line by line — so a version
+unpacked while GRPO runs can change what the rest of the run does.
+
+## Customer 3 — after GRPO (v47, optional, ~30 minutes)
+
+The simulated customer the next edition will use, checked against today's on
+the two traps her new rule reaches (RUNBOOK phase 4, customer 3; WHAT_FAILED
+#43). Once GRPO has finished, on the same Volume:
+
+```python
+pn.run("customer3", round=2)                      # or pn.launch("customer3", round=2)
+pn.read("logs/r2-customer3.txt", head=80)
+pn.pack()
+```
+
+As a Modal job: `PASAR_ROUND=2 modal run --detach scripts/modal_pipeline.py --stage
+customer3`, then `--stage pull`. About half an hour of one B200 (~$5): 280
+episodes at temperature 0, with the server start.
+
 ---
 
 ## Step 0 — on your laptop, before anything else
