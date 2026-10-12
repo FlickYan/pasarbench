@@ -1106,6 +1106,41 @@ def _photo_claims(runs: list[tuple[str, Path, list[dict]]]) -> str:
     return "; ".join(parts)
 
 
+def _voucher_choices(runs: list[tuple[str, Path, list[dict]]]) -> str:
+    """For each (label, cell, episodes): the voucher trap's episodes in which
+    the customer, offered the voucher, declined it and the agent escalated --
+    what P6.3 and P10 ask for, and what the trap's check fails (WHAT_FAILED
+    #46) -- "" when it never happened."""
+    from pasarbench.diagnose import voucher_choice
+    parts = []
+    for label, cell, eps in runs:
+        _, n = voucher_choice(cell, eps)
+        if n["declined"]:
+            parts.append(f"{n['declined']} of {n['episodes']} {label} episodes ("
+                         f"{n['read_as_pass']} of them failed on the voucher's lines alone)")
+    return "; ".join(parts)
+
+
+def _as_policy_reads(pairs: list[tuple[str, str, Path, list[dict], Path, list[dict]]]
+                     ) -> list[str]:
+    """For each (what, label, cell a, episodes a, cell b, episodes b): the
+    paired comparison again with the voucher trap's escalations after she
+    declined the voucher read as P6.3 and P10 read them (WHAT_FAILED #46) --
+    only where that changes a verdict. After the fact: never the result."""
+    from pasarbench.diagnose import paired_episodes, voucher_choice
+    out = []
+    for what, label, ca, ea, cb, eb in pairs:
+        (pa, na), (pb, nb) = voucher_choice(ca, ea), voucher_choice(cb, eb)
+        if not (na["read_as_pass"] or nb["read_as_pass"]):
+            continue
+        g = paired_episodes(pa, pb)
+        out.append(f"{what}: " + (f"{g['diff']:+.3f}; {g['better']} tasks better, "
+                                  f"{g['worse']} worse, p={g['p']:.3f}" if g else
+                                  "fewer than 5 shared tasks — not testable")
+                   + (f" ({label})" if label else ""))
+    return out
+
+
 def section_training(traces: Path = Path("traces"),
                      spec: str = "base=P-base,rft=P-rft,reference=P-ref",
                      stats_path: Path = Path("data/rft/stats.json")) -> str:
@@ -1305,6 +1340,13 @@ def section_training(traces: Path = Path("traces"),
             out.append(f"\n*The photo trap's customer is told she has no photos. She said she "
                        f"had sent them in {photo}. Where she said it, the trap's verdict "
                        f"follows her line, not the agent's policy (WHAT_FAILED #43).*")
+        vouch = _voucher_choices([({"rft": "RFT"}.get(role, role), cells[role], eps[role])
+                                  for role in ("base", "rft", "reference") if role in eps])
+        if vouch:
+            out.append(f"\n*The voucher trap's customer, offered the voucher, declined it and "
+                       f"asked for her money or a human in {vouch}. P6.3 and P10 ask for the "
+                       f"escalation that follows, and the trap's check fails it: there the "
+                       f"verdict follows her choice (WHAT_FAILED #46).*")
 
     stats = _load_json(stats_path)
     if stats and "per_trap_pass_rate" in stats:
@@ -1424,6 +1466,30 @@ def section_grpo(traces: Path = Path("traces"), stats_dir: Path = Path("data/grp
                + _verdict(g_result, "GRPO helped", "GRPO hurt") + ".")
     out.append("- **RFT on tasks it never saw**, RFT against the base model: "
                + _verdict(g_carry, "RFT carried over", "RFT hurt") + ".")
+    cell = {k: traces / run / "full" for k, (_, run) in rows.items()}
+    policy = _as_policy_reads(
+        [(what, "", cell[a], e2[a], cell[b], e2[b])
+         for what, a, b in (("GRPO against RFT", "rft", "grpo"),
+                            ("RFT against the base model", "base", "rft"))
+         if e2[a] and e2[b]])
+    if policy:
+        from pasarbench.diagnose import voucher_choice
+        line = ("- *After the fact, beside the result and never instead of it* "
+                "(WHAT_FAILED #46): with each voucher-trap escalation after the customer "
+                "declined the voucher read as P6.3 and P10 read it, " + "; ".join(policy))
+        if base:
+            rb, _ = voucher_choice(cell["base"], base)
+            q1, _, _ = _passk(rb)
+            line += (f"; the base model's pass^1 {q1:.3f}"
+                     + (" — at or above the 0.95 that holds GRPO" if q1 >= 0.95 else ""))
+        out.append(line + ".")
+    vouch = _voucher_choices([(label, cell[k], e2[k]) for k, (label, _) in rows.items()
+                              if e2[k]])
+    if vouch:
+        out.append(f"\n*On the voucher trap the customer, offered the voucher, declined it and "
+                   f"asked for her money or a human in {vouch}; P6.3 and P10 ask for the "
+                   f"escalation that follows, and the trap's check fails it (WHAT_FAILED "
+                   f"#46).*")
 
     present = [k for k in rows if e2[k]]
     if len(present) > 1:
@@ -1463,12 +1529,26 @@ def section_grpo(traces: Path = Path("traces"), stats_dir: Path = Path("data/grp
             out.append("Traps that moved: " + ", ".join(
                 f"`{t}` {sum(ra[t]) / len(ra[t]):.2f} → {sum(rb[t]) / len(rb[t]):.2f}"
                 for _, t in moved) + ".")
-        photo = _photo_claims([("RFT", traces / "P2-rft" / "full", held["rft"]),
-                               ("GRPO", traces / f"P2-grpo-i{n}" / "full", held["grpo"])])
+        held_cells = (traces / "P2-rft" / "full", traces / f"P2-grpo-i{n}" / "full")
+        policy = _as_policy_reads([("GRPO against RFT", "", held_cells[0], held["rft"],
+                                    held_cells[1], held["grpo"])])
+        if policy:
+            out.append("*After the fact* (WHAT_FAILED #46), the voucher trap's escalations "
+                       "after she declined the voucher read as P6.3 and P10 read them: "
+                       + policy[0] + ".")
+        photo = _photo_claims([("RFT", held_cells[0], held["rft"]),
+                               ("GRPO", held_cells[1], held["grpo"])])
         if photo:
             out.append(f"\n*On the photo trap the customer said she had sent photos she was "
                        f"told she does not have in {photo}; where she did, the verdict "
                        f"follows her line, not the agent's policy (WHAT_FAILED #43).*")
+        vouch = _voucher_choices([("RFT", held_cells[0], held["rft"]),
+                                  ("GRPO", held_cells[1], held["grpo"])])
+        if vouch:
+            out.append(f"\n*On the voucher trap the customer, offered the voucher, declined it "
+                       f"and asked for her money or a human in {vouch}; P6.3 and P10 ask for "
+                       f"the escalation that follows, and the trap's check fails it "
+                       f"(WHAT_FAILED #46).*")
     else:
         out.append(MISSING + " — `P2-rft` and `P2-grpo-i" + str(n) + "` are both needed.")
 
