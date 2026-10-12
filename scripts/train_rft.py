@@ -85,7 +85,7 @@ FOLDS_E2 = "data/splits/folds-e2.json"     # the 62 newer tasks' own split (rl/s
 NO_THINKING = json.dumps({"chat_template_kwargs": {"enable_thinking": False}})
 
 from pasarbench.models import AGENT_DEFAULT, SIM_DEFAULT  # noqa: E402  (after sys.path)
-from pasarbench.harness.simulator import CUSTOMER  # noqa: E402
+from pasarbench.harness.simulator import CUSTOMER, ENDING  # noqa: E402
 
 # AGENT_MODEL / SIM_MODEL override both here and in serve_sglang.sh, so one
 # export in gpu_pipeline.sh changes every step together.
@@ -114,6 +114,8 @@ def _sweep(args, run_id: str, k: int, temperature: float, extra: list[str]) -> N
            "--customer", str(getattr(args, "customer", CUSTOMER)), *extra]
     if args.sample:
         cmd += ["--sample", str(args.sample)]
+    if getattr(args, "traps", ""):
+        cmd += ["--traps", args.traps]
     print("$ " + " ".join(shlex.quote(c) for c in cmd), flush=True)
     if not args.dry_run:
         raise SystemExit(subprocess.call(cmd))
@@ -716,7 +718,7 @@ def main() -> None:
         # The recorded P-* runs had customer 1; every run since v31 has 2
         # (WHAT_FAILED #38). PASAR_CUSTOMER=1 gives a run the old customer,
         # under today's tools; gpu_pipeline.sh keeps stage 1's for stage 2.
-        p.add_argument("--customer", type=int, choices=[1, 2],
+        p.add_argument("--customer", type=int, choices=sorted(ENDING),
                        default=int(os.environ.get("PASAR_CUSTOMER") or CUSTOMER))
         p.add_argument("-k", type=int, default=k)
         p.add_argument("--workers", type=int, default=24)
@@ -727,6 +729,9 @@ def main() -> None:
         p.add_argument("--run-id", default="")
         p.add_argument("--sample", type=int, default=0,
                        help="N tasks per trap instead of all 215 (smoke tests only)")
+        p.add_argument("--traps", default="",
+                       help="comma-separated traps only (the customer check, "
+                            "gpu_pipeline.sh customer3)")
         p.add_argument("--dry-run", action="store_true", help="print the command only")
 
     b = sub.add_parser("baseline", help="base model, k=5, T=0: the number to beat")
