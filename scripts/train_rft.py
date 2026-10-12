@@ -82,6 +82,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 OUT = Path("data/rft")
 FOLDS = "data/splits/folds.json"
 FOLDS_E2 = "data/splits/folds-e2.json"     # the 62 newer tasks' own split (rl/split.py --suite edition2)
+FOLDS_E3 = "data/splits/folds-e3.json"     # the hard edition's 36 (rl/split.py --suite edition3)
 NO_THINKING = json.dumps({"chat_template_kwargs": {"enable_thinking": False}})
 
 from pasarbench.models import AGENT_DEFAULT, SIM_DEFAULT  # noqa: E402  (after sys.path)
@@ -141,8 +142,9 @@ def evaluate(args) -> None:
     fm = ",".join(f"{f}={args.model}:{args.adapter_prefix}{f}" for f in ("A", "B"))
     # The 62 newer tasks are in neither fold: no adapter trained on any of
     # them, and their own split (data/splits/folds-e2.json, families dealt as
-    # the main split's) only shares them out between the two adapters.
-    folds = args.folds or (FOLDS_E2 if args.suite == "edition2" else FOLDS)
+    # the main split's) only shares them out between the two adapters. The
+    # hard edition's 36 likewise, by data/splits/folds-e3.json.
+    folds = args.folds or {"edition2": FOLDS_E2, "edition3": FOLDS_E3}.get(args.suite, FOLDS)
     _sweep(args, args.run_id or "P-rft", args.k, 0.0,
            ["--folds", folds, "--fold-models", fm])
 
@@ -736,10 +738,11 @@ def main() -> None:
 
     b = sub.add_parser("baseline", help="base model, k=5, T=0: the number to beat")
     served(b, 5)
-    b.add_argument("--suite", default="all", choices=["all", "edition2"],
+    b.add_argument("--suite", default="all", choices=["all", "edition2", "edition3"],
                    help="edition2: the 62 newer tasks of the five hardest traps, which "
                         "the folds do not hold -- where the base model fails is where "
-                        "GRPO can learn (RUNBOOK phase 4, round 2)")
+                        "GRPO can learn (RUNBOOK phase 4, round 2); edition3: the hard "
+                        "edition's 36 combined cases (RUNBOOK 1s)")
     b.set_defaults(fn=baseline)
 
     c = sub.add_parser("collect", help="base model, k=8, T=1: episodes to learn from")
@@ -749,11 +752,13 @@ def main() -> None:
 
     e = sub.add_parser("eval", help="each adapter on the fold it did not train on")
     served(e, 5)
-    e.add_argument("--suite", default="all", choices=["all", "edition2"],
-                   help="edition2: the 62 newer tasks, which no adapter trained on, "
-                        "shared out between the two by their own split")
+    e.add_argument("--suite", default="all", choices=["all", "edition2", "edition3"],
+                   help="edition2: the 62 newer tasks; edition3: the hard edition's 36. "
+                        "No adapter trained on either: each is shared out between the "
+                        "two by its own split")
     e.add_argument("--folds", default="",
-                   help=f"default {FOLDS}; {FOLDS_E2} with --suite edition2")
+                   help=f"default {FOLDS}; {FOLDS_E2} with --suite edition2, {FOLDS_E3} "
+                        f"with --suite edition3")
     e.add_argument("--adapter-prefix", default="pasar-rft-",
                    help="adapters are loaded as <prefix>A and <prefix>B, and "
                         "requested as <model>:<prefix>A")
