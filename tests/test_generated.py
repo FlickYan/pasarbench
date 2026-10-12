@@ -1118,6 +1118,35 @@ def test_hard_vs_parts():
     check("…a case whose part did not run is named and left out, and two customers are "
           "flagged", "33 case(s) whose part is not in" in text
           and "different simulated customers" in text and "not testable" in text, text)
+    check("…and with no voucher declined, nothing is read after the fact",
+          "WHAT_FAILED #46" not in run(parts, harder))
+
+    # WHAT_FAILED #46: on the two orders she declines the voucher and the
+    # agent escalates the late order, as P6.3 and P10 ask; the check fails it.
+    def declined(f):
+        lines = [json.loads(l) for l in Path(f).read_text().splitlines()]
+        head, foot = lines[0], lines[-1]
+        return "\n".join(json.dumps(r) for r in (
+            head, {"type": "step", "model_content": "A goodwill voucher, or a human agent?"},
+            {"type": "event", "kind": "user_turn", "text": "A full refund. Escalate it."},
+            {"type": "step", "model_content": "", "tool_calls": [
+                {"name": "escalate_to_human", "arguments": {
+                    "order_id": "X", "category": "out_of_window_dispute"}}],
+             "tool_results": [{"name": "escalate_to_human", "ok": True}]},
+            {**foot, "passed": False, "failures": [
+                "db: the late order's goodwill voucher, which she accepts (P6.2) -- "
+                "vouchers matching {}: found 0, expected >= 1",
+                "missing required action: issue_goodwill_voucher {}"]})) + "\n"
+    chose = cell("chose", t3, lambda t, k: True)
+    for f in Path(chose).glob("TOVAC3-*__r0.jsonl"):
+        f.write_text(declined(f))
+    text = run(parts, chose)
+    n = sum(t.trap == "two_orders_voucher_and_cancel" for t in t3)
+    check("…a two-orders case whose customer declined the voucher fails its pair as "
+          "checked, and the line read as P6.3 and P10 read her escalation is beside it",
+          f"{n} cases failed more than their part" in text and "->  HARDER" in text
+          and f"{n} of the cases' episodes, 0 of the parts' (WHAT_FAILED #46): +0.000; 0 "
+          "cases failed more than their part, 0 less, p=1.000" in text, text)
 
 
 def main() -> int:
