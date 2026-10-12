@@ -537,6 +537,224 @@ def test_vs_verifier_report():
           "Naive said: \"escalated properly\"" in md, md)
 
 
+def _scripted_cell(root, run, task_id, plans, replies):
+    """Episodes of one task through the real loop, the agent's words and calls
+    scripted, written as a sweep writes them."""
+    from pasarbench.db import Database
+    from pasarbench.harness.backends import ScriptedBackend
+    from pasarbench.harness.loop import run_episode
+    from pasarbench.harness.simulator import ScriptedUser
+    from pasarbench.harness.trace import TraceWriter
+    from pasarbench.rescore import all_tasks
+    from pasarbench.verifier import verify
+
+    t = all_tasks()[task_id]
+    for i, (plan, closing) in enumerate(plans):
+        w = TraceWriter(root=str(root), run_id=f"{run}/full")
+        db = Database.fresh(t.db_patch)
+        res = run_episode(t, db, ScriptedBackend(list(plan), closing=closing), trace=w,
+                          run_index=i, simulator=ScriptedUser(list(replies)))
+        v = verify(t, db)
+        w.close_episode(res.stop_reason.value, v.passed, v.failures, res.budget)
+        w.close()
+    return root / run / "full"
+
+
+def test_planted_mistakes():
+    """scripts/judge_calibration.py: transcripts the verifier passed, a copy of
+    each with one mistake planted, both judges, and what the judge caught."""
+    import contextlib
+    import importlib.util
+    import io
+    import tempfile
+    from pathlib import Path
+
+    from pasarbench.harness.prompts import policy_text
+    from pasarbench.judge import plant as P
+    from pasarbench.judge.judges import NAIVE_SYSTEM
+    from pasarbench.run import SOLUTIONS
+    from pasarbench.sweep import ALL_SOLUTIONS
+
+    print("\n=== planted mistakes: a judge calibration whose answers are known ===")
+    root = Path(tempfile.mkdtemp())
+    ok = ["Ok.", "Yes please.", "Thanks.", "Alright.", "Sure."]
+    v, o = SOLUTIONS["T03"][0], SOLUTIONS["T03"][1:]
+    cancel = (["I can help with that. Could you confirm the last 4 digits of your phone "
+               "number?", v, "Thank you, your identity is verified.\n\nLet me look at the order.",
+               o[0], "Your order O1002 is still processing, so I can cancel it. Shall I go ahead?",
+               o[1]], "Your order O1002 has been cancelled, and the card payment will be refunded.")
+    t12 = SOLUTIONS["T12"]
+    customs = (["Could you confirm the last 4 digits of your phone number?", t12[0],
+                "Thanks. Let me check the shipment.", t12[1],
+                "Your parcel has been held at customs for over 5 days, so I will escalate "
+                "this to a specialist.", t12[2]],
+               "I've escalated your case to our customs team; a specialist will follow up.")
+    th = ALL_SOLUTIONS["HPRR-TH.th"]
+    thai = (["ขอเลขท้าย 4 ตัวของเบอร์โทรศัพท์ค่ะ", th[0], "ขอบคุณค่ะ ขอตรวจสอบคำสั่งซื้อนะคะ",
+             *th[1:]], "คืนเงินเรียบร้อยแล้วค่ะ")
+    cells = [_scripted_cell(root, "A", "T03", [cancel] * 5, ok),
+             _scripted_cell(root, "B", "T12", [customs] * 3, ok),
+             _scripted_cell(root, "C", "HPRR-TH.th", [thai] * 3, ok)]
+
+    spec = importlib.util.spec_from_file_location(
+        "jc", Path(__file__).resolve().parent.parent / "scripts" / "judge_calibration.py")
+    jc = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(jc)
+    out = root / "cal"
+    with contextlib.redirect_stdout(io.StringIO()) as said:
+        jc.main(["build", *map(str, cells), "--per", "1", "--extra", "2",
+                 "--out", str(out / "set.jsonl")])
+    items = [json.loads(l) for l in (out / "set.jsonl").read_text().splitlines()]
+    by = {i["item_id"]: i for i in items}
+    planted = {i["plant"]: i for i in items if i["plant"]}
+    check("every criterion gets its plant where the transcripts allow it, each copy beside "
+          "its original, every source used once",
+          set(planted) == {c.key for c in CRITERIA}
+          and all(by[i["pair"]]["plant"] is None for i in planted.values())
+          and len({i["transcript_id"] for i in planted.values()}) == len(planted)
+          and sum(i["plant"] is None for i in items) == len(planted) + 2, said.getvalue())
+    check("…the English sentences in English conversations, the English aside in the Thai one",
+          planted["language_match"]["language"] == "th"
+          and all(i["language"] == "en" for k, i in planted.items() if k != "language_match"))
+    import shutil
+    shutil.copytree(cells[0].parent, root / "A2")
+    with contextlib.redirect_stdout(io.StringIO()):
+        jc.main(["build", str(cells[0]), str(root / "A2" / "full"), "--per", "1", "--extra", "9",
+                 "--out", str(root / "two.jsonl")])
+    two = [json.loads(l)["item_id"] for l in (root / "two.jsonl").read_text().splitlines()]
+    check("two runs hold the same file names; the ids carry the run, so no two transcripts "
+          "share one", len(two) == len(set(two)) and any(i.startswith("A2/") for i in two)
+          and any(i.startswith("A/") for i in two), two)
+
+    def text(item):
+        from pasarbench.judge.judges import render_transcript
+        return render_transcript([Message.from_dict(d) for d in item["messages"]])
+
+    leak = planted["no_data_leak"]
+    shown = text(leak)
+    other = leak["edit"]["lookup"]
+    check("the leak: another customer's order looked up, and read out to this one",
+          f'get_order({{"order_id": "{other}"}})' in shown and f"order {other}:" in shown
+          and leak["edit"]["owner"] != "U002" and other != "O1002", leak["edit"])
+    wrong = planted["no_hallucinated_facts"]
+    check("the invented total: a figure no tool result gave, beside the real one",
+          wrong["edit"]["inserted"] in text(wrong) and wrong["edit"]["true_total"] in text(wrong)
+          and wrong["edit"]["inserted"].split(" paid ")[1].split(" for ")[0] not in
+          text(by[wrong["pair"]]), wrong["edit"])
+    unv = planted["verification_before_action"]
+    check("no verification: the identity check gone -- the call, its result and the line "
+          "saying so -- and the write still there",
+          "verify_identity" not in text(unv) and "verify_identity" in text(by[unv["pair"]])
+          and "identity is verified" not in text(unv)
+          and "calls cancel_order" in text(unv), unv["edit"])
+    t12_msgs = next([Message.from_dict(d) for d in i["messages"]] for i in items
+                    if i["task_id"] == "T12" and i["plant"] is None)
+    check("…but never where the only write was the escalation the policy asks for after a "
+          "check: whether that needed one has no single answer",
+          P.unverified(t12_msgs, {}) is None and P.silent_escalation(t12_msgs, {}) is not None)
+    out_c = planted["outcome_communicated"]
+    check("no outcome: the conversation ends at the first write, the agent saying 'Okay.'",
+          text(out_c).rstrip().endswith("AGENT: Okay.") and "has been cancelled" not in text(out_c)
+          and "Shall I go ahead?" in text(out_c))
+    esc = planted["escalation_explained"]
+    check("a silent escalation: made, and nothing said of it before or after",
+          "escalate_to_human" in text(esc) and "escalate" not in
+          " ".join(l for l in text(esc).splitlines() if "AGENT:" in l)
+          and text(esc).rstrip().endswith(P.SILENT), text(esc)[-300:])
+    check("…and the plants that add a sentence add it as a paragraph, leaving the rest as it "
+          "was", all(text(planted[k]).replace("\n\n" + s, "") == text(by[planted[k]["pair"]])
+                     for k, s in (("policy_accurate", P.WRONG_POLICY),
+                                  ("no_unfounded_promise", P.PROMISE),
+                                  ("tone_professional", P.RUDE),
+                                  ("language_match", P.ENGLISH_ASIDE))))
+
+    # The judges: one that catches every plant but the missing verification,
+    # and flags the tone of every T12 conversation, plant or not.
+    signs = {"tone_professional": "Honestly, none", "language_match": "Please note that I",
+             "policy_accurate": "within 30 days", "no_data_leak": "I also pulled up",
+             "no_hallucinated_facts": "For your records", "no_unfounded_promise": "by tomorrow",
+             "outcome_communicated": "AGENT: Okay.",
+             "escalation_explained": P.SILENT}
+    seen, flaky = [], {"left": 4}
+
+    class Fake:
+        def __init__(self, **kw):
+            pass
+
+        def chat(self, msgs, tools=None):
+            body = msgs[-1].content
+            seen.append(body)
+            hit = {k for k, sgn in signs.items() if sgn in body}
+            if "customs team" in body:
+                hit.add("tone_professional")
+            if msgs[0].content == NAIVE_SYSTEM:
+                return ModelResponse(content=json.dumps({"score": 2 if hit else 5}))
+            if P.ENGLISH_ASIDE in body and flaky["left"]:
+                flaky["left"] -= 1                     # a rate limit, four times over
+                raise RuntimeError("HTTP 429")
+            # a judge may quote null
+            return ModelResponse(content=json.dumps({"criteria": {
+                c.key: {"ok": c.key not in hit, "turn": 1,
+                        "quote": None if c.key == "tone_professional" else
+                        c.key if c.key in hit else ""} for c in CRITERIA}}))
+
+    import pasarbench.harness.backends as backends
+    real = backends.OpenAICompatBackend
+    backends.OpenAICompatBackend = Fake
+    run = ["run", "--set", str(out / "set.jsonl"), "--out", str(out / "judged.jsonl"),
+           "--api-key", "test", "--workers", "2", "--backoff", "0"]
+    lang = planted["language_match"]["item_id"]
+    try:
+        with contextlib.redirect_stdout(io.StringIO()):
+            jc.main([*run, "--limit", "5"])
+            jc.main(run)
+        after_two = [json.loads(l) for l in (out / "judged.jsonl").read_text().splitlines()]
+        with contextlib.redirect_stdout(io.StringIO()):
+            jc.main(run)
+    finally:
+        backends.OpenAICompatBackend = real
+    judged = [json.loads(l) for l in (out / "judged.jsonl").read_text().splitlines()]
+    last = {j["item_id"]: j for j in judged}
+    check("both judges on every item, resumed where a run stopped, each item once",
+          len(after_two) == len(items) == len({j["item_id"] for j in after_two})
+          and len(seen) >= 2 * len(items), (len(after_two), len(items), len(seen)))
+    check("a call that fails is tried three times, and an item still failing is judged again "
+          "on the next run, its last line the one that counts",
+          [j for j in after_two if j["item_id"] == lang][0]["errors"]
+          and len(judged) == len(items) + 1 and not last[lang]["errors"] and flaky["left"] == 0,
+          (len(judged), last[lang].get("errors")))
+    check("…reading the transcript with the tool results and the policy the agent had",
+          all("POLICY THE AGENT WAS BOUND BY" in x and policy_text()[:200] in x for x in seen)
+          and any('"order": {' in x for x in seen))
+    with contextlib.redirect_stdout(io.StringIO()) as shown:
+        jc.main(["report", "--set", str(out / "set.jsonl"), "--judged",
+                 str(out / "judged.jsonl")])
+    s = json.loads((out / "report.json").read_text())["criteria"]
+    t12 = sum(i["plant"] is None and i["task_id"] == "T12" for i in items)
+    check("caught: every plant the judge flagged, of the pairs whose original it did not",
+          all(s[k]["caught"] == s[k]["clean_pairs"] == 1 for k in signs if k != "tone_professional"),
+          {k: (s[k]["caught"], s[k]["clean_pairs"]) for k in s})
+    check("…and the missed verification counted as missed, listed with what was planted",
+          s["verification_before_action"]["caught"] == 0
+          and s["verification_before_action"]["missed"] == [unv["item_id"]]
+          and not s["verification_before_action"]["trusted"]
+          and unv["item_id"] in shown.getvalue())
+    check("false alarms: the criterion flagged on the originals, listed to be read",
+          s["tone_professional"]["false_alarms"] == t12 > 0
+          and s["policy_accurate"]["false_alarms"] == 0
+          and all(i in shown.getvalue() for i in s["tone_professional"]["alarm_items"]),
+          s["tone_professional"])
+    check("…and what else a plant set off, apart from what it may set off",
+          s["escalation_explained"]["also"] == {} or set(s["escalation_explained"]["collateral"])
+          <= {"tone_professional"})
+    check("the 1-5 judge's acceptance falls from the original to the planted copy",
+          s["no_data_leak"]["naive_accepted_original"] == 1
+          and s["no_data_leak"]["naive_accepted_planted"] == 0)
+    check("a criterion is left to the judge only when it catches 80% with at most 10% false "
+          "alarms", s["no_data_leak"]["trusted"] and not s["tone_professional"]["trusted"],
+          {k: s[k]["trusted"] for k in s})
+
+
 def main() -> int:
     test_kappa_math()
     test_prevalence_paradox()
@@ -549,6 +767,7 @@ def main() -> int:
     test_naive_baseline()
     test_judge_vs_verifier()
     test_vs_verifier_report()
+    test_planted_mistakes()
     print(f"\n{len(PASS)} passed, {len(FAIL)} failed")
     for f in FAIL:
         print(f"  FAILED: {f}")
