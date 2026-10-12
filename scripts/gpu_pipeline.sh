@@ -9,6 +9,7 @@
 #   PASAR_ROUND=2 bash scripts/gpu_pipeline.sh grpo   # GRPO from round 2's adapters (v45)
 #   PASAR_ROUND=2 bash scripts/gpu_pipeline.sh customer3   # customer 3 against 2 (v47)
 #   PASAR_ROUND=2 bash scripts/gpu_pipeline.sh edition3    # the hard edition (v48)
+#   PASAR_ROUND=2 bash scripts/gpu_pipeline.sh grpo-measure   # GRPO on its own tasks (v52)
 #
 # PASAR_ROUND=2 runs the same stages again as round 2 (v44): the second
 # fine-tune, its data balanced by trap (WHAT_FAILED #31), under today's customer
@@ -112,6 +113,13 @@ GRPO_LR="${PASAR_GRPO_LR:-2e-5}"
 # default the photo trap, whose verdicts follow the customer (WHAT_FAILED #43).
 GRPO_SKIP="${PASAR_GRPO_SKIP_TRAPS:-$(saved PASAR_GRPO_SKIP_TRAPS)}"
 GRPO_SKIP="${GRPO_SKIP:-high_value_photo_required_first}"
+# How GRPO's reward reads the voucher trap (train_grpo.py build --reward-reading;
+# WHAT_FAILED #46): "checks", as the check scores it, or "policy", where an
+# escalation after she declined the voucher is the pass P6.3 and P10 make it.
+# Held for every iteration after the first; round 2's first was built by the
+# checks, before the reading could be chosen.
+GRPO_READING="${PASAR_GRPO_READING:-$(saved PASAR_GRPO_READING)}"
+GRPO_READING="${GRPO_READING:-checks}"
 # The hard edition's customer (the edition3 stage): customer 3, whom the next
 # editions run with, once the customer3 stage has checked her; 2 if that check
 # says to keep customer 2 (RUNBOOK 1s). Recorded at its first run, like GRPO's.
@@ -211,6 +219,26 @@ for f in Path(sys.argv[1]).glob("*.jsonl"):
     n += last.get("type") == "footer" and last.get("stop_reason") != "backend_error"
 print(n)
 EOF
+}
+
+grpo_reading() {  # GRPO's reading of the voucher trap, one for every iteration of a run
+  case "$GRPO_READING" in
+    checks|policy) ;;
+    *) echo "!! PASAR_GRPO_READING is checks or policy, not $GRPO_READING" >&2; return 1 ;;
+  esac
+  if [ -z "$(saved PASAR_GRPO_READING)" ] && [ -f data/grpo2/stats/i1-A.stats.json ] \
+      && ! grep -q '"reward_reading"' data/grpo2/stats/i1-A.stats.json; then
+    # Built before the reading could be chosen: by the checks.
+    printf 'PASAR_GRPO_READING=checks\n' >> "$SETTINGS"
+  fi
+  if [ -n "$(saved PASAR_GRPO_READING)" ] && [ "$GRPO_READING" != "$(saved PASAR_GRPO_READING)" ]; then
+    echo "!! PASAR_GRPO_READING=$GRPO_READING, but GRPO's first iteration was rewarded by" \
+         "$(saved PASAR_GRPO_READING) ($SETTINGS): one reading a run (WHAT_FAILED #46)." >&2
+    return 1
+  fi
+  if [ -z "$(saved PASAR_GRPO_READING)" ]; then
+    printf 'PASAR_GRPO_READING=%s\n' "$GRPO_READING" >> "$SETTINGS"
+  fi
 }
 
 serve_agent() {  # $1 = a serve_sglang.sh mode; the agent alone, on GPU 0
@@ -416,6 +444,7 @@ EOF
     if [ -z "$(saved PASAR_GRPO_SKIP_TRAPS)" ]; then
       printf 'PASAR_GRPO_SKIP_TRAPS=%s\n' "$GRPO_SKIP" >> "$SETTINGS"
     fi
+    grpo_reading || exit 1
     stop
     layout
     ACCUM=$(( NGPU > 1 ? (32 + NGPU / 2) / NGPU : 32 )); [ "$ACCUM" -ge 1 ] || ACCUM=1
@@ -447,8 +476,14 @@ EOF
             2>&1 | tee -a "logs/${LP}grpo-$F.log"
           $PY scripts/train_grpo.py build --run "traces/$P-grpo-i$i-collect-$F/full" \
             --served-model "$AGENT_MODEL:$name" --server http://localhost:8000 \
-            --max-len "$TRAIN_MAX_LEN" --out "$ex" --stats "$st" 2>&1 | tee -a "logs/${LP}grpo-$F.log"
+            --max-len "$TRAIN_MAX_LEN" --reward-reading "$GRPO_READING" \
+            --out "$ex" --stats "$st" 2>&1 | tee -a "logs/${LP}grpo-$F.log"
           stop
+        fi
+        if [ ! -s "$ex" ]; then           # measured by grpo-measure, nothing to train on
+          echo "!! $ex is empty: every group of fold $F had one verdict throughout ($st)." >&2
+          echo "   The policy has no pass-and-fail left on these tasks: GRPO stops here." >&2
+          exit 1
         fi
         echo "== fold $F, iteration $i: the update -> $out" | tee -a "logs/${LP}grpo-$F.log"
         "${launch[@]}" scripts/train_rft.py train --objective grpo --init "$prev" \
@@ -488,6 +523,68 @@ EOF
     echo "GRPO done. Read, in this order:"
     echo "  logs/${LP}grpo-compare-i$N.txt  the paired comparisons (the result; RUNBOOK phase 4, GRPO)"
     echo "  data/$G/stats/i*-A.stats.json  each iteration's groups, and the policy's pass rate on its tasks"
+    ;;
+
+  grpo-measure)
+    # The learning curve's next point, without another update (RUNBOOK phase 4,
+    # GRPO, the learning curve's second point): the last GRPO iteration's
+    # adapters on their own training tasks at temperature 1, rolled out and
+    # built exactly as the next iteration's rollouts would be -- its stats, not
+    # an update and not an evaluation. Whether GRPO learned the tasks it trained
+    # on, which no evaluation reads. A later `grpo` with one more iteration
+    # trains on these rollouts rather than rolling out again.
+    if [ "$ROUND" != 2 ]; then
+      echo "!! GRPO's learning curve is round 2's: run it as PASAR_ROUND=2 (docs/GPU_GUIDE.md, GRPO)" >&2
+      exit 1
+    fi
+    G=grpo2
+    N=0
+    while [ -f "checkpoints/$G-i$((N + 1))-A/adapter_config.json" ] \
+        && [ -f "checkpoints/$G-i$((N + 1))-B/adapter_config.json" ]; do N=$((N + 1)); done
+    if [ "$N" -lt 1 ]; then
+      echo "!! no checkpoints/$G-i1-A and -B: the grpo stage trains them first" >&2
+      exit 1
+    fi
+    for F in A B; do
+      if [ ! -f "data/$G/stats/tasks-$F.json" ] || [ ! -d "traces/$P-grpo-i$N-collect-$F/full" ]; then
+        echo "!! no data/$G/stats/tasks-$F.json or traces/$P-grpo-i$N-collect-$F: the rollouts" >&2
+        echo "   iteration $N started from are what these are compared with" >&2
+        exit 1
+      fi
+    done
+    if [ -n "$(saved PASAR_GRPO_K)" ] && [ "$GRPO_K" != "$(saved PASAR_GRPO_K)" ]; then
+      echo "!! PASAR_GRPO_K=$GRPO_K, but GRPO's first iteration ran with $(saved PASAR_GRPO_K) ($SETTINGS)." >&2
+      exit 1
+    fi
+    grpo_reading || exit 1
+    i=$((N + 1))
+    stop
+    layout
+    mkdir -p "data/$G/stats" "data/$G/examples"
+    for F in A B; do
+      st="data/$G/stats/i$i-$F.stats.json"
+      if [ -f "$st" ]; then echo "$st already built; skipping"; continue; fi
+      name="pasar-$G-i$N-$F"
+      echo "== fold $F: $name on its own training tasks, the learning curve's point $i" \
+        | tee -a "logs/${LP}grpo-measure.log"
+      export LORA="checkpoints/$G-i$N-$F"
+      serve lora
+      $PY scripts/train_grpo.py collect --adapter "$name" -k "$GRPO_K" \
+        --tasks-file "data/$G/stats/tasks-$F.json" --run-id "$P-grpo-i$i-collect-$F" \
+        2>&1 | tee -a "logs/${LP}grpo-measure.log"
+      $PY scripts/train_grpo.py build --run "traces/$P-grpo-i$i-collect-$F/full" \
+        --served-model "$AGENT_MODEL:$name" --server http://localhost:8000 \
+        --max-len "$TRAIN_MAX_LEN" --reward-reading "$GRPO_READING" --measure \
+        --out "data/$G/examples/i$i-$F.jsonl" --stats "$st" 2>&1 | tee -a "logs/${LP}grpo-measure.log"
+      stop
+    done
+    $PY scripts/grpo_curve.py \
+      "traces/$P-grpo-i$N-collect-A/full" "traces/$P-grpo-i$i-collect-A/full" \
+      "traces/$P-grpo-i$N-collect-B/full" "traces/$P-grpo-i$i-collect-B/full" \
+      > "logs/${LP}grpo-measure-i$i.txt" 2>&1 || echo "!! the comparison failed; the rollouts are complete"
+    echo
+    echo "GRPO measured on its own tasks. Read logs/${LP}grpo-measure-i$i.txt (RUNBOOK phase 4,"
+    echo "GRPO, the learning curve's second point), then data/$G/stats/i$i-*.stats.json."
     ;;
 
   customer3)
@@ -605,14 +702,14 @@ EOF
     echo "PASAR_K=$K PASAR_COLLECT_K=$COLLECT_K PASAR_EPOCHS=$EPOCHS PASAR_TRAIN_MAX_LEN=$TRAIN_MAX_LEN PASAR_CUSTOMER=$PASAR_CUSTOMER PASAR_PER_TRAP=$PER_TRAP" \
          "($([ -f "$SETTINGS" ] && echo "stage 1 recorded in $SETTINGS" || echo "stage 1 not run yet"))"
     if [ "$ROUND" = 2 ]; then
-      echo "grpo: PASAR_GRPO_ITERS=$GRPO_ITERS PASAR_GRPO_K=$GRPO_K PASAR_GRPO_LR=$GRPO_LR PASAR_GRPO_SKIP_TRAPS=$GRPO_SKIP"
+      echo "grpo: PASAR_GRPO_ITERS=$GRPO_ITERS PASAR_GRPO_K=$GRPO_K PASAR_GRPO_LR=$GRPO_LR PASAR_GRPO_SKIP_TRAPS=$GRPO_SKIP PASAR_GRPO_READING=$GRPO_READING"
       echo "edition3: PASAR_E3_CUSTOMER=$E3_CUSTOMER"
     fi
     "$PY" scripts/gpu_plan.py show
     ;;
 
   *)
-    echo "usage: bash scripts/gpu_pipeline.sh smoke | stage1 | stage2 | grpo | customer3 | edition3 | settings" >&2
+    echo "usage: bash scripts/gpu_pipeline.sh smoke | stage1 | stage2 | grpo | grpo-measure | customer3 | edition3 | settings" >&2
     exit 1
     ;;
 esac
