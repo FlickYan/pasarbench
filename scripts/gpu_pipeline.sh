@@ -106,6 +106,10 @@ if [ -z "$PER_TRAP" ]; then if [ "$ROUND" = 1 ]; then PER_TRAP=0; else PER_TRAP=
 GRPO_ITERS="${PASAR_GRPO_ITERS:-1}"
 GRPO_K="${PASAR_GRPO_K:-$(saved PASAR_GRPO_K)}";          GRPO_K="${GRPO_K:-8}"
 GRPO_LR="${PASAR_GRPO_LR:-2e-5}"
+# Traps GRPO never trains on (train_grpo.py --skip-traps; `none` for none): by
+# default the photo trap, whose verdicts follow the customer (WHAT_FAILED #43).
+GRPO_SKIP="${PASAR_GRPO_SKIP_TRAPS:-$(saved PASAR_GRPO_SKIP_TRAPS)}"
+GRPO_SKIP="${GRPO_SKIP:-high_value_photo_required_first}"
 
 # How the servers share this machine (scripts/gpu_plan.py): two or more GPUs,
 # one server each; one large GPU (B200, H200), both on it, the agent first.
@@ -319,7 +323,8 @@ EOF
     fi
     echo
     echo "Stage 1 done. Before stage 2, read:"
-    echo "  logs/${LP}sim_audit.txt    leaks and unanswered requests by language (WHAT_FAILED #26)"
+    echo "  logs/${LP}sim_audit.txt    leaks and unanswered requests by language (WHAT_FAILED #26),"
+    echo "                             and photos a customer says she sent but has not (#43)"
     echo "  logs/${LP}check-A.txt      what one example trains on, and the server comparison"
     echo "  data/$RFT/stats.json   per-fold traps with nothing to learn from, and episodes by trap"
     ;;
@@ -397,6 +402,14 @@ EOF
       exit 1
     fi
     if [ -z "$(saved PASAR_GRPO_K)" ]; then printf 'PASAR_GRPO_K=%s\n' "$GRPO_K" >> "$SETTINGS"; fi
+    # The tasks are picked once, so the traps left out are too.
+    if [ -n "$(saved PASAR_GRPO_SKIP_TRAPS)" ] && [ "$GRPO_SKIP" != "$(saved PASAR_GRPO_SKIP_TRAPS)" ]; then
+      echo "!! PASAR_GRPO_SKIP_TRAPS=$GRPO_SKIP, but GRPO's tasks were picked leaving out $(saved PASAR_GRPO_SKIP_TRAPS) ($SETTINGS)." >&2
+      exit 1
+    fi
+    if [ -z "$(saved PASAR_GRPO_SKIP_TRAPS)" ]; then
+      printf 'PASAR_GRPO_SKIP_TRAPS=%s\n' "$GRPO_SKIP" >> "$SETTINGS"
+    fi
     stop
     layout
     ACCUM=$(( NGPU > 1 ? (32 + NGPU / 2) / NGPU : 32 )); [ "$ACCUM" -ge 1 ] || ACCUM=1
@@ -408,7 +421,7 @@ EOF
     if [ ! -f "data/$G/stats/tasks-A.json" ] || [ ! -f "data/$G/stats/tasks-B.json" ]; then
       # Once: the tasks stay the same from iteration to iteration.
       $PY scripts/train_grpo.py tasks --collect "traces/$P-collect/full" -k "$GRPO_K" \
-        --out-dir "data/$G/stats" 2>&1 | tee "logs/${LP}grpo-tasks.log"
+        --skip-traps "$GRPO_SKIP" --out-dir "data/$G/stats" 2>&1 | tee "logs/${LP}grpo-tasks.log"
     fi
     for F in A B; do
       prev="checkpoints/$RFT-$F"
@@ -476,7 +489,7 @@ EOF
     echo "PASAR_K=$K PASAR_COLLECT_K=$COLLECT_K PASAR_EPOCHS=$EPOCHS PASAR_TRAIN_MAX_LEN=$TRAIN_MAX_LEN PASAR_CUSTOMER=$PASAR_CUSTOMER PASAR_PER_TRAP=$PER_TRAP" \
          "($([ -f "$SETTINGS" ] && echo "stage 1 recorded in $SETTINGS" || echo "stage 1 not run yet"))"
     if [ "$ROUND" = 2 ]; then
-      echo "grpo: PASAR_GRPO_ITERS=$GRPO_ITERS PASAR_GRPO_K=$GRPO_K PASAR_GRPO_LR=$GRPO_LR"
+      echo "grpo: PASAR_GRPO_ITERS=$GRPO_ITERS PASAR_GRPO_K=$GRPO_K PASAR_GRPO_LR=$GRPO_LR PASAR_GRPO_SKIP_TRAPS=$GRPO_SKIP"
     fi
     "$PY" scripts/gpu_plan.py show
     ;;
