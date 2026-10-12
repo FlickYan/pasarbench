@@ -19,14 +19,15 @@ and then any of:
     pn.launch("stage1") # ...or as a detached Modal job on its own GPU; the notebook may stop
     pn.run("stage1", round=2)   # round 2: the second fine-tune, files of its own (v44)
     pn.run("grpo", round=2)     # GRPO from round 2's adapters, after its stage 2 (v45)
-    pn.run("customer3", round=2)   # customer 3 against customer 2, ~30 min (v47)
+    pn.run("customer3", round=2)   # customer 3 against customer 2, ~10 min (v47)
     pn.run("edition3", round=2)    # the hard edition: base, RFT, GRPO, ~1-2 h (v48)
-    pn.run("grpo-measure", round=2)   # GRPO on its own training tasks, ~1 h (v52)
+    pn.run("grpo-measure", round=2)   # GRPO on its own training tasks, ~25 min (v52)
     pn.status()         # what is running or done (a notebook sees other containers'
                         # writes as of its start: check a job from a new session)
     pn.read("logs/smoke-projection.txt")    # print a file (head=, tail= for long ones)
     pn.stop()           # stop servers a stopped cell left behind
-    pn.pack()           # the results as one archive to download
+    pn.pack()           # what is new since the last pack, as one archive to download
+    pn.pack(full=True)  # ...or every result, as the first pack is
 
 The paths are the ones Modal jobs use: /vol links to the Volume, so /vol/hf
 holds the weights and /vol/pasarbench the repo, and a stage started here and
@@ -39,6 +40,7 @@ Standard library only: this module is what installs everything else.
 from __future__ import annotations
 
 import codecs
+import io
 import json
 import os
 import re
@@ -50,6 +52,7 @@ import sys
 import tarfile
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 # The same pin as scripts/modal_pipeline.py and scripts/setup_node.sh (a test
@@ -78,6 +81,13 @@ RESULTS = ["logs", "data/splits", "data/rft/stats.json", "data/run_settings.env"
            # the hard edition (round 2's edition3 stage): base, RFT, GRPO
            "traces/P2-base-e3", "traces/P2-rft-e3", "traces/P2-grpo-i?-e3"]
 WEB_DOWNLOAD_LIMIT = 16 * 2**20    # the Modal web UI downloads files up to 16 MB
+# What the packs so far hold: each file's size and modification time, so that a
+# pack holds only what is new or changed since the last (pack()).
+PACKED = ".packed.json"
+# Every file on a Volume is a round trip to open: read one at a time, the ten
+# thousand trace files of round 1 and round 2 took a pack 20 minutes. So many
+# are read at once.
+READERS = 32
 
 _state: dict = {}
 
@@ -653,19 +663,22 @@ def stop() -> None:
 # --------------------------------------------------------------------------
 # looking at it
 
+def _finished(f: Path) -> bool:
+    """Whether a trace file ends in its footer: an episode that finished."""
+    try:
+        with f.open("rb") as fh:
+            fh.seek(max(f.stat().st_size - 4096, 0))
+            tail = fh.read().decode("utf-8", "replace").strip().splitlines()
+        return bool(tail) and '"type": "footer"' in tail[-1].replace('"type":"', '"type": "')
+    except OSError:
+        return False
+
+
 def _episodes(run_dir: Path) -> tuple[int, int]:
-    """(episode files, finished episodes) in a trace run."""
+    """(episode files, finished episodes) in a trace run, read READERS at a time."""
     files = list(run_dir.glob("*/*.jsonl"))
-    done = 0
-    for f in files:
-        try:
-            with f.open("rb") as fh:
-                fh.seek(max(f.stat().st_size - 4096, 0))
-                tail = fh.read().decode("utf-8", "replace").strip().splitlines()
-            done += bool(tail) and '"type": "footer"' in tail[-1].replace('"type":"', '"type": "')
-        except OSError:
-            pass
-    return len(files), done
+    with ThreadPoolExecutor(READERS) as pool:
+        return len(files), sum(pool.map(_finished, files))
 
 
 def status() -> None:
@@ -730,22 +743,94 @@ def status() -> None:
             _say("  " + line[:200])
 
 
-def pack() -> Path:
-    """logs/, the splits, the settings and the smoke, baseline, RFT and
-    reference traces as one .tar.gz on the Volume, to download (the collection
-    run stays on the Volume: it is several GB)."""
+def _results(work: Path) -> list[Path]:
+    """Every file pack() archives: RESULTS, patterns expanded, folders walked
+    by their listings alone (a file's own stat is a round trip too)."""
+    files: list[Path] = []
+    for rel in RESULTS:
+        # An entry's last part may be a pattern: traces/P2-grpo-i? is every
+        # GRPO evaluation, and none of its rollouts (several GB).
+        for path in sorted(work.glob(rel)):
+            if not path.is_dir():
+                files.append(path)
+                continue
+            for d, dirs, names in os.walk(path):
+                dirs.sort()
+                files += [Path(d) / n for n in sorted(names)]
+    return [f for f in files if not f.name.endswith(".stage-lock.json")]
+
+
+def _stat(f: Path) -> os.stat_result | None:
+    try:
+        return f.stat()
+    except OSError:                    # gone since the listing
+        return None
+
+
+def _packed(work: Path) -> tuple[dict, str | None]:
+    """What the packs so far hold, {path: [size, mtime]}, and the last of them:
+    the record pack() keeps, or -- for packs made before it kept one -- the
+    newest archive's own list. Nothing when neither can be read."""
+    try:
+        record = json.loads((work / PACKED).read_text())
+        return record["files"], record["last"]
+    except (OSError, ValueError, KeyError, TypeError):
+        pass
+    archives = sorted(work.glob("results-*.tar.gz"), key=lambda a: a.stat().st_mtime)
+    if not archives:
+        return {}, None
+    try:
+        with tarfile.open(archives[-1]) as t:
+            held = {m.name.removeprefix(f"{REPO}/"): [m.size, int(m.mtime)]
+                    for m in t.getmembers() if m.isfile()}
+    except (OSError, EOFError, tarfile.TarError):
+        return {}, None
+    return held, archives[-1].name
+
+
+def pack(full: bool = False) -> Path | None:
+    """The results to download, as one .tar.gz on the Volume: logs/, the
+    splits, the settings, GRPO's stats and every evaluation's traces (RESULTS;
+    the collection runs and GRPO's rollouts stay on the Volume: several GB).
+
+    Only what is new or changed since the last pack, each extracted over the
+    one before it; with full=True, or when no earlier pack can be read, all of
+    it. None when nothing is new."""
     p = paths()
     work = p["work"]
-    out = work / f"results-{time.strftime('%Y%m%d-%H%M')}.tar.gz"
-    with tarfile.open(out, "w:gz") as tar:
-        for rel in RESULTS:
-            # An entry's last part may be a pattern: traces/P2-grpo-i? is every
-            # GRPO evaluation, and none of its rollouts (several GB).
-            for path in sorted(work.glob(rel)):
-                tar.add(path, arcname=f"{REPO}/{path.relative_to(work).as_posix()}",
-                        filter=lambda ti: None if ti.name.endswith(".stage-lock.json") else ti)
+    held, last = ({}, None) if full else _packed(work)
+    files = _results(work)
+    key = lambda f: f.relative_to(work).as_posix()            # noqa: E731
+    with ThreadPoolExecutor(READERS) as pool:
+        stats = {f: st for f, st in zip(files, pool.map(_stat, files)) if st}
+        files = [f for f in files if f in stats]
+        new = [f for f in files
+               if held.get(key(f)) != [stats[f].st_size, int(stats[f].st_mtime)]]
+        if not new:
+            _say(f"nothing new or changed since {last}: no archive to download "
+                 f"(pn.pack(full=True) packs every result again)")
+            return None
+        out = work / f"results-{time.strftime('%Y%m%d-%H%M')}.tar.gz"
+        if out.exists():
+            out = work / f"results-{time.strftime('%Y%m%d-%H%M%S')}.tar.gz"
+        record = dict(held)
+        with tarfile.open(out, "w:gz", compresslevel=6) as tar:
+            for i in range(0, len(new), 256):
+                chunk = new[i:i + 256]
+                for f, data in zip(chunk, pool.map(Path.read_bytes, chunk)):
+                    info = tarfile.TarInfo(f"{REPO}/{key(f)}")
+                    info.size, info.mtime = len(data), int(stats[f].st_mtime)
+                    info.mode = stats[f].st_mode & 0o777
+                    tar.addfile(info, io.BytesIO(data))
+                    if len(data) == stats[f].st_size:     # one still being written goes again
+                        record[key(f)] = [stats[f].st_size, int(stats[f].st_mtime)]
+    (work / PACKED).write_text(json.dumps({"last": out.name, "files": record}))
     size = out.stat().st_size
-    _say(f"{out} ({size / 2**20:.1f} MB)")
+    _say(f"{out} ({size / 2**20:.1f} MB): "
+         + (f"{len(new)} files new or changed since {last}; the other "
+            f"{len(files) - len(new)} are in it or the packs before it, so extract this "
+            f"one over them (pn.pack(full=True) packs everything)" if last else
+            f"every result, {len(new)} files"))
     if size <= WEB_DOWNLOAD_LIMIT:
         _say(f"Download: Files panel -> {p['name']} -> {REPO} -> {out.name}. On your laptop:\n"
              f"  cd ~/Downloads && tar -xzf {out.name}     # lands in ~/Downloads/{REPO}/")
