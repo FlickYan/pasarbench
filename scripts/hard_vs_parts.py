@@ -98,6 +98,20 @@ def main(argv: list[str] | None = None) -> int:
     print(f"each case against its part ({g['n']} pairs): {g['diff']:+.3f}; {g['worse']} "
           f"cases failed more than their part, {g['better']} less, sign test "
           f"p={g['p']:.3f}  ->  {verdict}")
+    # WHAT_FAILED #46: the two orders and their part, the voucher trap, hold
+    # the same choice -- offered the voucher or a human, she may take the
+    # human, and P6.3 and P10 then ask for the escalation the check fails.
+    # Beside the result, read as the policy reads those escalations.
+    from pasarbench.diagnose import voucher_choice
+    (rp, np_), (rh, nh) = (voucher_choice(cells[0], parts, a.checker),
+                           voucher_choice(cells[1], hard, a.checker))
+    if np_["read_as_pass"] or nh["read_as_pass"]:
+        gv = paired_episodes(rp, [{**e, "task_id": twin[e["task_id"]]} for e in rh])
+        print(f"  the same, the escalations after she declined the voucher read as P6.3 and "
+              f"P10 read them -- {nh['read_as_pass']} of the cases' episodes, "
+              f"{np_['read_as_pass']} of the parts' (WHAT_FAILED #46): " + (
+                  f"{gv['diff']:+.3f}; {gv['worse']} cases failed more than their part, "
+                  f"{gv['better']} less, p={gv['p']:.3f}" if gv else "not testable"))
     return 0
 
 
