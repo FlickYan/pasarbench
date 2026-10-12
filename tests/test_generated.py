@@ -655,6 +655,15 @@ def test_photo_claims():
           "en       50.0%  (1/2 episodes)" in text
           and "Failed after it: 1 of 1; failed without it: 0 of 1" in text
           and "WHAT_FAILED #43" in text, text)
+    guarded = ep(2, "I can't send photos now, I'll send them tonight.", True)
+    guarded["events"][0]["guard"] = "photos: written again"
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out):
+        it.photos([guarded, ep(3, "", True)])
+    text = out.getvalue()
+    check("…and with customer 3, what her guard did, beside a trap that then measures the "
+          "agent", "customer 3's guard: photos: written again 1" in text
+          and "the photo trap measures the agent" in text, text)
 
 
 def test_second_edition():
