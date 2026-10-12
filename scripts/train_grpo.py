@@ -222,14 +222,15 @@ def build(args) -> None:
             raise SystemExit(f"!! {e}\n!! GRPO trains on the prompts the server built: bring "
                              f"the agent server up and build again")
     rows, stats = build_rows(args.run, all_tasks(), tok, ALL_SOLUTIONS, server=server,
-                             max_len=args.max_len, expect_model=args.served_model or None)
+                             max_len=args.max_len, expect_model=args.served_model or None,
+                             reading=args.reward_reading)
     if stats.get("prompts_ending_unlike_local_render"):
         raise SystemExit(f"!! {stats['prompts_ending_unlike_local_render']} of the server's "
                          f"prompts do not end in the generation prompt the local template "
                          f"ends in, so the turns rendered after them are not what followed "
                          f"(the server's template or chat_template_kwargs are not these). "
                          f"`train_rft.py check` shows the first; nothing written.")
-    if not rows:
+    if not rows and not args.measure:
         raise SystemExit(f"!! nothing to train on: {stats['groups']} groups, every one with "
                          f"the same verdict throughout ({stats['bands']}). The policy has no "
                          f"pass-and-fail left on these tasks: GRPO stops here.")
@@ -238,6 +239,13 @@ def build(args) -> None:
           f"{stats['passed']} ({stats['pass_rate']:.0%}). Groups: {stats['bands']}; "
           f"degenerate {stats['degenerate_groups']} ({stats['degenerate_rate']:.0%}). "
           f"{stats['examples']} turns from {stats['episodes_used']} rollouts -> {path}")
+    if stats["voucher_declined"]:
+        print(f"  {stats['voucher_declined']} on the voucher trap after she declined the voucher "
+              f"and the agent escalated, as P6.3 and P10 ask (WHAT_FAILED #46): rewarded "
+              + ("as passes (--reward-reading policy)" if stats["reward_reading"] == "policy"
+                 else "as the check scores them, failures (--reward-reading checks)"))
+    if not rows:
+        print("  nothing to train on: every group had one verdict throughout. Measured only.")
     if stats["skipped"]:
         print(f"  skipped: {stats['skipped']}")
     if stats["degenerate_rate"] > 0.7:
@@ -292,6 +300,13 @@ def main(argv: list[str] | None = None) -> None:
     b.add_argument("--max-len", type=int, default=16384)
     b.add_argument("--out", required=True)
     b.add_argument("--stats", required=True)
+    b.add_argument("--reward-reading", choices=["checks", "policy"], default="checks",
+                   help="the voucher trap: an escalation after she declined the voucher "
+                        "rewarded as the check scores it (checks, round 2's) or as the pass "
+                        "P6.3 and P10 make it (policy; WHAT_FAILED #46). One reading a run")
+    b.add_argument("--measure", action="store_true",
+                   help="write the stats even when no group has a pass and a fail: the "
+                        "learning curve's point, with nothing to train on (grpo-measure)")
     b.set_defaults(fn=build)
 
     args = ap.parse_args(argv)
