@@ -890,7 +890,10 @@ leaves once she has promised what she can't do in the conversation (WHAT_FAILED
 #43). GRPO ran one iteration from the second fine-tune: inconclusive, and the
 room it was judged in was partly the voucher trap's customer (RUNBOOK phase 4,
 GRPO; WHAT_FAILED #46) — the hard edition gives it room, with that choice read
-as the policy reads it before the run. Along the way,
+as the policy reads it before the run. Before a second iteration, one
+measurement (v52, `grpo-measure`): GRPO's adapters on the tasks they trained
+on, which tells an update that learned its tasks and didn't carry them over
+from one too small to move anything. Along the way,
 each built and waiting for its run: the run the language finding needs — hold a
 conversation fixed at the moment the agent reads the refund and change only its
 language (v49, RUNBOOK 1t: 96 recorded conversations rebuilt exactly, each run as
