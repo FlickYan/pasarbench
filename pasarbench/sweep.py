@@ -55,13 +55,17 @@ GEN_TASKS, GEN_SOLUTIONS = generate()
 # New tasks of the closing check's five traps, to confirm it on tasks that did
 # not produce it (RUNBOOK 1m). Never in `all`: the suite stays the suite.
 EDITION2_TASKS, EDITION2_SOLUTIONS = generate(edition=2)
-ALL_SOLUTIONS = {**SOLUTIONS, **GEN_SOLUTIONS, **EDITION2_SOLUTIONS}
+# The hard edition: cases that combine the suite's traps (RUNBOOK 1s). Never
+# in `all` either.
+EDITION3_TASKS, EDITION3_SOLUTIONS = generate(edition=3)
+ALL_SOLUTIONS = {**SOLUTIONS, **GEN_SOLUTIONS, **EDITION2_SOLUTIONS, **EDITION3_SOLUTIONS}
 ALL_TASKS = CORE_TASKS + GEN_TASKS
+SUITES = {"core": CORE_TASKS, "generated": GEN_TASKS, "all": ALL_TASKS,
+          "edition2": EDITION2_TASKS, "edition3": EDITION3_TASKS}
 
 
 def select_tasks(args) -> list[Task]:
-    pool = {"core": CORE_TASKS, "generated": GEN_TASKS, "all": ALL_TASKS,
-            "edition2": EDITION2_TASKS}[args.suite]
+    pool = SUITES[args.suite]
     if args.languages:
         want = set(args.languages.split(","))
         pool = [t for t in pool if t.language in want]
@@ -69,11 +73,14 @@ def select_tasks(args) -> list[Task]:
         ids = set(args.tasks.split(","))
         pool = [t for t in pool if t.task_id in ids]
     if getattr(args, "traps", ""):
+        # Against the suite asked for: each edition has traps of its own, and
+        # one the suite does not have would select nothing without a word.
         want = {x.strip() for x in args.traps.split(",") if x.strip()}
-        unknown = sorted(want - {t.trap for t in ALL_TASKS})
+        have = {t.trap for t in SUITES[args.suite]}
+        unknown = sorted(want - have)
         if unknown:
-            raise SystemExit(f"--traps: no such trap {unknown}; the traps are "
-                             f"{sorted({t.trap for t in ALL_TASKS})}")
+            raise SystemExit(f"--traps: no such trap {unknown} in --suite {args.suite}; its "
+                             f"traps are {sorted(have)}")
         pool = [t for t in pool if t.trap in want]
     if args.sample:
         pool = stratified_sample(pool, per_trap=args.sample)
@@ -170,9 +177,9 @@ def fold_router(args):
                          "trained on)")
     from .rl.split import load_folds, other_fold
     # The suite's own tasks are checked against the split: the 215 against
-    # folds.json, the 62 newer ones against theirs (rl/split.py --suite).
-    pool = {"core": CORE_TASKS, "generated": GEN_TASKS, "all": ALL_TASKS,
-            "edition2": EDITION2_TASKS}[getattr(args, "suite", "all")]
+    # folds.json, the 62 newer ones and the hard edition's 36 against theirs
+    # (rl/split.py --suite).
+    pool = SUITES[getattr(args, "suite", "all")]
     folds = load_folds(args.folds, pool)
     trained_on = dict(kv.split("=", 1) for kv in args.fold_models.split(","))
     if set(trained_on) != set(folds["folds"]):
@@ -568,9 +575,10 @@ def main() -> None:
                          "in the closing phase a write that repeats one already "
                          "made is not run (RUNBOOK 1o)")
     ap.add_argument("-k", type=int, default=1)
-    ap.add_argument("--suite", default="core", choices=["core", "generated", "all", "edition2"],
+    ap.add_argument("--suite", default="core", choices=list(SUITES),
                     help="edition2: new tasks of the closing check's five traps, outside "
-                         "the suite (RUNBOOK 1m)")
+                         "the suite (RUNBOOK 1m); edition3: the hard edition, cases that "
+                         "combine traps, outside it too (RUNBOOK 1s)")
     ap.add_argument("--sample", type=int, default=0,
                     help="stratified: N tasks PER TRAP. Use while iterating; "
                          "run the full suite only for final numbers.")
