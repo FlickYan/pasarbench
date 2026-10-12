@@ -6,6 +6,8 @@
 #   ./scripts/serve_sglang.sh sim         # GPU 1, port 8001: the simulated customer, Gemma 4 31B
 #   ./scripts/serve_sglang.sh rft         # GPU 0, port 8000: Qwen3.8-27B with both RFT adapters
 #                                         #   (RFT_NAME=rft2: round 2's, checkpoints/rft2-A and -B)
+#   ./scripts/serve_sglang.sh lora        # GPU 0: Qwen3.8-27B with the one adapter LORA names
+#                                         #   (GRPO's rollouts: LORA=checkpoints/rft2-A -> pasar-rft2-A)
 #   ./scripts/serve_sglang.sh probe       # GPU 0: Qwen3.8-27B with a probe adapter (the smoke stage's LoRA check)
 #   ./scripts/serve_sglang.sh agent-fp8   # GPU 0: FP8 weights and KV cache, for the serving comparison
 #
@@ -158,6 +160,16 @@ case "$MODE" in
       --lora-paths "pasar-$name-A=checkpoints/$name-A" "pasar-$name-B=checkpoints/$name-B" \
       ${share[@]+"${share[@]}"} ${extra[@]+"${extra[@]}"}
     ;;
+  lora)
+    # One adapter, served as pasar-<its directory's name>: the policy GRPO is
+    # rolling out (gpu_pipeline.sh grpo), the RFT adapter it starts from or the
+    # last iteration's. Requested as <base>:pasar-<name>, checked by the sweep.
+    if [ -z "${LORA:-}" ] || [ ! -f "$LORA/adapter_config.json" ]; then
+      echo "no adapter in ${LORA:-(LORA is not set)}" >&2; exit 1
+    fi
+    run "${agent[@]}" --enable-lora --max-loras-per-batch 1 \
+      --lora-paths "pasar-$(basename "$LORA")=$LORA" ${share[@]+"${share[@]}"} ${extra[@]+"${extra[@]}"}
+    ;;
   probe)
     # A small random adapter built from the agent's config (train_rft.py
     # probe-adapter). The smoke stage serves it to prove LoRA serving works on
@@ -195,7 +207,7 @@ case "$MODE" in
     shopt -u nocasematch
     run "${sim[@]}" ${share[@]+"${share[@]}"} ${extra[@]+"${extra[@]}"}
     ;;
-  *) echo "unknown mode: $MODE (agent | sim | rft | probe | agent-fp8)" >&2; exit 1 ;;
+  *) echo "unknown mode: $MODE (agent | sim | rft | lora | probe | agent-fp8)" >&2; exit 1 ;;
 esac
 
 # ---------------------------------------------------------------------------
