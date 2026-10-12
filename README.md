@@ -145,10 +145,10 @@ re-scored by replaying their tool calls (`scripts/rescore.py`).
 | Environment: 277 tasks, 16 traps, 6 markets, 8 languages, checks on database state | done |
 | Harness: context strategies, tool exposure, simulated customer, replay, claim guardrail, closing check and its guard | done |
 | API experiments, RUNBOOK 1a–1r: 34 runs, 14,542 episodes | done |
-| The recorded traces as a Hugging Face dataset (`scripts/export_hf.py`) | ready to upload |
-| Judge calibration | labels collected but nearly all "satisfied"; calibration with planted mistakes next |
+| The recorded traces as a Hugging Face dataset (`scripts/export_hf.py`) | published on the Hub |
+| Judge calibration | labels nearly all "satisfied" (WHAT_FAILED #24); planted-mistake calibration built, ready to run (no GPU, under $1) |
 | Post-training round 1: RFT on Qwen3.8-27B | done: no gain once the checker was fixed |
-| Post-training round 2: a fine-tune balanced by trap; GRPO | round 2 ready to run (GPU_GUIDE.md); GRPO next |
+| Post-training round 2: a fine-tune balanced by trap; GRPO | round 2 running; GRPO built and tested on toy models, runs after it |
 | A hard edition of combined cases; a multi-model baseline | planned |
 | Serving cost | paused |
 
@@ -362,6 +362,13 @@ intervals is not an improvement.
 yourself. Round 2 re-labels a subset blind, and agreement is reported as a
 fraction of that test-retest κ.
 
+**Planted mistakes** (v45): the 200 labels hold two violations in 1,800
+answers, so the calibration makes its own. Transcripts the verifier passed,
+each beside a copy with one mistake planted — another customer's order read
+out, a total no tool gave, a 30-day return window, a refund with the identity
+check taken out — measure per criterion how often the judge catches it and how
+often it flags the clean originals (`scripts/judge_calibration.py`).
+
 ### Serving and cost
 
 **The metric is cost per *resolved* conversation.** Escalations consume human
@@ -416,6 +423,11 @@ of running it, for a first-time GPU user, in `docs/GPU_GUIDE.md`):
   customer. Serving is SGLang: agent (bf16) and customer (FP8) on one card,
   each server's memory worked out from what is free when it starts
   (`scripts/gpu_plan.py`), or one card each on a two-GPU machine.
+- **GRPO from the RFT adapter** (v45), on the same tasks it was trained on:
+  rollouts at temperature 1 on the ones the model sometimes fails, a group used
+  only when its verdicts differ, every turn of a rollout carrying its
+  advantage, a clipped policy gradient on the LoRA. Judged on the 62 newer
+  tasks no model trained on, because the held-out fold has no room at 0.98.
 
 ---
 
@@ -426,8 +438,8 @@ pasarbench/
   db.py tools.py policy.md tasks.py verifier.py   the environment
   generate.py locales.py                          199 generated tasks, 3 orthogonal axes
   harness/                                        the runtime, the claim guardrail, the closing check
-  rl/                                             reward, folds, per-turn SFT examples
-  judge/                                          rubric, judges, agreement stats
+  rl/                                             reward, folds, per-turn RFT and GRPO examples
+  judge/                                          rubric, judges, agreement stats, planted mistakes
   analyze.py diagnose.py simqa.py                 turning sweeps into findings
   rescore.py                                      recorded episodes, today's checks
   serving/                                        metrics, cost, quality guards
@@ -438,8 +450,8 @@ scripts/    gpu_pipeline.sh gpu_plan.py modal_pipeline.py pasar_notebook.py
             audit_tool_arms.py inspect_trace.py run_judges.py rescore.py
             compare_cells.py naming_tasks.py guardrail_dry_run.py make_figure.py
             slurm_train.sh slurm_sweep.sh modal_vllm.py closing_guard_dry_run.py
-            closing_report.py language_lead.py export_hf.py
-tests/      12 suites, 750+ assertions
+            closing_report.py language_lead.py export_hf.py judge_calibration.py
+tests/      12 suites, 900+ assertions
 docs/       RUNBOOK.md  GPU_GUIDE.md  WHAT_FAILED.md  WRITEUP.md  BLOG.md  README_weekly.md
             img/  the results figure, light and dark, wide and narrow, and its numbers
 ```
@@ -477,10 +489,11 @@ careful reader notices.
 - **Prose-only policy rules are unverifiable by state checks.** P1.4 (never
   disclose another customer's data) cannot be checked by looking at the
   database; those tasks were left out rather than checked badly.
-- **`scripts/train_grpo.py` collects and scores groups but does not do the
-  policy update.** The three remaining pieces — token alignment between SGLang
-  and HF, turn-level loss masking, per-token advantage normalisation — are named
-  explicitly in that file rather than glossed.
+- **GRPO is built, not yet run.** The rollouts, advantages and update
+  (`scripts/train_grpo.py`, `pasarbench/rl/grpo.py`, the `grpo` stage) are
+  tested end to end on toy models only; the old log-probabilities are the
+  trainer's own, not the sampling server's, and there is no KL term. Its first
+  result follows round 2.
 - **The leak audit is only as good as its ask-patterns.** They cover the
   phrasings `deepseek-v4-pro` used across four runs and `Qwen3.8-27B` across
   three, where no reveal outside English was unprompted
