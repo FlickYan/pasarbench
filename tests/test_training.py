@@ -680,6 +680,295 @@ def test_train_smoke():
           trained)
 
 
+def _retag(src: Path, dst: Path) -> None:
+    """A scripted or mute episode as if the toy model had answered it, thinking
+    off -- the headers _collection gives a collection."""
+    lines = src.read_text().splitlines()
+    head = json.loads(lines[0])
+    head["requested_model"] = "toy"
+    head["agent_extra_body"] = {"chat_template_kwargs": {"enable_thinking": False}}
+    dst.write_text("\n".join([json.dumps(head), *lines[1:]]) + "\n")
+
+
+def _grpo_cell(root: Path) -> tuple[Path, str, str]:
+    """A collection with one group to learn from and one without: T01 passed
+    twice (scripted) and failed twice (mute); HRWR-ID passed twice, the second
+    time in three more steps."""
+    X, Y = "T01", "HRWR-ID"
+    cell = _collection(root, f"{X},{Y}", k=2)
+    r = _sweep(root, "M", X, 2, "--save-messages", "--backend", "mute")
+    assert r.returncode == 0, r.stderr[-800:]
+    for i, f in enumerate(sorted((root / "M" / "full").glob("*.jsonl"))):
+        _retag(f, cell / f"{X}__r{2 + i}.jsonl")
+    f = cell / f"{Y}__r1.jsonl"
+    lines = f.read_text().splitlines()
+    foot = json.loads(lines[-1])
+    foot["budget"]["steps"] += 3
+    f.write_text("\n".join([*lines[:-1], json.dumps(foot)]) + "\n")
+    # As train_grpo.py collect samples them: the full softmax at temperature 1.
+    from pasarbench.rl.grpo import ON_POLICY
+    for f in cell.glob("*.jsonl"):
+        lines = f.read_text().splitlines()
+        head = json.loads(lines[0])
+        head["agent_extra_body"] = {**head.get("agent_extra_body", {}), **ON_POLICY}
+        head["agent_temperature"] = 1.0
+        f.write_text("\n".join([json.dumps(head), *lines[1:]]) + "\n")
+    return cell, X, Y
+
+
+def test_grpo_build():
+    print("\n=== GRPO: groups, advantages, the examples of a turn ===")
+    import _tokenizer
+    if not _tokenizer.available():
+        skip("GRPO examples", "transformers/tokenizers not installed")
+        return
+    from collections import defaultdict
+
+    from pasarbench.rl.grpo import build, episode_reward
+    from pasarbench.rl.reward import group_advantages
+    from pasarbench.rl.sft import read_trace, tokenize_example
+    from pasarbench.sweep import ALL_SOLUTIONS
+
+    tok = _tokenizer.local_tokenizer()
+    root = Path(tempfile.mkdtemp())
+    cell, X, Y = _grpo_cell(root)
+    rows, stats = build(cell, BY_ID, tok, ALL_SOLUTIONS, expect_model="toy")
+    by = defaultdict(list)
+    for r in rows:
+        by[Path(r["trace"]).name].append(r)
+    adv = {t: {r["advantage"] for r in rs} for t, rs in by.items()}
+    check("a group with a pass and a fail is learned from: every turn of a passing rollout "
+          "has its episode's positive advantage, every turn of a failing one its negative",
+          set(by) == {f"{X}__r{i}.jsonl" for i in range(4)}
+          and all(len(a) == 1 for a in adv.values())
+          and all(r["advantage"] > 0 for t in (f"{X}__r0.jsonl", f"{X}__r1.jsonl") for r in by[t])
+          and all(r["advantage"] < 0 and not r["passed"]
+                  for t in (f"{X}__r2.jsonl", f"{X}__r3.jsonl") for r in by[t]), adv)
+    ys = [read_trace(f) for f in sorted(cell.glob(f"{Y}__*.jsonl"))]
+    rewards = [episode_reward([e["header"], *e["steps"], e["footer"]], BY_ID[Y],
+                              len(ALL_SOLUTIONS[Y])).reward for e in ys]
+    check("a group that all passed teaches nothing, though its rollouts' lengths differ: "
+          "standardised, the step penalty alone would have given it advantages as large as "
+          "a pass against a fail (WHAT_FAILED #41)",
+          not any(r["task_id"] == Y for r in rows) and len(set(rewards)) == 2
+          and all(abs(a) == 1.0 for a in group_advantages(rewards))
+          and stats["degenerate_groups"] == 1 and stats["bands"] == {"always": 1, "sometimes": 1}
+          and stats["learning_tasks"] == [X], (rewards, stats["bands"]))
+    trained = {t: sum(sum(l != -100 for l in tokenize_example(tok, r)["labels"]) for r in rs)
+               for t, rs in by.items()}
+    check("a turn's loss is divided by its rollout's trained tokens, all its turns together: "
+          "a long rollout weighs what a short one does",
+          all(r["norm"] == trained[t] for t, rs in by.items() for r in rs)
+          and len(by[f"{X}__r0.jsonl"]) > 1, trained)
+    check("the stats give the policy's pass rate on its tasks: one point of the learning "
+          "curve, iteration by iteration", stats["passed"] == 4 and stats["pass_rate"] == 0.6667
+          and stats["episodes"] == 6, stats)
+    try:
+        build(cell, BY_ID, tok, ALL_SOLUTIONS, expect_model="Qwen/Qwen3.8-27B:pasar-rft2-A")
+        why = "built"
+    except SystemExit as e:
+        why = str(e)
+    check("rollouts of another policy are refused: GRPO trains the one that sampled them",
+          "GRPO trains the policy that sampled" in why, why)
+    g0 = cell / f"{X}__r0.jsonl"
+    keep = g0.read_text()
+    lines = keep.splitlines()
+    head = json.loads(lines[0])
+    head["agent_extra_body"] = {"chat_template_kwargs": {"enable_thinking": False}}
+    g0.write_text("\n".join([json.dumps(head), *lines[1:]]) + "\n")
+    try:
+        build(cell, BY_ID, tok, ALL_SOLUTIONS, expect_model="toy")
+        why = "built"
+    except SystemExit as e:
+        why = str(e)
+    g0.write_text(keep)
+    check("…and so are rollouts sampled with the server's own top-k and top-p: the loss is "
+          "over the full softmax at temperature 1 (WHAT_FAILED #42)",
+          "not the full softmax" in why and "train_grpo.py collect" in why, why)
+    f = cell / f"{X}__r3.jsonl"
+    f.write_text("\n".join(f.read_text().splitlines()[:-1]) + "\n")
+    _, cut = build(cell, BY_ID, tok, ALL_SOLUTIONS, expect_model="toy")
+    check("a rollout that never finished is left out, as every report leaves it out",
+          cut["skipped"].get("unfinished") == 1 and cut["episodes"] == 6, cut["skipped"])
+    lines = f.read_text().splitlines()
+    head = json.loads(lines[0])
+    f.write_text("\n".join([json.dumps({**head, "closing": "check"}), *lines[1:]]) + "\n")
+    try:
+        build(cell, BY_ID, tok, ALL_SOLUTIONS, expect_model="toy")
+        why = "built"
+    except SystemExit as e:
+        why = str(e)
+    check("…and a run with the closing check is refused: its note is the harness's turn",
+          "plain full-context episodes" in why, why)
+    f.write_text("\n".join([json.dumps(head), *lines[1:]]) + "\n")
+    g = cell / f"{X}__r2.jsonl"
+    lines = g.read_text().splitlines()
+    g.write_text("\n".join([*lines[:-1], json.dumps({**json.loads(lines[-1]),
+                                                      "stop_reason": "max_wall_seconds"})]) + "\n")
+    _, wall = build(cell, BY_ID, tok, ALL_SOLUTIONS, expect_model="toy")
+    check("a rollout the harness stopped -- the wall clock, a server error -- is no signal "
+          "about the policy and leaves its group: here the last failure, so nothing is left "
+          "to learn", wall["skipped"].get("stopped by the harness (max_wall_seconds)") == 1
+          and wall["learning_tasks"] == [] and wall["examples"] == 0, wall["skipped"])
+
+    # The command: the stats written last, no fallback to the local template.
+    import contextlib
+    import io
+    g_ = _script("train_grpo")
+    tdir = root / "tok"
+    tok.save_pretrained(tdir)
+    cell2, _, _ = _grpo_cell(root / "again")
+    out = root / "grpo2"
+
+    def cli(*extra):
+        o = io.StringIO()
+        try:
+            with contextlib.redirect_stdout(o):
+                g_.main(["build", "--run", str(cell2), "--model", str(tdir), "--served-model",
+                         "toy", "--out", str(out / "examples" / "i1-A.jsonl"),
+                         "--stats", str(out / "stats" / "i1-A.stats.json"), *extra])
+            return o.getvalue()
+        except SystemExit as e:
+            return f"exit: {e}"
+    said = cli()
+    check("`train_grpo.py build` writes the examples, then their stats, and says how the "
+          "policy did", (out / "examples" / "i1-A.jsonl").exists()
+          and json.loads((out / "stats" / "i1-A.stats.json").read_text())["learning_tasks"] == [X]
+          and "the policy passed 4 (67%)" in said
+          and not list(out.rglob("*.tmp")), said)
+    down = cli("--server", "http://127.0.0.1:9")
+    check("…and with the server down it stops, rather than train on prompts the local "
+          "template rendered (#27)", down.startswith("exit:") and "server built" in down, down)
+
+
+def _toy_model(work: Path, tok) -> Path:
+    import contextlib
+    import io
+
+    from transformers import Qwen3Config, Qwen3ForCausalLM
+    model_dir = work / "toy"
+    cfg = Qwen3Config(vocab_size=len(tok), hidden_size=32, intermediate_size=64,
+                      num_hidden_layers=2, num_attention_heads=4, num_key_value_heads=2,
+                      head_dim=8, max_position_embeddings=4096,
+                      eos_token_id=tok.eos_token_id, pad_token_id=tok.pad_token_id)
+    with contextlib.redirect_stderr(io.StringIO()):
+        Qwen3ForCausalLM(cfg).save_pretrained(model_dir)
+    tok.save_pretrained(model_dir)
+    return model_dir
+
+
+def test_grpo_train():
+    print("\n=== GRPO's update, on a toy model ===")
+    import _tokenizer
+    try:
+        import peft  # noqa: F401
+        import torch
+        from transformers import AutoModelForCausalLM
+    except ImportError as e:
+        skip("GRPO's update", f"{e.name} not installed")
+        return
+    import contextlib
+    import io
+
+    from pasarbench.rl.grpo import grpo_loss
+    from pasarbench.rl.sft import tokenize_example
+
+    tok = _tokenizer.local_tokenizer()
+    work = Path(tempfile.mkdtemp())
+    model_dir = _toy_model(work, tok)
+    prompt = "<|im_start|>user\nhi<|im_end|>\n<|im_start|>assistant\n"
+    good = {"prompt": prompt, "completion": "It is O1003<|im_end|>"}
+    bad = {"prompt": prompt, "completion": "Could you give me the order number?<|im_end|>"}
+
+    def batch(ex):
+        t = tokenize_example(tok, ex)
+        return torch.tensor([t["input_ids"]]), torch.tensor([t["labels"]])
+
+    torch.manual_seed(0)
+    with contextlib.redirect_stderr(io.StringIO()):
+        model = AutoModelForCausalLM.from_pretrained(model_dir, dtype=torch.float32)
+
+    def logp(ex):
+        ids, labels = batch(ex)
+        with torch.no_grad():
+            return grpo_loss(model(input_ids=ids).logits, labels, 0.0, 1.0)[1].sum().item()
+
+    before = logp(good), logp(bad)
+    opt = torch.optim.SGD(model.parameters(), lr=0.05)
+    for _ in range(5):
+        opt.zero_grad()
+        loss = 0
+        for ex, a in ((good, 1.0), (bad, -1.0)):
+            ids, labels = batch(ex)
+            loss = loss + grpo_loss(model(input_ids=ids).logits, labels, a,
+                                    float((labels != -100).sum()))[0]
+        loss.backward()
+        opt.step()
+    after = logp(good), logp(bad)
+    check("a positive advantage makes its turn more likely, a negative one less",
+          after[0] > before[0] and after[1] < before[1], (before, after))
+
+    def grad(a):
+        ids, labels = batch(good)
+        model.zero_grad()
+        out = model(input_ids=ids).logits
+        now = grpo_loss(out, labels, 0.0, 1.0)[1].detach()
+        grpo_loss(out, labels, a, 10.0, old=now - 1.0)[0].backward()
+        return sum(float(p.grad.abs().sum()) for p in model.parameters() if p.grad is not None)
+    check("the clip: a turn already far likelier than when it was sampled gets no further "
+          "push from a positive advantage, and is still pulled back by a negative one",
+          grad(1.0) == 0.0 and grad(-1.0) > 0.0, (grad(1.0), grad(-1.0)))
+
+    # End to end: an adapter, then GRPO from it with train_rft.py, as an iteration runs.
+    tr = _script("train_rft")
+    sft = work / "sft.jsonl"
+    sft.write_text("".join(json.dumps({"task_id": "T01", "fold": "A", "turn": 0, "tokens": 0,
+                                       **good}) + "\n" for _ in range(2)))
+    rows = [{"task_id": "T01", "fold": "grpo", "turn": 0, "tokens": 0, "advantage": a,
+             "norm": 4, "trace": f"T01__r{i}.jsonl", **ex}
+            for i, (ex, a) in enumerate(((good, 1.0), (bad, -1.0)) * 2)]
+    data = work / "i1-A.jsonl"
+    data.write_text("".join(json.dumps(r) + "\n" for r in rows))
+
+    def train(*argv):
+        sys.argv = ["train_rft.py", "train", "--model", str(model_dir), "--grad-accum", "1",
+                    "--fp32", "--attn", "eager", "--save-steps", "1000", *argv]
+        out = io.StringIO()
+        try:
+            with contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()):
+                tr.main()
+            return ""
+        except SystemExit as e:
+            return f"exit: {e}"
+        except Exception as e:  # noqa: BLE001
+            return f"{type(e).__name__}: {e}"
+    err = train("--data", str(sft), "--out", str(work / "rft2-A"), "--max-steps", "1")
+    err = err or train("--data", str(data), "--out", str(work / "grpo2-i1-A"), "--max-steps", "2",
+                       "--objective", "grpo", "--init", str(work / "rft2-A"), "--lr", "1e-3")
+    meta = (json.loads((work / "grpo2-i1-A" / "pasarbench_meta.json").read_text())
+            if not err else {})
+    check("an iteration's update runs from the adapter it starts from, and the adapter "
+          "records what it is", not err and (work / "grpo2-i1-A" / "adapter_config.json").exists()
+          and meta.get("objective") == "grpo" and meta.get("init") == str(work / "rft2-A")
+          and meta.get("mean_abs_advantage") == 1.0, err or meta)
+    from safetensors.torch import load_file
+    w0 = load_file(str(work / "rft2-A" / "adapter_model.safetensors")) if not err else {}
+    w1 = load_file(str(work / "grpo2-i1-A" / "adapter_model.safetensors")) if not err else {}
+    check("…and it moved the adapter it started from, with the same modules",
+          bool(w0) and set(w0) == set(w1) and any(not torch.equal(w0[k], w1[k]) for k in w0),
+          sorted(set(w0) ^ set(w1))[:4])
+    refused = train("--data", str(sft), "--out", str(work / "x"), "--max-steps", "1",
+                    "--objective", "grpo")
+    check("examples without advantages are refused, with where they come from",
+          "train_grpo.py build" in refused, refused)
+    src = (Path(__file__).resolve().parent.parent / "scripts" / "train_rft.py").read_text()
+    check("GRPO's turn losses are averaged over an optimizer step's turns, and neither "
+          "dropout nor a precision the training pass does not use puts noise in the ratio",
+          "self.model_accepts_loss_kwargs = False" in src and "m.p = 0.0" in src
+          and '"constant_with_warmup" if grpo' in src
+          and 'torch.autocast("cuda", dtype=torch.bfloat16) if bf16' in src)
+
+
 def test_served_models():
     print("\n=== evaluation asks the server for the fine-tune, and gets it ===")
     import threading
@@ -716,19 +1005,29 @@ def test_served_models():
              "root": f"checkpoints/rft-{f}", "parent": "Qwen/Qwen3-8B"} for f in "AB"]
     srv, url = serve([base, *lora])
     good = ["Qwen/Qwen3-8B:pasar-rft-A", "Qwen/Qwen3-8B:pasar-rft-B"]
-    check("<base>:<adapter> names for loaded adapters pass", "every fold model" in check_served(url, good))
+    check("<base>:<adapter> names for loaded adapters pass", "with its own weights" in check_served(url, good))
     check("a bare adapter name is refused on SGLang, which would answer with the base model",
           refused(url, ["pasar-rft-A", "pasar-rft-B"], "BASE model"))
     check("an adapter the server never loaded is refused",
           refused(url, ["Qwen/Qwen3-8B:pasar-rft-C"], "would not answer"))
     check("…as is a base the server does not serve",
           refused(url, ["Qwen/Qwen3-32B:pasar-rft-A"], "would not answer"))
+    one = subprocess.run(
+        [sys.executable, "-m", "pasarbench.sweep", "--backend", "openai", "--model",
+         "Qwen/Qwen3-8B:pasar-rft2-A", "--base-url", url, "--simulator", "silent", "--suite",
+         "all", "--tasks", "T01", "-k", "1", "--strategies", "full", "--trace-root",
+         tempfile.mkdtemp(), "--run-id", "one"], capture_output=True, text=True,
+        cwd=Path(__file__).resolve().parent.parent)
+    check("one adapter named as the model (GRPO's rollouts) is checked the same way: one "
+          "the server never loaded is refused before the first episode",
+          one.returncode != 0 and "would not answer" in one.stderr and "running" not in one.stdout,
+          (one.stdout + one.stderr)[-400:])
     srv.shutdown()
 
     srv, url = serve([{**base, "owned_by": "vllm"},
                       *[{**c, "owned_by": "vllm"} for c in lora]])
     check("vLLM routes a bare adapter name to the adapter, so there it passes",
-          "every fold model" in check_served(url, ["pasar-rft-A", "pasar-rft-B"]))
+          "with its own weights" in check_served(url, ["pasar-rft-A", "pasar-rft-B"]))
     srv.shutdown()
     check("no server, no evaluation", refused(url, good, "is the agent server up"))
 
@@ -965,7 +1264,7 @@ def test_serve_scripts():
           "rollouts use the run's, and every knob it records reaches a Modal job",
           "PASAR_CUSTOMER" in recorded and '--customer "$CUSTOMER"' in pipe
           and 'export PASAR_CUSTOMER="$CUSTOMER"' in pipe
-          and re.search(r"LLMUser\([^)]*customer=args\.customer\)", grpo) is not None
+          and '"--customer", str(args.customer)' in grpo
           and all(f'"{k}"' in (root / "scripts" / "modal_pipeline.py").read_text().split(
               "PASSED_ON = (")[1].split(")")[0] for k in recorded), recorded)
     check("round 2's stages name every run, file, log and adapter apart from round 1's, and "
@@ -986,6 +1285,230 @@ def test_serve_scripts():
           and 'launch=("$PY")' in pipe)
     check("the smoke stage also tries training on one longest-length turn",
           "train_rft.py train-probe --max-len" in pipe)
+
+
+def test_grpo_scripts():
+    print("\n=== GRPO's stage: its tasks, rollouts, servers and evaluation agree ===")
+    import contextlib
+    import io
+    import re
+    import shutil
+    root = Path(__file__).resolve().parent.parent
+    from pasarbench.generate import generate as gen
+    from pasarbench.rl.split import make_folds
+    from pasarbench.sweep import fold_router
+
+    # Its tasks: each fold's tasks the collection failed at least once.
+    work = Path(tempfile.mkdtemp())
+    folds = make_folds(ALL)
+    fp = work / "folds.json"
+    fp.write_text(json.dumps(folds))
+    xa = next(t.task_id for t in ALL if folds["task_fold"][t.task_id] == "A")
+    ya = next(t.task_id for t in ALL if folds["task_fold"][t.task_id] == "A" and t.task_id != xa)
+    xb = next(t.task_id for t in ALL if folds["task_fold"][t.task_id] == "B")
+    r = _sweep(work, "C", f"{xa},{ya},{xb}", 2)
+    m = _sweep(work, "M", f"{xa},{xb}", 1, "--backend", "mute")
+    assert r.returncode == 0 and m.returncode == 0, (r.stderr + m.stderr)[-800:]
+    cell = work / "C" / "full"
+    for f in (work / "M" / "full").glob("*.jsonl"):
+        shutil.copy(f, cell / f.name.replace("__r0", "__r2"))
+    g = _script("train_grpo")
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out):
+        g.main(["tasks", "--folds", str(fp), "--collect", str(cell), "--out-dir",
+                str(work / "stats"), "--min-tasks", "1"])
+    picked = {f: json.loads((work / "stats" / f"tasks-{f}.json").read_text())["tasks"]
+              for f in "AB"}
+    check("GRPO trains each fold on its tasks the collection failed at least once, and on "
+          "nothing else -- never the newer tasks it is judged on",
+          picked == {"A": [xa], "B": [xb]}, (picked, out.getvalue()))
+    try:
+        with contextlib.redirect_stdout(io.StringIO()):
+            g.main(["tasks", "--folds", str(fp), "--collect", str(cell), "--out-dir",
+                    str(work / "stats2"), "--min-tasks", "2"])
+        few = ""
+    except SystemExit as e:
+        few = str(e)
+    check("…and too few to say anything is refused before a GPU hour is spent, with no "
+          "task list left behind for the next run to go ahead on",
+          "fewer than 2 tasks" in few and not (work / "stats2").exists(), few)
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out):
+        g.main(["collect", "--adapter", "pasar-rft2-A", "--tasks-file",
+                str(work / "stats" / "tasks-A.json"), "--run-id", "P2-grpo-i1-collect-A",
+                "--dry-run"])
+    want = os.environ.get("PASAR_CUSTOMER") or "2"
+    c = out.getvalue()
+    check("its rollouts: the served adapter, its tasks, 8 a task at temperature 1, "
+          "conversations saved, the round's customer, resumable",
+          "--model Qwen/Qwen3.8-27B:pasar-rft2-A" in c and f"--suite all --tasks {xa} " in c
+          and "-k 8 --temperature 1.0" in c and "--save-messages" in c
+          and f"--customer {want}" in c and "--resume" in c
+          and "--run-id P2-grpo-i1-collect-A" in c and '"enable_thinking": false' in c, c)
+    check("…from the full softmax: every sampling parameter the server would otherwise take "
+          "from the model's generation config, set to its neutral value",
+          all(x in c for x in ('"top_p": 1.0', '"top_k": -1', '"min_p": 0.0',
+                                '"repetition_penalty": 1.0', '"presence_penalty": 0.0')), c)
+
+    # The newer tasks' own split, and the evaluation it routes.
+    sp = _script_module("pasarbench.rl.split")
+    e2 = work / "folds-e2.json"
+    with contextlib.redirect_stdout(io.StringIO()):
+        sp.main(["--suite", "edition2", "--out", str(e2)])
+    f2 = json.loads(e2.read_text())
+    newer = list(gen(edition=2)[0])
+    fam = {}
+    for t in newer:
+        fam.setdefault(t.task_id.split(".")[0], set()).add(f2["task_fold"][t.task_id])
+    check("the 62 newer tasks have a split of their own, dealt as the main one: whole "
+          "families, every trap in both halves",
+          len(f2["task_fold"]) == 62 and all(len(v) == 1 for v in fam.values())
+          and all({f2["task_fold"][t.task_id] for t in newer if t.trap == trap} == {"A", "B"}
+                  for trap in {t.trap for t in newer}), f2.get("split_digest"))
+    route = fold_router(SimpleNamespace(model="base", folds=str(e2), suite="edition2",
+                                        fold_models="A=grpo-A,B=grpo-B"))
+    check("…which shares them out between the two adapters, neither of which trained on "
+          "any of them", sorted({route(t) for t in newer}) == ["grpo-A", "grpo-B"]
+          and all(route(t) != f"grpo-{f2['task_fold'][t.task_id]}" for t in newer))
+    try:
+        fold_router(SimpleNamespace(model="base", folds=str(e2), suite="all",
+                                    fold_models="A=grpo-A,B=grpo-B"))
+        wrong = ""
+    except SystemExit as e:
+        wrong = str(e)
+    check("…and the main suite is refused against it, as any split that does not describe "
+          "the tasks run", "does not describe these tasks" in wrong, wrong)
+    tr = _script("train_rft")
+
+    def cmd(argv):
+        sys.argv = ["train_rft.py", *argv, "--dry-run"]
+        o = io.StringIO()
+        with contextlib.redirect_stdout(o):
+            tr.main()
+        return o.getvalue()
+    ev = cmd(["eval", "--suite", "edition2", "--adapter-prefix", "pasar-grpo2-i1-",
+              "--run-id", "P2-grpo-i1-e2"])
+    check("`eval --suite edition2` runs the adapters on the newer tasks by their split",
+          "--suite edition2" in ev and "--folds data/splits/folds-e2.json" in ev
+          and "A=Qwen/Qwen3.8-27B:pasar-grpo2-i1-A,B=Qwen/Qwen3.8-27B:pasar-grpo2-i1-B" in ev
+          and "--temperature 0.0" in ev, ev)
+
+    # The servers and the stage.
+    env = {k: v for k, v in os.environ.items()
+           if not k.startswith("PASAR_") and k not in ("SIM_MODEL", "AGENT_MODEL", "SHARE_GPU",
+                                                       "SGLANG_ARGS", "RFT_NAME", "LORA")}
+    (work / "checkpoints" / "rft2-A").mkdir(parents=True)
+    (work / "checkpoints" / "rft2-A" / "adapter_config.json").write_text("{}")
+
+    def serve(mode, **extra):
+        r = subprocess.run(["bash", str(root / "scripts" / "serve_sglang.sh"), mode],
+                           capture_output=True, text=True, cwd=work,
+                           env={**env, "DRY_RUN": "1", **extra})
+        return r.stdout if r.returncode == 0 else f"exit {r.returncode}: {r.stderr}"
+    one = serve("lora", LORA="checkpoints/rft2-A")
+    check("one adapter is served under the name its rollouts ask for",
+          "--enable-lora --max-loras-per-batch 1 --lora-paths pasar-rft2-A=checkpoints/rft2-A"
+          in one and "--host 127.0.0.1" in one, one)
+    check("…and nothing is served without one", serve("lora").startswith("exit 1"))
+    pipe = (root / "scripts" / "gpu_pipeline.sh").read_text()
+    stage = pipe[pipe.index("\n  grpo)"):pipe.index("\n  settings)")]
+    check("each iteration serves the adapter it starts from, rolls it out and builds from "
+          "the same name, then updates from that adapter",
+          'name="pasar-$(basename "$prev")"' in stage and 'export LORA="$prev"' in stage
+          and "serve lora" in stage and '--adapter "$name"' in stage
+          and '--served-model "$AGENT_MODEL:$name"' in stage
+          and '--run-id "$P-grpo-i$i-collect-$F"' in stage
+          and '--run "traces/$P-grpo-i$i-collect-$F/full"' in stage
+          and 'train_rft.py train --objective grpo --init "$prev"' in stage
+          and '--epochs 1 --lr "$GRPO_LR"' in stage and 'prev="$out"' in stage
+          and 'serve_sglang.sh" 2>/dev/null' not in stage
+          and 'pasar-$(basename "$LORA")' in (root / "scripts" / "serve_sglang.sh").read_text())
+    check("…the update runs with the servers stopped, and a build cut short is built again",
+          stage.index("--stats \"$st\"") < stage.index("          stop\n")
+          < stage.index("train_rft.py train --objective grpo")
+          and 'if [ ! -f "$st" ]' in stage)
+    check("then the last iteration's adapters on what none trained on: the held-out fold, "
+          "and the newer tasks beside the RFT adapters and the base model, compared in pairs",
+          'export RFT_NAME="$G-i$N"' in stage
+          and '--adapter-prefix "pasar-$G-i$N-" --run-id "$P-grpo-i$N"' in stage
+          and '--suite edition2 --adapter-prefix "pasar-$G-i$N-"' in stage
+          and '--run-id "$P-rft-e2"' in stage and "rl.split --suite edition2" in stage
+          and 'compare_cells.py "traces/$P-rft/full" "traces/$P-grpo-i$N/full"' in stage
+          and 'compare_cells.py "traces/$P-base-e2/full" "traces/$P-rft-e2/full"' in stage
+          and 'compare_cells.py "traces/$P-rft-e2/full" "traces/$P-grpo-i$N-e2/full"' in stage)
+
+    # `finished`: the episodes of a cell that ran to the end -- not one a server
+    # error ended (the sweep runs it again), nor one cut off mid-line.
+    fn = pipe[pipe.index("finished() {"):pipe.index("\n}\n", pipe.index("finished() {")) + 3]
+    cell_f = work / "fin"
+    cell_f.mkdir()
+    (cell_f / "a.jsonl").write_text('{"type": "header"}\n{"type": "footer", '
+                                    '"stop_reason": "done"}\n')
+    (cell_f / "b.jsonl").write_text('{"type": "header"}\n{"type": "footer", '
+                                    '"stop_reason": "backend_error"}\n')
+    (cell_f / "c.jsonl").write_text('{"type": "header"}\n{"type": "foo')
+    (cell_f / "d.jsonl").write_text("")
+    r = subprocess.run(["bash", "-c", f'PY="{sys.executable}"\n{fn}\nfinished "{cell_f}"; '
+                        f'finished "{work / "none"}"'], capture_output=True, text=True)
+    check("a run counts as finished episode by episode, not counting one a server error "
+          "ended or one cut off mid-line", r.stdout.split() == ["1", "0"], r.stdout + r.stderr)
+    for f in ("gpu_pipeline.sh", "gpu_plan.py"):
+        (work / "scripts").mkdir(exist_ok=True)
+        shutil.copy(root / "scripts" / f, work / "scripts" / f)
+    base = {**env, "PYTHON": sys.executable, "PASAR_GPU_INFO": "NVIDIA B200,183359,182800",
+            "HF_HOME": str(work / "no-hf-cache")}
+
+    def grpo(**extra):
+        r = subprocess.run(["bash", "scripts/gpu_pipeline.sh", "grpo"], cwd=work,
+                           capture_output=True, text=True, env={**base, **extra})
+        return r.returncode, r.stdout + r.stderr
+    code, out1 = grpo()
+    check("the stage is round 2's: without PASAR_ROUND=2 it says so and stops",
+          code != 0 and "PASAR_ROUND=2" in out1, out1)
+    code, out2 = grpo(PASAR_ROUND="2")
+    check("…and it needs both of round 2's adapters", code != 0
+          and "no checkpoints/rft2-B" in out2, out2)
+    (work / "checkpoints" / "rft2-B").mkdir(parents=True)
+    (work / "checkpoints" / "rft2-B" / "adapter_config.json").write_text("{}")
+    code, out3 = grpo(PASAR_ROUND="2")
+    check("…and round 2's collection, evaluation and base run on the newer tasks",
+          code != 0 and "no traces/P2-collect/full" in out3, out3)
+    for d in ("P2-collect", "P2-rft", "P2-base-e2"):
+        (work / "traces" / d / "full").mkdir(parents=True)
+    (work / "data").mkdir()
+    settings = work / "data" / "run2_settings.env"
+    settings.write_text("PASAR_K=5\nPASAR_COLLECT_K=8\nPASAR_EPOCHS=2\nPASAR_TRAIN_MAX_LEN=16384\n"
+                        "PASAR_CUSTOMER=2\nPASAR_PER_TRAP=20\n")
+    code, out4 = grpo(PASAR_ROUND="2")
+    check("its first run records the rollouts a task with the round's settings",
+          "PASAR_GRPO_K=8" in settings.read_text(), (settings.read_text(), out4[-300:]))
+    code, out5 = grpo(PASAR_ROUND="2", PASAR_GRPO_K="6")
+    check("…and a later run with another number is refused", code != 0
+          and "GRPO's first iteration ran with 8" in out5, out5)
+    sets = subprocess.run(["bash", "scripts/gpu_pipeline.sh", "settings"], cwd=work,
+                          capture_output=True, text=True,
+                          env={**base, "PASAR_ROUND": "2", "PASAR_GRPO_ITERS": "2"}).stdout
+    check("`settings` shows GRPO's knobs for round 2",
+          "grpo: PASAR_GRPO_ITERS=2 PASAR_GRPO_K=8 PASAR_GRPO_LR=2e-5" in sets, sets)
+    modal_src = (root / "scripts" / "modal_pipeline.py").read_text()
+    passed_on = modal_src.split("PASSED_ON = (")[1].split(")")[0]
+    nb = (root / "scripts" / "pasar_notebook.py").read_text()
+    check("a Modal job and a notebook run the stage, as round 2's only, with its knobs",
+          all(f'"{k}"' in passed_on for k in ("PASAR_GRPO_ITERS", "PASAR_GRPO_K",
+                                               "PASAR_GRPO_LR"))
+          and '"grpo")' in modal_src and "PASAR_ROUND=2 modal run" in modal_src
+          and 'STAGES = ("smoke", "stage1", "stage2", "grpo")' in nb
+          and "pn.run('grpo', round=2)" in nb)
+    results = re.search(r"RESULTS = \[(.*?)\]", modal_src, re.S).group(1)
+    check("`pull` brings back GRPO's stats and evaluations, and not its rollouts",
+          all(x in results for x in ('"data/grpo2/stats"', '"traces/P2-rft-e2"',
+                                      '"traces/P2-grpo-i?"', '"traces/P2-grpo-i?-e2"'))
+          and not any("collect" in x for x in re.findall(r'"([^"]+)"', results)))
+
+
+def _script_module(name):
+    import importlib
+    return importlib.import_module(name)
 
 
 def test_gpu_plan():
@@ -1390,6 +1913,13 @@ def test_notebook_helper():
     for i in range(3):
         (run_dir / f"T{i}__r0.jsonl").write_text('{"type": "header"}\n{"type": "footer"}\n')
     (run_dir / "T9__r0.jsonl").write_text('{"type": "header"}\n')
+    for rel in ("traces/P2-grpo-i1/full", "traces/P2-grpo-i1-collect-A/full",
+                "data/grpo2/stats", "data/grpo2/examples"):
+        (work / rel).mkdir(parents=True)
+    for rel in ("traces/P2-grpo-i1/full/T0__r0.jsonl", "traces/P2-grpo-i1-collect-A/full/T0__r0.jsonl"):
+        (work / rel).write_text('{"type": "header"}\n{"type": "footer"}\n')
+    (work / "data/grpo2/stats/i1-A.stats.json").write_text("{}")
+    (work / "data/grpo2/examples/i1-A.jsonl").write_text("{}\n")
     (work / "logs").mkdir()
     (work / "logs" / "stage1.log").write_text("baseline 3/1075\n")
     saved = {k: os.environ.get(k) for k in ("PASAR_NB_MNT", "PASAR_NB_LINK", "PASAR_NB_VENV",
@@ -1416,6 +1946,19 @@ def test_notebook_helper():
         check("pack archives the results under pasarbench/, ready to extract over the repo",
               "pasarbench/traces/P-base/full/T0__r0.jsonl" in names
               and "pasarbench/logs/stage1.log" in names, names[:5])
+        check("…GRPO's evaluations and stats among them, by pattern, and not its rollouts or "
+              "examples (several GB)", "pasarbench/traces/P2-grpo-i1/full/T0__r0.jsonl" in names
+              and "pasarbench/data/grpo2/stats/i1-A.stats.json" in names
+              and not any("collect" in n or "examples" in n for n in names), names)
+        check("status counts GRPO's evaluations and rollouts too",
+              "traces/P2-grpo-i1: 1 finished of ~1075" in out.getvalue()
+              and "traces/P2-grpo-i1-collect-A: 1 finished" in out.getvalue(), out.getvalue())
+        try:
+            pn.run("grpo")
+            r1 = ""
+        except SystemExit as e:
+            r1 = str(e)
+        check("GRPO is round 2's, in a notebook too", "round=2" in r1, r1)
         try:
             pn.run("smoke")
             refused = ""
@@ -1757,10 +2300,13 @@ def main() -> int:
     test_check_command()
     test_served_models()
     test_serve_scripts()
+    test_grpo_scripts()
     test_gpu_plan()
     test_markup_audit()
     test_wrappers()
     test_train_smoke()
+    test_grpo_build()
+    test_grpo_train()
     test_qwen38_turns()
     test_qwen35_lora()
     test_modal_runner()
