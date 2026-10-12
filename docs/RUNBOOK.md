@@ -2767,6 +2767,63 @@ any of its results were read):
   voucher is what P6.3 and P10 ask for — listed, not counted against a model,
   and each comparison's line read that way printed beside its result.
 
+**What it found** (2026-10-12, `P2-base-e3`, `P2-rft-e3`, `P2-grpo-i1-e3`, 180
+episodes each under customer 3, in 19 minutes of one B200; RESULTS §6):
+
+- **Room: yes.** The base model passes 0.861 of the cases (pass^k 0.806), below
+  0.95 and below its 0.923 on the 62 newer tasks.
+- **RFT on combined cases: INCONCLUSIVE.** 0.861 → 0.939, +0.078, 6 cases
+  better and 3 worse, p = 0.51.
+- **GRPO: INCONCLUSIVE**, beside its own result. 0.939 → 0.889, −0.050, 2 cases
+  better and 5 worse, p = 0.45.
+- **The customer:** her digits came with her change of mind in every
+  changed-request conversation, and no model failed that case. The audit first
+  listed four Malay conversations (RFT's and GRPO's, two each) as digits
+  without the change; read, she had changed it there — "8318. Tapi jap, saya
+  rasa saya tak nak cancel lah" — in words the Malay patterns did not have
+  (added in v54).
+- **The voucher choice:** offered the voucher on the two orders, she never
+  declined it, in any of the 195 conversations.
+
+**Where it is hard: one case.** Of the base model's 25 failures, RFT's 11 and
+GRPO's 20, all but one are the two orders — 41, 54 and 45 of 65 passed; the
+refunded livestream order failed once (base, Vietnamese: no escalation) and the
+changed request never. The two orders fail one way. The cushion covers are "a
+different colour from the photos", and the failing agents read it as P3.3's case
+— a discrepancy claim on an item worth SGD 200 or more, photos before a return
+("Since it's a discrepancy on an item over SGD 200 equivalent…"). Two facts say
+otherwise. The covers are worth about SGD 58 in every market (SGD 59, MYR 190,
+IDR 700,000, THB 1,500, PHP 2,500, VND 1,100,000), so P3.3 does not apply; and
+they were delivered on 20 October, the system prompt says it is 11 November, and
+the window closed on the 3rd, so P3.6 and P6 decide it — no return, a voucher.
+In the failures that turn on it — all 24 of the base model's, 9 of RFT's 11 and
+17 of GRPO's 20 — the agent cancelled the water bottle, asked for photos of the
+covers and issued no voucher, and 17 of the base model's told her the window was
+still open — "You're well within the 14-day window (delivered 20 Oct)"; "the
+return window closes 3 November 2026, so try to get the photos in before then".
+She promised the photos for later and, as customer 3 does, left. Besides that:
+RFT twice issued the voucher in SGD to a Thai customer (the check wants her
+currency, as the suite's voucher trap does), and GRPO three times tried a refund
+of the water bottle its cancellation had already refunded (Vietnamese; refused).
+
+The currency goes with it: in Singapore, where the price is in SGD, no model
+failed the case (15 of 15 each); in Indonesia, at IDR 700,000, the base model
+failed all 10 and GRPO 9. And one call answers both questions: `check_return_eligibility`
+returns the days since delivery, whether that is within the window, the item's
+SGD equivalent and whether a defect claim needs photos. It was called in 25 of
+the base model's 65 two-orders conversations, 45 of RFT's and 24 of GRPO's —
+and in none, two and two of their failures. A lead, not a result: RFT's gain on
+the case and GRPO's loss go with it, and neither comparison resolves.
+
+**What it means.** The hard edition has room where the suite has little, and it
+is hard where it was built to be: the rule the customer's story points at
+(photos for a discrepancy) is not the one that decides it (the window). A model
+that follows her story without the one call that reads the order fails — and
+fails most where the price is in a currency whose numbers run large. Customer 3
+leaves once she has promised the photos, so the case scores the agent's first
+answer about the late order; that answer had already promised her a return the
+policy forbids.
+
 ---
 
 # Running on a shared cluster
