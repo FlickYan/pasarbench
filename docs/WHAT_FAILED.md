@@ -1670,10 +1670,13 @@ audit (`inspect_trace.py --leaks-only`) counts, by language, the conversations
 in which a customer told she has no photos says she sent them, with the
 failures after and without that line (`simqa.photo_claim`), and
 `compare_cells.py` and RESULTS.md print the same beside every comparison that
-has the trap. The customer herself is not changed yet: a customer 3 who leaves
-once she has promised what she cannot do in the conversation is a new customer,
-and every comparison GRPO is part of needs round 2's. It belongs to the next
-edition, with the audit to check it.
+has the trap. And v47 builds the customer who does not do it: customer 3 leaves
+once she has promised what she cannot do in the conversation, and a turn that
+claims photos her persona forbids is written again, then ends the conversation
+(`simulator.ENDING`, `LLMUser.respond`; the trace records each time). She is
+`--customer 3`, not the default: every comparison GRPO is part of needs round
+2's customer. A half-hour run on round 2's machine checks her before the next
+edition uses her (RUNBOOK, customer 3).
 
 **Lesson.** A simulated customer's rules are shared by every trap: a rule
 written for one is a rule for all of them. After any change to the customer,
