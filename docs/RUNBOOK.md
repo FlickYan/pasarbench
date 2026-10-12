@@ -1935,10 +1935,43 @@ Qwen3.8-Flash, is well under $0.30 a model.
 | GLM-5.3-FlashX (the same, faster) | 0.37 / 0.075 / 1.25 | $1.1–2.2 | $3.2–4.3 |
 | MiMo-V2.6-Flash, reasoning off | 0.14 / ~0.003 / 0.28 | $0.16 | $1.1 |
 | Grok 4.3, reasoning none | 1.25 / 0.20 / 2.50 | $2.7 | $10 |
+| DeepSeek-V4.1-Flash (`deepseek-flash`), thinking off | 0.30 / 0.006 / 1.20 | $0.43 | $2.5 |
+| DeepSeek-V4-Pro-0813 (`deepseek-v4-pro`), thinking off | 1.32 / 0.044 / 3.96 | $1.8 | $10.8 |
 
-GLM-4.7-Flash is free, at the free tier's rate limits. xAI's fast models were
-retired on 2026-05-15, and Grok 4.7 Fast is not on its public API: Grok 4.3 is
-its cheapest general model, and the one xAI names in their place.
+DeepSeek's prices are its peak ones, 01:00–04:00 and 06:00–10:00 UTC on
+weekdays; at any other time they are half. GLM-4.7-Flash is free, at the free
+tier's rate limits. xAI's fast models were retired on 2026-05-15, and Grok 4.7
+Fast is not on its public API: Grok 4.3 is its cheapest general model, and the
+one xAI names in their place.
+
+**The agents, chosen 2026-10-13 before any ran.** Each lab's newest model of its
+fast tier, and the baseline every earlier run used; read that day on Artificial
+Analysis: its Intelligence Index, and where it has them its two tests nearest
+this one — an agent with tools and a simulated customer, τ²-Bench Telecom and
+τ³-Banking, both retired there before the newest models came, so they have
+none. Each figure is for the setting it was measured with, which is not always
+the one these runs use:
+
+| run | model | its settings here | Artificial Analysis, as it measured | why this one |
+|---|---|---|---|---|
+| `V-dsk` | `deepseek-v4-pro` (DeepSeek-V4-Pro-0813) | thinking off | 20.4, thinking off | the agent of every earlier run |
+| `V-dsk-flash` | `deepseek-flash` (DeepSeek-V4.1-Flash) | thinking off | 24.7, thinking off | DeepSeek's fast tier: above the baseline, at twice its speed and a third of its price |
+| `V-mimo` | `mimo-v2.6-flash` | thinking off | 37.9, reasoning on | Xiaomi's newest Flash; its Pro (46.3, as fast, three times the price) is the pro tier |
+| `V-grok` | `grok-4.3` | `reasoning_effort: none` | 14.0, reasoning off; τ²-Telecom 0.66 | the model xAI names in place of its retired fast ones; Grok 4.20 without reasoning scores the same (14.6) |
+| `V-glm` | `glm-5.3-flash` | `reasoning_effort: low`, 4,096 tokens a step | 41.8, at Z.ai's default effort (max); τ³-Banking 0.47 | Z.ai's newest fast model, within 3 points of its flagship; it always reasons |
+
+MiMo and GLM were measured with more reasoning than they have here: expect them
+lower. Five agents, ten pairs for the separation reading below; each run's
+reading pairs it with the agents finished before it, and the rest are paired
+when the five are read.
+
+```bash
+python scripts/add_model.py --provider deepseek --model deepseek-v4-pro --name dsk
+python scripts/add_model.py --provider deepseek --model deepseek-flash --name dsk-flash
+python scripts/add_model.py --provider mimo --model mimo-v2.6-flash --name mimo
+python scripts/add_model.py --provider xai --model grok-4.3 --name grok
+python scripts/add_model.py --provider zai --model glm-5.3-flash --name glm
+```
 
 **The reading, fixed before the run** (2026-10-12, before any agent ran a case):
 
