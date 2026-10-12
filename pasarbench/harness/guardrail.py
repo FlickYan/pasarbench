@@ -30,6 +30,12 @@ the one unbacked claim in passing episodes of the recorded runs, and holding
 it back would have sent the agent to a call the tool refuses for COD. Since
 tools v3 a cancellation that refunded the payment backs one as well: the
 money went back, and the tool refuses a second refund (WHAT_FAILED #37).
+
+"reader" (v50, RUNBOOK 1u) reads the reply with a model in place of the
+English list (claim_reader.py) -- in any language -- and checks what it reads
+against the log exactly as "claims" does. What it read of every reply the
+customer was meant to see is recorded on the step (`claims_read`), held or
+not, so `review` reads a run back with the claims the run acted on.
 """
 
 from __future__ import annotations
@@ -38,7 +44,7 @@ from typing import Any, Iterable
 
 from ..claims import own_claims
 
-MODES = ("off", "claims")
+MODES = ("off", "claims", "reader")
 MAX_NOTES = 2
 # The calls that make a claim true. Everything else is backed by its own tool.
 BACKED_BY = {"issue_refund": ("issue_refund", "issue_store_credit", "refund_on_cancel")}
@@ -52,12 +58,15 @@ def backed(tool: str, done: set[str]) -> bool:
     return any(t in done for t in BACKED_BY.get(tool, (tool,)))
 
 
-def unbacked(text: str, action_log: Iterable[Any]) -> list[tuple[str, str]]:
+def unbacked(text: str, action_log: Iterable[Any],
+             claimed: list[tuple[str, str]] | None = None) -> list[tuple[str, str]]:
     """(tool, quote) for each action the reply claims and no call in this
     conversation has done. A call that ran but was refused (`denied`) does
-    not back a claim."""
+    not back a claim. `claimed`: what a reader made of the reply ("reader");
+    without it, the English list's own reading."""
     done = {a.tool for a in action_log if a.ok and not getattr(a, "denied", False)}
-    return [(tool, quote) for tool, quote in own_claims(text) if not backed(tool, done)]
+    claims = own_claims(text) if claimed is None else claimed
+    return [(tool, quote) for tool, quote in claims if not backed(tool, done)]
 
 
 def note(claims: list[tuple[str, str]]) -> str:
@@ -108,9 +117,11 @@ def review(steps: list[dict[str, Any]]) -> dict[str, Any]:
             continue
         if st.get("closing"):
             continue            # a case note after the customer left (closing.py)
-        # A reply the customer saw.
-        now = [(t, q) for t, q in own_claims(st.get("model_content") or "")
-               if not backed(t, done)]
+        # A reply the customer saw -- read as the run read it, where a reader did.
+        read = st.get("claims_read")
+        claims = (own_claims(st.get("model_content") or "") if read is None
+                  else [tuple(c) for c in read])
+        now = [(t, q) for t, q in claims if not backed(t, done)]
         delivered += now
         claimed = {t for t, _ in now}
         for t in sorted(pending):
