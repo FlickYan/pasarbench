@@ -1,6 +1,6 @@
 # What failed
 
-Forty-six real defects found while building this. The first fifteen are in
+Forty-seven real defects found while building this. The first fifteen are in
 the order of how much damage they would have done; the rest are in the order
 they were found. Every one is reproducible from the git history.
 
@@ -1834,6 +1834,46 @@ her pick.
 **Lesson.** A check is right for the customer it was written for. Where the
 policy allows two answers, a simulated customer who may choose between them
 makes the verdict hers: write her choice into the persona, or score both roads.
+
+## 47. The agent's key was the first on a list, not its provider's
+
+**What happened.** Before adding models from other labs to the hard edition,
+reading how the sweep finds an API key: the agent's was the first variable set
+of a fixed list — `PASARBENCH_API_KEY`, `DEEPSEEK_API_KEY`, `OPENAI_API_KEY`,
+`DASHSCOPE_API_KEY`, … — whatever endpoint `--base-url` named. With `.env`
+loaded, an agent pointed at OpenAI or Google would have been sent the DeepSeek
+key: a credential disclosure to another company, before the 401. The customer's
+key and the claim reader's came the same way from a second list, as did the
+judges'; the context ablation's summarizer took the agent's key whatever its
+endpoint; and the HTTP backend fell back to `OPENAI_API_KEY` for any endpoint.
+Nothing was sent: every run so far put the agent on DeepSeek and the customer
+on DashScope, the first of each list, no summarize cell ever ran, and the GPU
+runs talk to local servers, which get no key.
+
+**Why.** The lists were written for one agent provider and one customer
+provider, and the guard that existed — never fall back to the agent's key for
+the customer — covered the case that had happened, a customer on another
+provider than the agent. A second agent provider makes the list's order a
+choice of whose key to send.
+
+**Fix.** v55: a key is found by the endpoint it goes to (`sweep.key_for`):
+`PASARBENCH_API_KEY` or `PASARBENCH_SIM_API_KEY`, the run's own, when set; else
+the variable of the provider that endpoint is on (`PROVIDER_KEYS`: DeepSeek's
+for api.deepseek.com, DashScope's for either of its regions, OpenAI's for
+api.openai.com, …); never another provider's. An endpoint no provider is known
+by needs the run's own key; a host that only ends like a provider's gets none.
+The sweep, the summarizer, the language swap, the claim reader's check and the
+judges use it, and the backend sends `OPENAI_API_KEY` to OpenAI alone. `scripts/add_model.py`
+adds a model with a key typed at a hidden prompt, passed to its runs in their
+environment with every other `*_API_KEY` taken out, and refused if it is the
+value of another provider's variable. v56: a provider's key may be set under
+any of the names it goes by (`ZAI_API_KEY` or `GLM_API_KEY` for Z.ai, …), each
+of them that provider's alone, and `add_model.py --check` says which keys work
+before any run, and names a key set under a name nothing reads.
+
+**Lesson.** A secret is addressed by where it goes, not by the order it was
+found in. A fallback list is safe only while there is one destination per
+entry; check it again the day a second one appears.
 
 ---
 
