@@ -38,7 +38,7 @@ from .harness.closing import GUARD_VERSION
 from .harness.context import BASE_STRATEGIES, make_strategy, note_discipline
 from .harness.exposure import build_exposure
 from .harness.loop import run_episode
-from .harness.simulator import CUSTOMER, LLMUser, SilentUser
+from .harness.simulator import CUSTOMER, ENDING, LLMUser, SilentUser
 from .harness.trace import TraceWriter, summarise_run
 from .harness.types import Budget
 from .generate import generate, stratified_sample
@@ -577,11 +577,14 @@ def main() -> None:
     ap.add_argument("--languages", default="", help="e.g. en,id,th")
     ap.add_argument("--tasks", default="", help="comma-separated ids, blank = all")
     ap.add_argument("--traps", default="", help="comma-separated traps, blank = all")
-    ap.add_argument("--customer", type=int, default=CUSTOMER, choices=[1, 2],
+    ap.add_argument("--customer", type=int, default=CUSTOMER, choices=sorted(ENDING),
                     help="the simulated customer's rules: 2 (the default since v31) "
                          "waits for what she agreed to be done before she ends the "
                          "conversation; 1 could end it on her yes, before the agent "
-                         "acted (WHAT_FAILED #38). Recorded in the simulator's name.")
+                         "acted (WHAT_FAILED #38); 3 is 2 that also leaves after a "
+                         "promise she cannot keep in the conversation, and never sends "
+                         "photos her persona says she lacks (#43). Recorded in the "
+                         "simulator's name.")
     ap.add_argument("--max-steps", type=int, default=30)
     ap.add_argument("--token-budget", type=int, default=Budget().max_tokens,
                     help="per-EPISODE token cap; an episode that hits it fails. "
