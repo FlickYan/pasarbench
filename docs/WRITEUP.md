@@ -788,12 +788,14 @@ agent and simulator at 32 tasks. It's why every comparison in the report is a
 paired test, and why several verdicts say INCONCLUSIVE.
 
 **"So did RFT work?"** Not measurably, once the checker was fixed: +0.3 points,
-p = 0.84. What it did do is move behaviour between traps — better at
-escalating duplicate refunds, worse at out-of-window disputes, where it copied
-the livestream trap's answer. The next run would build its data with the
-corrected checks and balance it by trap, and I'd read the per-trap table as the
-result. GRPO isn't worth it yet: at 0.98 the suite is nearly saturated for this
-model, so it needs harder traps first.
+p = 0.84. What it did do is move behaviour between traps — better at escalating
+duplicate refunds, worse at out-of-window disputes, where it copied the
+livestream trap's answer. The next run would build its data with the corrected
+checks and balance it by trap, and I'd read the per-trap table as the result.
+GRPO is built but can't show much here: at 0.98 the held-out tasks are nearly
+saturated for this model. So it trains where the model fails at temperature 1
+and is judged on the 62 newer tasks no model trained on — and the harder
+edition would give it more room.
 
 **"Why didn't you re-run the evaluation after fixing the checker?"** I didn't
 need to. The environment is deterministic, so replaying each episode's tool
@@ -811,13 +813,13 @@ models would bunch at the top; the next edition combines traps in one case — a
 duplicate refund on a cash-on-delivery livestream order, two orders in one
 chat, a customer who changes her request. Then run models from several labs on
 it, against one customer. The second fine-tune, its data balanced by trap, is
-ready to run (RUNBOOK phase 4, round 2), and GRPO goes where the model fails
-some of the time. Along the way: the run the language finding needs — hold a
-conversation fixed at the moment the agent reads the refund and change only its
-language (RUNBOOK 1r); room for the closing phase in the token budget (27 of
-456 cut short in the last run, RUNBOOK 1q); and a model that reads what the
-customer was told in place of the guardrail's phrase list, with the check
-against the tool log kept mechanical. Then serving cost.
+running (RUNBOOK phase 4, round 2), and GRPO follows it (v45). Along the way:
+the run the language finding needs — hold a conversation fixed at the moment
+the agent reads the refund and change only its language (RUNBOOK 1r); room for
+the closing phase in the token budget (27 of 456 cut short in the last run,
+RUNBOOK 1q); and a model that reads what the customer was told in place of the
+guardrail's phrase list, with the check against the tool log kept mechanical.
+Then serving cost.
 
 ### One thing not to do
 
