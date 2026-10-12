@@ -1872,6 +1872,15 @@ that difference stated.
   failure where her digits came without the change is listed and not counted
   against the agent, and if there are more than two such episodes for an agent,
   that case's number for that agent is the customer's, reported as such.
+- **The voucher choice** (added 2026-10-12, after GRPO's results and before any
+  agent ran a case; WHAT_FAILED #46). On the two orders, and on their part, an
+  escalation of the out-of-window order after she declined the voucher is what
+  P6.3 and P10 ask for, and the check fails it. `read_failures.py` flags those
+  episodes and `compare_cells.py` counts them; they are listed and not counted
+  against the agent, and `hard_vs_parts.py` prints the paired line read as the
+  policy reads them beside the result — never instead of it. If more than two
+  of an agent's two-orders failures are hers, that case's number for that agent
+  is the customer's, reported as such.
 - **Separation, with two agents or more.** `compare_cells.py` on each pair of
   agents, on the cases and on the parts: the hard edition separates two agents
   the parts do not if their paired comparison resolves on the cases (p < 0.05)
@@ -2517,6 +2526,70 @@ writes in them that RFT never made on those tasks (where another trap's answer
 shows first), then each one's writes, failure lines and conversation. The same
 command on `traces/P2-base/full traces/P2-rft/full` lists round 2's 24.
 
+**What it found** (2026-10-12, one iteration; WHAT_FAILED #46). The headline
+counts were checked against the trace footers by a separate count, the routing
+episode by episode, and today's checks move no verdict in these runs (RESULTS
+§7).
+
+- **The result: INCONCLUSIVE.** On the 62 newer tasks GRPO 0.945 (pass^k 0.903)
+  against RFT 0.919 (0.871): +0.026, 7 tasks better and 4 worse, p = 0.55. Eight
+  of the eleven tasks that moved are the voucher trap's, 5 better and 3 worse,
+  several of them whole (0/5 → 5/5, 5/5 → 2/5). GRPO spends 2,780 more tokens an
+  episode there (p = 0.03). Per trap: voucher 0.72 → 0.82 (the base model's
+  0.82), duplicate refund 0.92 → 0.94, identity 0.97 → 1.00, out-of-window
+  dispute 1.00 → 0.98, customs 1.00 in all three.
+- **RFT on unseen tasks: INCONCLUSIVE.** −0.003, 6 tasks better and 6 worse,
+  p = 1.00: round 2's fine-tune neither carries over to the newer tasks of the
+  traps it trained on nor costs anything there.
+- **The held-out fold: INCONCLUSIVE, as expected.** RFT 0.954 (0.907), GRPO
+  0.951 (0.898): −0.004, 15 tasks better and 14 worse, p = 1.00; tokens level.
+  GRPO's 26 failures on tasks RFT always passed, read one by one:
+  - *Perishable, 5 (adapter A, English).* "Mouldy dates are a genuine safety
+    issue": after a policy search for a safety incident it escalated as
+    `counterfeit_or_safety`, where P4.5 refunds a non-returnable item with a
+    quality or safety problem without a return. RFT refunded every time. One
+    answer in a place it does not belong — P10's safety escalation — and new.
+    Eight of adapter A's 15 learning tasks were the duplicate refund, whose
+    answer is to escalate a refund request: a lead for why, not a finding.
+  - *Cash on delivery in Thai, 5 (adapter B).* Both adapters read "ของที่ได้รับ
+    เสียหาย" (the item arrived damaged) as a lost parcel, and answered in
+    English. RFT asked for the order number alone, and five times she corrected
+    it — "not lost, the thing inside is broken"; GRPO asked for the number and
+    her digits in one message, five times she answered only what was asked,
+    and the lost parcel went unchallenged: store credit, no return.
+  - *The voucher trap, 5.* She was offered the voucher or a human and took the
+    human; P6.3 and P10 ask for that escalation (#46).
+  - *Address change in Thai, 2:* it tried to change a shipped order's address
+    (refused). *Duplicate refund in zh-MY, 2:* it explained the refund, in
+    English, and had not escalated when she let it go — the trap's known
+    failure.
+    One each: a cancellation tried twice on a shipped order, store credit after
+    escalating a customs hold, no escalation after a failed verification, a
+    refund after escalating an out-of-window dispute.
+  - *The photo trap, 3:* her photo claims (#43).
+- **The learning curve: one point a fold.** The RFT adapters at temperature 1 on
+  their own training tasks: 91% (A, 240 rollouts on 30 tasks) and 93% (B, 248 on
+  31); 50% and 61% of the groups had nothing to learn; 912 and 745 turns
+  trained. One iteration draws no curve.
+- **After the fact, beside the result and never instead of it (#46).** 48 of the
+  voucher trap's 55 failures in round 2's seven runs are an escalation after the
+  customer declined the voucher — "I'd rather have a full refund. Please
+  escalate this." — which P6.3 and P10 ask for. Read that way, GRPO against RFT
+  on the newer tasks is +0.000 (3 better, 2 worse), RFT against the base model
+  +0.013 (4 better, 2 worse), and the base model passes 96.1% of the newer tasks:
+  above the 0.95 at which this section holds GRPO. Three of the eight tasks that
+  gave it room were the customer's.
+- **Seen while reading, scored by no check:** on the held-out fold the first
+  reply to a customer writing in Thai or Chinese has no Thai or Chinese in it —
+  it is English — in 111 of the base model's 225 conversations, 140 of RFT's
+  and 125 of GRPO's (a script check; in Vietnamese, none). `language_match` is
+  the judge's criterion; no verdict here reads it.
+
+**Next.** Not a second iteration on these tasks: half their room was the
+customer's, and GRPO's groups score her choice as the agent's. The hard edition
+is the next run with room (below); its two-orders cases hold the same choice,
+and their reading now says so.
+
 ### Customer 3, checked (v47)
 
 Customer 2 sends photos she was told she has none of (WHAT_FAILED #43).
@@ -2588,6 +2661,10 @@ any of its results were read):
   tasks; this one is reported beside it, never instead of it.
 - **The customer.** As in 1s: changed-request failures where her digits came
   without the change are hers, listed and not counted against a model.
+- **The voucher choice** (added 2026-10-12, after GRPO's results and before this
+  run; WHAT_FAILED #46). As in 1s: a two-orders escalation after she declined the
+  voucher is what P6.3 and P10 ask for — listed, not counted against a model,
+  and each comparison's line read that way printed beside its result.
 
 ---
 
