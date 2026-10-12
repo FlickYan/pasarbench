@@ -20,7 +20,7 @@ and then any of:
     pn.run("stage1", round=2)   # round 2: the second fine-tune, files of its own (v44)
     pn.run("grpo", round=2)     # GRPO from round 2's adapters, after its stage 2 (v45)
     pn.run("customer3", round=2)   # customer 3 against customer 2, ~10 min (v47)
-    pn.run("edition3", round=2)    # the hard edition: base, RFT, GRPO, ~1-2 h (v48)
+    pn.run("edition3", round=2)    # the hard edition: base, RFT, GRPO, ~20 min (v48)
     pn.run("grpo-measure", round=2)   # GRPO on its own training tasks, ~25 min (v52)
     pn.status()         # what is running or done (a notebook sees other containers'
                         # writes as of its start: check a job from a new session)
