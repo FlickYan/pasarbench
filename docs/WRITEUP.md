@@ -45,6 +45,8 @@ on 2026-10-02. Post-training, 2026-09-29:
 agent `Qwen/Qwen3.8-27B` (base, and a LoRA fine-tune per fold) served with
 SGLang on one B200, customer `gemma-4-31B-it` (FP8) on the same card, and
 `deepseek-v4-pro` through its API against the same customer as the reference.
+Round 2 and GRPO, 2026-10-11 to 10-12: the same agent, served the same way,
+against the second version of that customer (WHAT_FAILED #38).
 
 This draft is in your voice. Rewrite anything that doesn't sound like you — the
 numbers are the part not to touch.
@@ -469,6 +471,23 @@ base model never asked. Balancing decides which successes spread. It doesn't
 stop them spreading.
 <!-- RUNBOOK phase 4, round 2, "What it found"; WHAT_FAILED #44: compare_cells.py traces/P2-base/full traces/P2-rft/full; T02 photos asked 5/5 RFT, 0/5 base; CHE-MY.zh-MY r1-r4 -->
 
+Then GRPO, from those fine-tunes: the model trained on the difference between
+its passing and failing attempts at the same task, and judged, under a rule
+written before it ran, on 62 newer tasks no model had trained on. +2.6 points
+against the fine-tune it started from, 7 tasks better and 4 worse, p = 0.55:
+inconclusive. Eight of the eleven tasks that moved were one trap's, and reading
+them changed what the number was. Outside the return window the policy offers a
+goodwill voucher; if the customer rejects it and insists on a refund, the case
+goes to a human. The agents offer both at once — "the voucher, or a human agent
+to review a full refund" — and my simulated customer, who wants her money back
+but will take a voucher, often took the human: "I'd rather have a full refund.
+Please escalate this." The agent escalated, as the policy says, and the check,
+which wants a voucher, failed it. Forty-eight of the trap's 55 failures that
+round were this. Read the way the policy reads them, GRPO's gain is zero — and
+the base model passes 96% of the newer tasks, above the 95% at which I had said
+I would hold GRPO back. Half the room I ran it for was the customer's choice.
+<!-- RUNBOOK phase 4, GRPO, "What it found"; WHAT_FAILED #46; RESULTS.md §6: P2-rft-e2 0.919 -> P2-grpo-i1-e2 0.945, 7 better 4 worse, p=0.549; read as P6.3/P10 read them +0.000, 3 better 2 worse; P2-base-e2 0.923 -> 0.961; voucher-trap failures in round 2's seven runs 55, escalations after a declined voucher 48 -->
+
 A verifier is a reward function the moment you train on it, and its quirks
 become the model's habits. The replay that caught this cost seconds. Without
 it, the headline would have been a fine-tune that "improved" and an API model
@@ -512,7 +531,7 @@ doing it twice.
 
 ### What failed
 
-`docs/WHAT_FAILED.md` has 45 entries. Most were found by running experiments
+`docs/WHAT_FAILED.md` has 46 entries. Most were found by running experiments
 and refusing a number that couldn't be right. Four more:
 
 **The ceiling was below the floor.** The oracle arm — by design the best case —
@@ -573,11 +592,12 @@ review implied with no escalation, "your case has been flagged" — and its live
 test is one run of 192 conversations. The Thai and Vietnamese translations are
 not native-reviewed. The fine-tune is one recipe run twice; the second, with
 training data balanced across traps, moved the leak rather than stopping it,
-and its photo-trap numbers are the simulated customer's. Serving cost is built
-but not measured.
+and its photo-trap numbers are the simulated customer's. GRPO ran one
+iteration, judged on tasks whose room was partly the customer's choice. Serving
+cost is built but not measured.
 <!-- RESULTS.md §3 paired table (pairs 13–16); audit_tool_arms.py §3 header; traces/J-preload OOWDE-VN.vi__r2: "Trường hợp của bạn đã được chuyển lên bộ phận xử lý khiếu nại", escalate_to_human never searched for, never called; traces/L2-claims OOWOV-VN__r1, DRE-PH__r1, HPRR-PH__r2 (RUNBOOK 1i, v25) -->
 
-The code, the trace generators, and all 45 failures are in the repo.
+The code, the trace generators, and all 46 failures are in the repo.
 
 ---
 
@@ -635,7 +655,13 @@ One line each, a number, and the mechanism. Pick three.
 > local-language tasks fell below their English twin (p = 0.0001), and the
 > decision came the moment it read the refund.
 
-> **Documented 40 defects**, most caught by refusing implausible results —
+> **Ran GRPO under a reading fixed before it ran, and found its test's room was
+> the simulated customer's**: one iteration on Qwen3.8-27B gained 2.6 points on
+> 62 unseen tasks (p = 0.55); 48 of the moved trap's 55 failures were an
+> escalation the policy asks for and the check failed, and read as the policy
+> reads them the gain was zero.
+
+> **Documented 46 defects**, most caught by refusing implausible results —
 > including a "ceiling" arm that scored below baseline, a judge evaluated
 > without the evidence it was judging, a fine-tune rewarded for a checker's
 > quirk, a guardrail graded by its own detector, a tool that took what its
@@ -833,11 +859,14 @@ duplicate refunds, worse at out-of-window disputes, where it copied the
 livestream trap's answer. So the second run built its data with the corrected
 checks and balanced it by trap, and I read the per-trap table as the result:
 the same null, and the leak moved — the photo trap, newly well represented,
-lent its rule to a cash-on-delivery refund. GRPO is built but can't show much
-here: at 0.96 the held-out tasks are nearly saturated for this model. So it
-trains where the model fails at temperature 1 and is judged on the 62 newer
-tasks no model trained on, where the base model passes 92% — and the harder
-edition would give it more room.
+lent its rule to a cash-on-delivery refund. GRPO couldn't show much on the
+held-out tasks — at 0.96 they are nearly saturated for this model — so it was
+judged on the 62 newer tasks no model trained on, where the base model passed
+92%. One iteration: +2.6 points, p = 0.55, inconclusive. And half of that 8%
+of room was one trap's customer choosing a human over a voucher, an escalation
+the policy asks for and the check failed; read as the policy reads it, the gain
+is zero and the base model passes 96% (WHAT_FAILED #46). The harder edition is
+where GRPO gets real room.
 
 **"Why didn't you re-run the evaluation after fixing the checker?"** I didn't
 need to. The environment is deterministic, so replaying each episode's tool
@@ -858,8 +887,10 @@ each read against the suite's task of the rule it turns on, in the same market
 and language, so "harder" is a paired test and not an impression (RUNBOOK 1s).
 Then run models from several labs on it, against one customer — a customer who
 leaves once she has promised what she can't do in the conversation (WHAT_FAILED
-#43). GRPO is running, from the second fine-tune and without the photo trap
-(RUNBOOK phase 4, GRPO), and the hard edition gives it room too. Along the way,
+#43). GRPO ran one iteration from the second fine-tune: inconclusive, and the
+room it was judged in was partly the voucher trap's customer (RUNBOOK phase 4,
+GRPO; WHAT_FAILED #46) — the hard edition gives it room, with that choice read
+as the policy reads it before the run. Along the way,
 each built and waiting for its run: the run the language finding needs — hold a
 conversation fixed at the moment the agent reads the refund and change only its
 language (v49, RUNBOOK 1t: 96 recorded conversations rebuilt exactly, each run as
