@@ -297,6 +297,13 @@ def same_tasks(eps: list[dict], tasks: dict) -> list[dict]:
     return eps
 
 
+def _tasks() -> dict:
+    """Every task a trace can name: the hand-written ones and both editions."""
+    from pasarbench.generate import generate
+    from pasarbench.tasks import BY_ID
+    return {**BY_ID, **{t.task_id: t for t in generate()[0] + generate(edition=2)[0]}}
+
+
 def leaks(eps: list[dict], pattern_set: str = "current") -> None:
     print("\n" + "=" * 72)
     print("3. DID THE SIMULATOR LEAK FACTS BEFORE BEING ASKED?")
@@ -306,9 +313,7 @@ def leaks(eps: list[dict], pattern_set: str = "current") -> None:
     if pattern_set != "current":
         print(f"  ask-patterns: {pattern_set} (the list before WHAT_FAILED #26)")
     try:
-        from pasarbench.generate import generate
-        from pasarbench.tasks import BY_ID
-        tasks = {**BY_ID, **{t.task_id: t for t in generate()[0] + generate(edition=2)[0]}}
+        tasks = _tasks()
     except Exception as ex:                                  # noqa: BLE001
         print(f"  (could not load tasks: {ex})")
         return
@@ -380,6 +385,54 @@ def leaks(eps: list[dict], pattern_set: str = "current") -> None:
         print("  above 15%: either the benchmark has drifted toward single-turn, or "
               "the detector cannot read the agent's requests. The lines above "
               "decide which.")
+
+
+def photos(eps: list[dict]) -> None:
+    """A customer told she has no photos, who says she sent them. The photo
+    trap's persona forbids it; customer v2, who cannot leave until the agent
+    has done what she needs (#38), does it anyway -- and the trap's verdicts
+    then follow her line, not the agent's policy (WHAT_FAILED #43)."""
+    print("\n" + "=" * 72)
+    print("4. DID A CUSTOMER WITH NO PHOTOS SAY SHE SENT THEM?")
+    print("=" * 72)
+    try:
+        tasks = _tasks()
+    except Exception as ex:                                  # noqa: BLE001
+        print(f"  (could not load tasks: {ex})")
+        return
+    from collections import defaultdict
+
+    from pasarbench.simqa import forbids_photos, photo_claim
+    rows = []
+    for e in eps:
+        task = tasks.get(e["task_id"])
+        if task is None or not forbids_photos(task):
+            continue
+        turns = [ev.get("text") or "" for ev in e["events"] if ev.get("kind") == "user_turn"]
+        i = photo_claim(task, turns)
+        rows.append((e, None if i is None else turns[i]))
+    if not rows:
+        print("  no episode of a task whose customer has no photos")
+        return
+    per = defaultdict(lambda: [0, 0])
+    for e, said in rows:
+        per[e.get("language", "?")][0] += said is not None
+        per[e.get("language", "?")][1] += 1
+    print("  said she sent photos she does not have, BY LANGUAGE:")
+    for lang, (k, n) in sorted(per.items()):
+        print(f"    {lang:7s} {k / n:6.1%}  ({k}/{n} episodes)")
+    said = [(e, s) for e, s in rows if s is not None]
+    after = sum(not e["passed"] for e, _ in said)
+    without = sum(not e["passed"] for e, s in rows if s is None)
+    print(f"\n  episodes {len(rows)}: she said it in {len(said)}. Failed after it: "
+          f"{after} of {len(said)}; failed without it: {without} of {len(rows) - len(said)}")
+    for e, s in said[:3]:
+        print(f"  SAID {e['id']} [{e.get('language', '?')}]: {' '.join(s.split())[:110]!r}")
+    if said:
+        print("  !! where she says it, the trap's verdict follows her line and not the "
+              "agent's policy: read WHAT_FAILED #43 before reading the trap's numbers")
+    else:
+        print("  none -- the photo trap measures the agent")
 
 
 def cache_and_cost(eps: list[dict]) -> None:
@@ -502,7 +555,8 @@ def main() -> None:
     ap.add_argument("--ask-patterns", choices=["current", "v1"], default="current",
                     help="v1 = the list before WHAT_FAILED #26, to reproduce it")
     ap.add_argument("--leaks-only", action="store_true",
-                    help="print only the simulator leak audit")
+                    help="print only the simulated customer's audit: leaks, unanswered "
+                         "requests, and photos she says she sent but has not")
     args = ap.parse_args()
 
     files = sorted(glob.glob(os.path.join(args.trace_dir, "*.jsonl")))
@@ -513,6 +567,7 @@ def main() -> None:
     if args.leaks_only:
         markup(eps)
         leaks(eps, args.ask_patterns)
+        photos(eps)
         return
 
     config(eps)
@@ -530,6 +585,7 @@ def main() -> None:
     reliability(eps)
     empties(eps)
     leaks(eps, args.ask_patterns)
+    photos(eps)
     cache_and_cost(eps)
     growth(eps)
 
