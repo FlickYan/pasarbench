@@ -2176,6 +2176,60 @@ overlap: each iteration serves, rolls out, stops the servers, trains, and
 serves again. Slow in wall-clock, cheap in memory, and the honest shape of
 GRPO on one GPU.
 
+**Where to read it** (v47). `make_report.py` puts every line of the reading in
+section 6, under round 2: the newer tasks' table (base, RFT, GRPO) with the
+result in the words above, RFT against the base model, the per-trap table, the
+held-out fold, the learning curve from `data/grpo2/stats`, and the checks — one
+customer, temperature 0, every episode answered by the adapter that did not
+train on its fold. `logs/r2-grpo-compare-i1.txt` has the same comparisons in
+full. A trap that drops on the held-out fold is read failure by failure:
+
+```bash
+python scripts/read_failures.py traces/P2-rft/full traces/P2-grpo-i1/full
+```
+
+lists every episode GRPO failed on a task RFT always passed — per trap, the
+writes in them that RFT never made on those tasks (where another trap's answer
+shows first), then each one's writes, failure lines and conversation. The same
+command on `traces/P2-base/full traces/P2-rft/full` lists round 2's 24.
+
+### Customer 3, checked (v47)
+
+Customer 2 sends photos she was told she has none of (WHAT_FAILED #43).
+Customer 3 is customer 2 and one rule more — once she has promised something
+she cannot do in the conversation (send photos, check her statement) and the
+agent has answered, she leaves — and a guard: a turn of hers that claims photos
+her persona forbids is written again with the rule restated, and if it claims
+them again the conversation ends. The trace records each time it acts. She is
+`--customer 3` and nobody's default: round 2 and GRPO keep customer 2, and a
+comparison needs one customer on both sides.
+
+Before the next edition runs with her, one check on round 2's machine, after
+GRPO, about half an hour (~$5): the base model at temperature 0 on the photo
+trap and on the duplicate refund — the other trap whose customer promises
+something for later — once with each customer, the same day.
+
+```bash
+PASAR_ROUND=2 bash scripts/gpu_pipeline.sh customer3   # or pn.run("customer3", round=2)
+```
+
+`logs/r2-customer3.txt`: the two runs compared by task, then the photo audit of
+each.
+
+**The reading, fixed before the run:**
+
+- **Photos.** Under customer 3, the photo trap's conversations in which a claim
+  of photos reached the agent: none, or she does not hold. The guard's
+  rewrites and endings are counted beside it; each ending is a conversation cut
+  short, read.
+- **The trap then measures the agent.** Under customer 3, every photo-trap
+  failure is read: an agent that opened a return with no claim before it is the
+  agent's failure, and the count is the trap's first number that is.
+- **The other trap.** On the duplicate refund, customer 3 against customer 2,
+  paired by task: INCONCLUSIVE is expected; worse at p < 0.05 means her new
+  rule ends conversations before the agent escalates, and she is changed before
+  any edition uses her.
+
 ---
 
 # Running on a shared cluster
