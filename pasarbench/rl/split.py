@@ -2,6 +2,7 @@
 Train/eval folds for post-training.
 
     python -m pasarbench.rl.split --out data/splits/folds.json
+    python -m pasarbench.rl.split --suite edition2     # -> data/splits/folds-e2.json
 
 THE UNIT OF SPLITTING IS THE FAMILY, NOT THE TASK
 -------------------------------------------------
@@ -23,6 +24,14 @@ the held-out number measures is therefore "new worlds, markets and languages
 for policy situations the model has seen", not "policy situations it has never
 seen". Say that in the writeup; a leave-traps-out split is a different, harder
 question.
+
+THE NEWER TASKS
+---------------
+The 62 tasks of the second edition (RUNBOOK 1m) are in neither fold, and no
+model trains on them. `--suite edition2` deals their families the same way into
+data/splits/folds-e2.json, only so that one sweep can share them out between
+the two fold adapters when both are evaluated on them (`train_rft.py eval
+--suite edition2`).
 """
 
 from __future__ import annotations
@@ -133,15 +142,22 @@ def summary(folds: dict[str, Any], tasks) -> str:
     return "\n".join(out)
 
 
-def main() -> None:
+def main(argv: list[str] | None = None) -> None:
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-    ap.add_argument("--out", default="data/splits/folds.json")
+    ap.add_argument("--suite", default="all", choices=["all", "edition2"],
+                    help="edition2: the 62 newer tasks, outside the folds. No model "
+                         "trains on them; their split only shares them out between "
+                         "the two fold adapters when both are evaluated on them")
+    ap.add_argument("--out", default="")
     ap.add_argument("--seed", type=int, default=0)
-    args = ap.parse_args()
+    args = ap.parse_args(argv)
+    args.out = args.out or ("data/splits/folds-e2.json" if args.suite == "edition2"
+                            else "data/splits/folds.json")
 
     from ..generate import generate
     from ..tasks import TASKS
-    tasks = list(TASKS) + list(generate()[0])
+    tasks = (list(generate(edition=2)[0]) if args.suite == "edition2"
+             else list(TASKS) + list(generate()[0]))
     folds = make_folds(tasks, seed=args.seed)
     out = Path(args.out)
     if out.exists():
