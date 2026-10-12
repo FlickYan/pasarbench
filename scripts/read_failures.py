@@ -61,7 +61,7 @@ def _write(name: str, args: dict, width: int) -> str:
 def episodes(cell: Path, checker: str, tasks: dict) -> list[dict]:
     """One record per finished episode: verdict, failures, writes, conversation."""
     from pasarbench.rescore import rescore_file
-    from pasarbench.simqa import photo_claim
+    from pasarbench.simqa import declined_voucher, photo_claim
     from pasarbench.tools import WRITE_TOOLS
     out = []
     for f in sorted(cell.glob("*.jsonl")):
@@ -99,7 +99,8 @@ def episodes(cell: Path, checker: str, tasks: dict) -> list[dict]:
                     "language": head.get("language", "?"), "passed": passed,
                     "failures": failures, "writes": writes, "lines": lines,
                     "stop": foot.get("stop_reason", "?"),
-                    "photos": task is not None and photo_claim(task, turns) is not None})
+                    "photos": task is not None and photo_claim(task, turns) is not None,
+                    "voucher": declined_voucher(head.get("trap", ""), recs)})
     return out
 
 
@@ -182,12 +183,18 @@ def main(argv: list[str] | None = None) -> int:
     if photos:
         print(f"\n  {photos} of them after the customer said she sent photos she was told "
               f"she does not have (WHAT_FAILED #43): the verdict there is hers")
+    vouch = sum(e["voucher"] for e, _, _ in rows)
+    if vouch:
+        print(f"\n  {vouch} of them escalated after the customer was offered the voucher and "
+              f"answered (WHAT_FAILED #46): read her answer -- where she declined it for her "
+              f"money or a human, P6.3 and P10 ask for the escalation the check fails")
 
     w = a.width
     for e, p, n in rows:
         print("\n" + "=" * min(w, 100))
         print(f"{e['id']}  [{e['trap']}, {e['language']}]  control {p}/{n}  stop={e['stop']}"
-              + ("  CUSTOMER CLAIMED PHOTOS" if e["photos"] else ""))
+              + ("  CUSTOMER CLAIMED PHOTOS" if e["photos"] else "")
+              + ("  ESCALATED AFTER THE VOUCHER OFFER" if e["voucher"] else ""))
         made = [_write(nm, args, w) + ("" if ok else " (refused)")
                 for nm, args, ok in e["writes"]]
         print("  writes: " + ("; ".join(made) if made else "none"))
