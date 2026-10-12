@@ -442,6 +442,114 @@ def test_planted_mistakes_section():
           and "scores nothing" in md, md[-500:])
 
 
+def test_grpo_section():
+    """Section 6's GRPO block reads the runs as RUNBOOK phase 4 fixed before
+    GRPO ran: on the 62 newer tasks GRPO against RFT ("GRPO helped" only at
+    p < 0.05) and RFT against the base model; the held-out fold as the
+    regression check; each iteration's build stats as the learning curve; and
+    the checks that make the rows comparable -- one customer, temperature 0,
+    every episode answered by the adapter that did not train on its fold."""
+    print("\n=== section 6: GRPO, as its reading was fixed ===")
+    mr = _report()
+    from pasarbench.generate import generate
+    from pasarbench.rl.split import make_folds, other_fold
+    from pasarbench.tasks import TASKS
+    from pasarbench.tools import CHECKS
+    newer = list(generate(edition=2)[0])
+    main = list(TASKS) + list(generate()[0])
+    held = main[:40]
+    tmp = Path(tempfile.mkdtemp())
+    (tmp / "data" / "splits").mkdir(parents=True)
+    f2, f1 = make_folds(newer), make_folds(main)
+    (tmp / "data" / "splits" / "folds-e2.json").write_text(json.dumps(f2))
+    (tmp / "data" / "splits" / "folds.json").write_text(json.dumps(f1))
+    v2 = "llm-user/v2:openai-compat:RedHatAI/gemma-4-31B-it-FP8-Dynamic"
+
+    def run(name, tasks, model_of, passes, fold_models=None):
+        d = tmp / "traces" / name / "full"
+        d.mkdir(parents=True)
+        for i, t in enumerate(tasks):
+            for k in range(2):
+                head = {"type": "header", "task_id": t.task_id, "language": t.language,
+                        "trap": t.trap, "requested_model": model_of(t), "simulator": v2,
+                        "agent_temperature": 0.0, "tool_checks": CHECKS}
+                foot = {"type": "footer", "passed": passes(i, k), "stop_reason": "done",
+                        "budget": {"tokens": 1000, "steps": 5}}
+                (d / f"{t.task_id}__r{k}.jsonl").write_text(json.dumps(head) + "\n"
+                                                           + json.dumps(foot) + "\n")
+        if fold_models:
+            (d.parent / "summary.json").write_text(json.dumps(
+                [{"setup": {"fold_models": ",".join(f"{f}={m}" for f, m in
+                                                    fold_models.items())}}]))
+
+    def section():
+        cwd = os.getcwd()
+        try:
+            os.chdir(tmp)
+            return mr.section_grpo(Path("traces"))
+        finally:
+            os.chdir(cwd)
+
+    run("P2-base-e2", newer, lambda t: "Qwen/Qwen3.8-27B", lambda i, k: i % 4 != 0)
+    md = section()
+    check("before GRPO has run: the gate as read on the base model, and the command",
+          "pass^1 0.742" in md and "below 0.95, so GRPO runs" in md
+          and "**NOT MEASURED**" in md and "gpu_pipeline.sh grpo" in md, md)
+
+    rft = {f: f"Qwen/Qwen3.8-27B:pasar-rft2-{f}" for f in "AB"}
+    grpo = {f: f"Qwen/Qwen3.8-27B:pasar-grpo2-i1-{f}" for f in "AB"}
+    routed = lambda models, folds: (lambda t: models[other_fold(folds["task_fold"][t.task_id])])
+    run("P2-rft-e2", newer, routed(rft, f2), lambda i, k: i % 5 != 0, rft)
+    run("P2-grpo-i1-e2", newer, routed(grpo, f2), lambda i, k: True, grpo)
+    run("P2-rft", held, routed(rft, f1), lambda i, k: i % 7 != 3, rft)
+    run("P2-grpo-i1", held, routed(grpo, f1), lambda i, k: i % 7 != 4, grpo)
+    st = tmp / "data" / "grpo2" / "stats"
+    st.mkdir(parents=True)
+    for f, rate in (("A", 0.5), ("B", 0.625)):
+        (st / f"i1-{f}.stats.json").write_text(json.dumps(
+            {"episodes": 64, "groups": 8, "pass_rate": rate, "degenerate_rate": 0.25,
+             "examples": 300}))
+        (st / f"tasks-{f}.json").write_text(json.dumps(
+            {"tasks": [f"X{i}" for i in range(8)],
+             "skipped_traps": ["high_value_photo_required_first"],
+             "skipped_tasks": ["HVPRF-A", "HVPRF-B"]}))
+    md = section()
+    check("the result, as fixed before the run: GRPO against RFT on the newer tasks, "
+          "\"GRPO helped\" only when the sign test resolves it",
+          "- **The result**, GRPO against RFT, paired by task: **GRPO helped** — +0.210; "
+          "13 tasks better, 0 worse" in md, md[:1600])
+    check("…RFT against the base model on the same tasks, the newer tasks' table with "
+          "all three, and their per-trap table",
+          "- **RFT on tasks it never saw**, RFT against the base model:" in md
+          and "| GRPO, 1 iteration | `P2-grpo-i1-e2` | 62 | 1.000 |" in md
+          and "| trap | base | RFT | GRPO, 1 iteration |" in md, md[:2200])
+    check("…the held-out fold as the regression check, with the traps that moved and how "
+          "to read them",
+          "**The held-out fold**" in md and "read_failures.py traces/P2-rft/full "
+          "traces/P2-grpo-i1/full" in md and "RFT 0.850" in md and "GRPO 0.850" in md
+          and "Traps that moved:" in md, md[md.find("held-out"):][:900])
+    check("…the learning curve from each iteration's build, and the traps its tasks left "
+          "out",
+          "| 1 | A | 64 on 8 tasks | 50% | 25% | 300 |" in md
+          and "| 1 | B | 64 on 8 tasks | 62% | 25% | 300 |" in md
+          and "- fold A: 8 tasks; 2 of high_value_photo_required_first left out" in md,
+          md[md.find("learning curve"):][:900])
+    check("…and the checks: one customer, temperature 0, every episode answered by the "
+          "adapter that did not train on its fold",
+          "✓ one customer in every run" in md and "✓ agent temperature 0 in every "
+          "evaluation" in md and "✓ `P2-grpo-i1-e2`: 124/124 episodes" in md
+          and "✓ `P2-rft-e2`: 124/124" in md and "✓ `P2-grpo-i1`: 80/80" in md,
+          md[md.find("Checks"):])
+    one = tmp / "traces" / "P2-grpo-i1-e2" / "full" / f"{newer[0].task_id}__r0.jsonl"
+    h, foot = [json.loads(l) for l in one.read_text().splitlines()]
+    trained_on = grpo[f2["task_fold"][newer[0].task_id]]
+    one.write_text(json.dumps({**h, "requested_model": trained_on}) + "\n"
+                   + json.dumps(foot) + "\n")
+    md = section()
+    check("a newer task answered by the adapter of its own half is called a leak",
+          "✗ **`P2-grpo-i1-e2`: 123/124" in md and "LEAKED" in md, md[md.find("Checks"):])
+
+
 def test_both_scorings():
     """#30: the checker the runs were scored with demanded one lookup tool on
     two traps. The report builds on today's checks, shows the recorded
@@ -762,6 +870,7 @@ def main() -> int:
     test_noise_floor()
     test_post_training()
     test_planted_mistakes_section()
+    test_grpo_section()
     test_both_scorings()
     test_ablation_sections_under_both_checkers()
     test_judges_against_todays_verifier()
