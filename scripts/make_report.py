@@ -1629,6 +1629,142 @@ def section_grpo(traces: Path = Path("traces"), stats_dir: Path = Path("data/grp
     return "\n".join(out)
 
 
+def _changed_requests(runs: list[tuple[str, Path, list[dict]]]) -> str:
+    """For each (label, cell, episodes): the hard edition's changed-request
+    episodes in which her phone digits came without the change her persona
+    makes in that message, and the failures among them -- "" when every one
+    came with it. Those failures are hers, not the model's (RUNBOOK 1s)."""
+    from pasarbench.rescore import all_tasks
+    from pasarbench.simqa import CHANGED_REQUEST, change_with_digits
+    tasks = all_tasks()
+    parts = []
+    for label, cell, eps in runs:
+        n = late = failed = 0
+        for e in eps:
+            task = tasks.get(e["task_id"])
+            if task is None or task.trap != CHANGED_REQUEST:
+                continue
+            try:
+                recs = [json.loads(l) for l in (cell / f"{e['transcript_id']}.jsonl")
+                        .read_text(encoding="utf-8").splitlines() if l.strip()]
+            except (OSError, ValueError):
+                continue
+            turns = [r.get("text") or "" for r in recs
+                     if r.get("type") == "event" and r.get("kind") == "user_turn"]
+            _, changed = change_with_digits(task, turns)
+            n += 1
+            if not changed:
+                late += 1
+                failed += not e["passed"]
+        if late:
+            parts.append(f"{late} of {n} {label} episodes ({failed} of them failed)")
+    return "; ".join(parts)
+
+
+def section_edition3(traces: Path = Path("traces"),
+                     split: Path = Path("data/splits/folds-e3.json")) -> str:
+    """The hard edition's 36 cases on round 2's models, read as RUNBOOK phase
+    4 fixed before the run: room first, then RFT against the base model and
+    GRPO against RFT, paired by case, with the customer's changed request and
+    the voucher choice set beside them."""
+    from pasarbench.diagnose import load_episodes, paired_episodes
+
+    head = "\n\n### The hard edition, on round 2's models\n\n"
+    n = max((int(d.name[len("P2-grpo-i"):-len("-e3")]) for d in traces.glob("P2-grpo-i*-e3")
+             if d.name[len("P2-grpo-i"):-len("-e3")].isdigit()
+             and any((d / "full").glob("*.jsonl"))), default=0)
+    rows = {"base": ("base", "P2-base-e3"), "rft": ("RFT", "P2-rft-e3")}
+    if n:
+        rows["grpo"] = (f"GRPO, {n} iteration{'s' if n > 1 else ''}", f"P2-grpo-i{n}-e3")
+    cell = {k: traces / run / "full" for k, (_, run) in rows.items()}
+    e3 = {k: load_episodes(c) if c.is_dir() else [] for k, c in cell.items()}
+    if not e3["base"]:
+        return head + _missing(
+            "the hard edition has not run on round 2's models yet",
+            "PASAR_ROUND=2 bash scripts/gpu_pipeline.sh edition3   # or pn.run(\"edition3\", "
+            "round=2)")
+    out = [head + "Its 36 combined cases (`--suite edition3`, RUNBOOK 1s), which no model "
+           "trained on, at temperature 0 under one customer; each adapter answers its own "
+           "half of their split:\n",
+           "| model | run | cases | pass^1 | pass^k |", "|---|---|---|---|---|"]
+    for key, (label, run) in rows.items():
+        e = e3[key]
+        if not e:
+            out.append(f"| {label} | `{run}` | {MISSING} | | |")
+            continue
+        p1, pk, k = _passk(e)
+        out.append(f"| {label} | `{run}` | {len({x['task_id'] for x in e})} | {p1:.3f} | "
+                   f"{pk:.3f} (k={k}) |")
+    p1, _, _ = _passk(e3["base"])
+    out.append("")
+    if p1 >= 0.95:
+        out.append(f"- **Room:** the base model passes {p1:.3f}, at or above 0.95: the hard "
+                   f"edition gives no room at temperature 0 either, and nothing more is read "
+                   f"from it.")
+        return "\n".join(out)
+    out.append(f"- **Room:** the base model passes {p1:.3f}, below 0.95, so the rest is read.")
+    g_rft = paired_episodes(e3["base"], e3["rft"]) if e3["rft"] else None
+    out.append("- **RFT on combined cases**, RFT against the base model, paired by case: "
+               + (_verdict(g_rft, "RFT better", "RFT worse") if e3["rft"] else MISSING) + ".")
+    if "grpo" in rows:
+        g_grpo = paired_episodes(e3["rft"], e3["grpo"]) if e3["rft"] and e3["grpo"] else None
+        out.append("- **GRPO**, against RFT, paired by case — beside GRPO's own result on the "
+                   "62 newer tasks, never instead of it: "
+                   + _verdict(g_grpo, "GRPO better", "GRPO worse") + ".")
+    present = [k for k in rows if e3[k]]
+    policy = _as_policy_reads(
+        [(what, "", cell[a], e3[a], cell[b], e3[b])
+         for what, a, b in (("RFT against the base model", "base", "rft"),
+                            ("GRPO against RFT", "rft", "grpo"))
+         if a in present and b in present])
+    if policy:
+        out.append("- *After the fact, beside the result and never instead of it* "
+                   "(WHAT_FAILED #46): with each two-orders escalation after she declined the "
+                   "voucher read as P6.3 and P10 read it, " + "; ".join(policy) + ".")
+    rates = {}
+    for k in present:
+        d: dict[str, list[bool]] = {}
+        for x in e3[k]:
+            d.setdefault(x["trap"], []).append(x["passed"])
+        rates[k] = d
+    out.append("\n| case | " + " | ".join(rows[k][0] for k in present) + " |")
+    out.append("|---|" + "---|" * len(present))
+    for t in sorted(set().union(*(set(r) for r in rates.values()))):
+        out.append(f"| `{t}` | " + " | ".join(
+            f"{sum(rates[k][t])}/{len(rates[k][t])}" if t in rates[k] else "—"
+            for k in present) + " |")
+    runs = [(rows[k][0], cell[k], e3[k]) for k in present]
+    late = _changed_requests(runs)
+    out.append("\n*The customer:* " + (
+        f"in the changed request her phone digits came without the change of mind her "
+        f"persona puts in that message in {late}; those failures are hers, not the "
+        f"model's (RUNBOOK 1s)." if late else
+        "in every changed-request conversation her phone digits came with her change of "
+        "mind, as her persona has it: the case measures the model."))
+    vouch = _voucher_choices(runs)
+    out.append("\n*The voucher choice:* " + (
+        f"offered the voucher on the two orders, she declined it in {vouch} (WHAT_FAILED "
+        f"#46)." if vouch else "offered the voucher on the two orders, she never declined "
+        "it; there was nothing to read as P6.3 and P10 read it."))
+
+    checks = []
+    heads = {run: _headers(cell[k]) for k, (_, run) in rows.items() if cell[k].is_dir()}
+    sims = {h.get("simulator") for hs in heads.values() for h in hs.values()}
+    checks.append((len(sims) == 1, "one customer in every run: "
+                   + ", ".join(f"`{x}`" for x in sorted(map(str, sims)))))
+    temps = {h.get("agent_temperature") for hs in heads.values() for h in hs.values()}
+    checks.append((temps == {0.0}, "agent temperature 0 in every run" if temps == {0.0}
+                   else f"agent temperatures differ or are unrecorded: {sorted(map(str, temps))}"))
+    folds = _load_json(split)
+    for k in ("rft", "grpo"):
+        if k in rows and rows[k][1] in heads:
+            ok, msg = _routed(heads[rows[k][1]], cell[k], folds)
+            checks.append((ok, f"`{rows[k][1]}`: {msg}"))
+    out.append("\nChecks:\n")
+    out += [f"- {'✓ ' if ok else '✗ **'}{msg}{'' if ok else '**'}" for ok, msg in checks]
+    return "\n".join(out)
+
+
 def section_training_rounds(traces: Path = Path("traces"),
                             spec1: str = "base=P-base,rft=P-rft,reference=P-ref",
                             spec2: str = "base=P2-base,rft=P2-rft,reference=P2-ref") -> str:
@@ -1640,7 +1776,8 @@ def section_training_rounds(traces: Path = Path("traces"),
     one = section_training(traces, spec1, Path("data/rft/stats.json"))
     if not base2.is_dir() or not any(base2.glob("*.jsonl")):
         return one
-    two = section_training(traces, spec2, Path("data/rft2/stats.json")) + section_grpo(traces)
+    two = (section_training(traces, spec2, Path("data/rft2/stats.json")) + section_grpo(traces)
+           + section_edition3(traces))
     return ("### Round 2: training data balanced by trap, today's customer and tools\n\n"
             + two + "\n\n### Round 1, as context\n\n*Another simulated customer and older "
             "tools than round 2's: its numbers are never paired against round 2's.*\n\n" + one)
