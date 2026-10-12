@@ -2014,6 +2014,92 @@ python scripts/add_model.py --provider zai --model glm-5.3-flash --name glm
 - **Not a verdict on the suite.** A case failing more than its part says the
   combination is harder for that agent, not that the suite was easy everywhere.
 
+**Run on 2026-10-13, v57–v59** (`V-dsk`, `V-dsk-flash`, `V-mimo`, `V-grok` and
+`V-glm`, each with its `-parts`; RESULTS.md §8): **not shown harder for any of
+the five agents.** One customer, customer 3, and temperature 0 in every run;
+225 conversations an agent, none left that an API error ended.
+
+| agent | hard cases, pass^1 (pass^k) | their parts | each case against its part |
+|---|---|---|---|
+| DeepSeek-V4-Pro (`dsk`), thinking off | 0.944 (0.89) | 0.833 (0.75) | EASIER — +0.111; 1 case failed more than its part, 8 less, p = 0.039 |
+| DeepSeek-V4.1-Flash (`dsk-flash`), thinking off | 0.991 (0.97) | 1.000 (1.00) | INCONCLUSIVE — 1 more, 0 less, p = 1.0 |
+| MiMo-V2.6-Flash (`mimo`), thinking off | 0.991 (0.97) | 0.991 (0.97) | INCONCLUSIVE — 1 more, 1 less, p = 1.0 |
+| Grok 4.3 (`grok`), reasoning none | 0.685 (0.58) | 0.731 (0.72) | INCONCLUSIVE — 6 more, 2 less, p = 0.29 |
+| GLM-5.3-Flash (`glm`), reasoning low | 0.954 (0.89) | 0.944 (0.86) | INCONCLUSIVE — 3 more, 4 less, p = 1.0 |
+
+Each case's passes against its part's (of 30 or 39 conversations):
+
+| case (its part) | dsk | dsk-flash | mimo | grok | glm |
+|---|---|---|---|---|---|
+| the livestream dress, refunded already (the duplicate refund) | 25 · 12 | 29 · 30 | 29 · 30 | 2 · 1 | 25 · 24 |
+| two orders in one chat (the out-of-window voucher) | 38 · 39 | 39 · 39 | 39 · 38 | 33 · 39 | 39 · 39 |
+| the changed request (the cancellation while processing) | 39 · 39 | 39 · 39 | 39 · 39 | 39 · 39 | 39 · 39 |
+
+**Where it is hard: every failure on the cases, read and named by its wrong
+turn.**
+
+- **The refunded livestream order** (40 failures): no escalation — DeepSeek-V4-Pro
+  5 (Malay 3, Thai 1, English in Thailand 1), Grok 27, GLM 2; store credit in its
+  place — V4.1-Flash 1 (Thai), Grok 1; a refund tried, refused on cash on
+  delivery, then store credit — MiMo 1 (Thai). And GLM 3: escalated, but as an
+  out-of-window dispute, without the order looked up and so without the refund
+  seen — her story, the seller's livestream and the window, decided it, one of
+  the three with a goodwill voucher beside it: the wrong turn the case was built
+  for.
+- **Two orders** (7 failures). The customer's, twice, both in Malaysia's
+  Chinese: offered the voucher, she accepted it and ended the conversation in
+  the same message, before it could be issued — customer 3 should wait for what
+  she agreed to (WHAT_FAILED #38); that is DeepSeek-V4-Pro's only failure here,
+  and one of Grok's. Grok's own: vouchers over the SGD 15 cap — SGD 150 to an
+  Indonesian customer, then IDR 230,000; VND 300,000 and 400,000 — refused by the
+  tool, three conversations, two of them escalated at her request after; and
+  once photos asked for, as for a return, on the out-of-window covers, round 2's
+  anatomy. And the task's, once: Grok read her the account's phone, "ends in
+  5000", and refused the digits she gave, 4661, which are the ones that verify
+  her — in every generated task the profile's phone and the verifying digits
+  disagree (WHAT_FAILED #48).
+- **The changed request:** no failure, in any agent.
+
+**The customer.** Her digits came with her change of mind in every
+changed-request conversation but one of DeepSeek-V4-Pro's, which passed ("I
+don't wanna cancel anymore", words the reader lacks). She ended on her yes to
+the voucher twice, above.
+
+**The voucher choice.** She declined the voucher in no conversation of any
+agent. The reader flagged two of Grok's; read, she had accepted it, and the tool
+had refused Grok's vouchers over the cap. A voucher the agent tried, refused or
+not, now counts as hers taken (v60, WHAT_FAILED #49); the two are the agent's.
+
+**Separation.** The hard edition separates no pair of agents the parts do not.
+The parts separate DeepSeek-V4-Pro from V4.1-Flash, MiMo and GLM (p ≤ 0.006),
+which the cases do not: the duplicate refund, which it fails 18 times in 30 as a
+part and 5 in 30 inside the livestream story. Grok is separated from the other
+four on both.
+
+**Secondary.** DeepSeek-V4-Pro on the refunded livestream order: English 14 of
+15, the other languages 11 of 15, Malay 0 of 3; on its part, English 10 of 21,
+the others 5 of 18 — 1r's lead, on a case whose story is not the refund. A lead
+to read, not a test.
+
+**What the runs cost** (each agent's tokens at list prices; the customer, well
+under $0.30 a model): DeepSeek-V4-Pro $1.16, 97% of its prompt tokens from the
+cache, and half that, off-peak, when it ran; V4.1-Flash $0.40 (94%); MiMo $0.16
+(93%); Grok $3.97 (76%, its routing id notwithstanding); GLM $0.35 (90%, its
+low reasoning and its replies 87 tokens a step together).
+
+**What it means.** For these five agents the hard edition is not harder than
+its parts, and it separates no two of them the parts do not. Where they fail,
+they fail the rule the parts already test — the duplicate refund — and
+DeepSeek-V4-Pro fails it less often inside the livestream story than alone. The
+two cases that held round 2's fine-tuned models hold none of these but Grok,
+whose failures there are vouchers over the cap, the customer's early goodbye and
+the task's own contradiction. The edition gave round 2's 27B models room; for
+API models it measures the duplicate refund again. An edition that separates
+API models needs combinations that defeat them, built and read the same way
+before they run. Two instruments failed on the way and are named: the voucher
+choice's reader (#49, fixed) and the generated profile's phone (#48, recorded
+for the next edition; the editions are pinned as every run had them).
+
 ### 1t. Is it the language? The same conversation, translated (API only, no GPU)
 
 1r found that deepseek-v4-pro makes P10's escalation of a refund already paid in
