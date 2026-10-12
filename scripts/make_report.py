@@ -1604,7 +1604,9 @@ def section_grpo(traces: Path = Path("traces"), stats_dir: Path = Path("data/grp
             out.append(f"\nPoint {m} is GRPO's last adapters on the same tasks, measured and "
                        f"not trained on (`grpo-measure`); `logs/r2-grpo-measure-i{m}.txt` pairs "
                        f"it with point {m - 1} task by task, as its reading was fixed before it "
-                       f"ran (RUNBOOK phase 4, GRPO, the learning curve's second point).")
+                       f"ran (RUNBOOK phase 4, GRPO, the learning curve's second point). The "
+                       f"pairing counts every rollout as the checks score it; the rates here "
+                       f"leave out the few the harness stopped.")
 
     checks = []
     heads = {name: _headers(traces / name / "full")
