@@ -1072,24 +1072,24 @@ def _passk(eps: list[dict], key: str = "passed") -> tuple[float, float, int]:
             sum(all(v) for v in by.values()) / len(by), k)
 
 
-def _photo_claims(cells: dict[str, Path], eps: dict[str, list[dict]]) -> str:
-    """Each run's episodes on the photo trap in which the customer, told she
-    has no photos, says she sent some, and the failures after and without that
-    line -- "" when she never did. Customer v2 does (WHAT_FAILED #43)."""
+def _photo_claims(runs: list[tuple[str, Path, list[dict]]]) -> str:
+    """For each (label, cell, episodes): the photo trap's episodes in which the
+    customer, told she has no photos, says she sent some, and the failures after
+    and without that line -- "" when she never did. Customer v2 does (WHAT_FAILED
+    #43)."""
     from pasarbench.rescore import all_tasks
     from pasarbench.simqa import forbids_photos, photo_claim
     tasks = all_tasks()
     parts = []
-    for role in ("base", "rft", "reference"):
+    for label, cell, eps in runs:
         n = said = after = without = 0
-        for e in eps.get(role, []):
+        for e in eps:
             task = tasks.get(e["task_id"])
             if task is None or not forbids_photos(task):
                 continue
-            path = cells[role] / f"{e['transcript_id']}.jsonl"
             try:
-                recs = [json.loads(l) for l in path.read_text(encoding="utf-8").splitlines()
-                        if l.strip()]
+                recs = [json.loads(l) for l in (cell / f"{e['transcript_id']}.jsonl")
+                        .read_text(encoding="utf-8").splitlines() if l.strip()]
             except (OSError, ValueError):
                 continue
             turns = [r.get("text") or "" for r in recs
@@ -1101,8 +1101,7 @@ def _photo_claims(cells: dict[str, Path], eps: dict[str, list[dict]]) -> str:
                 after += hit
                 without += not hit
         if said:
-            name = {"rft": "RFT"}.get(role, role)
-            parts.append(f"{said} of {n} {name} episodes (failed after it {after} of "
+            parts.append(f"{said} of {n} {label} episodes (failed after it {after} of "
                          f"{said}, without it {without} of {n - said})")
     return "; ".join(parts)
 
@@ -1300,7 +1299,8 @@ def section_training(traces: Path = Path("traces"),
         out.append("\n*Per-trap moves are leads to read in the traces, not results: "
                    "each trap is ~13 tasks, and only the paired test above says "
                    "whether anything moved at all.*")
-        photo = _photo_claims(cells, eps)
+        photo = _photo_claims([({"rft": "RFT"}.get(role, role), cells[role], eps[role])
+                               for role in ("base", "rft", "reference") if role in eps])
         if photo:
             out.append(f"\n*The photo trap's customer is told she has no photos. She said she "
                        f"had sent them in {photo}. Where she said it, the trap's verdict "
@@ -1332,6 +1332,193 @@ def section_training(traces: Path = Path("traces"),
     return "\n".join(out)
 
 
+def _grpo_runs(traces: Path) -> list[int]:
+    """The GRPO iterations evaluated so far: N for each traces/P2-grpo-iN-e2."""
+    out = []
+    for d in traces.glob("P2-grpo-i*-e2"):
+        n = d.name[len("P2-grpo-i"):-len("-e2")]
+        if n.isdigit() and any((d / "full").glob("*.jsonl")):
+            out.append(int(n))
+    return sorted(out)
+
+
+def _verdict(g: dict | None, better: str, worse: str) -> str:
+    """A paired comparison in the words the reading fixed before the run."""
+    if g is None:
+        return "fewer than 5 shared tasks — not testable"
+    head = (better if g["diff"] > 0 else worse) if g["resolved"] else "INCONCLUSIVE"
+    return (f"**{head}** — {g['diff']:+.3f}; {g['better']} tasks better, {g['worse']} worse, "
+            f"p={g['p']:.3f}")
+
+
+def _routed(eps_heads: dict[str, dict], cell: Path, folds: dict | None) -> tuple[bool, str]:
+    """Whether every episode was answered by the adapter that did not train on
+    its task's fold (the router's rule, which the newer tasks' split reuses)."""
+    from pasarbench.rl.split import other_fold
+    rows = _load_json(cell.parent / "summary.json") or [{}]
+    fm = ((rows[0] or {}).get("setup") or {}).get("fold_models")
+    if not folds or not fm:
+        return False, "cannot confirm the routing: " + (
+            "no split file" if not folds else "the run records no --fold-models")
+    trained = dict(kv.split("=", 1) for kv in fm.split(","))
+    wrong = [h["task_id"] for h in eps_heads.values()
+             if h.get("requested_model") !=
+             trained.get(other_fold(folds["task_fold"].get(h["task_id"], "A")))]
+    n = len(eps_heads)
+    return (not wrong, f"{n - len(wrong)}/{n} episodes answered by the adapter that did "
+            f"not train on the task's fold" + (f" — LEAKED: {sorted(set(wrong))[:5]}"
+                                              if wrong else ""))
+
+
+def section_grpo(traces: Path = Path("traces"), stats_dir: Path = Path("data/grpo2/stats"),
+                 e2_split: Path = Path("data/splits/folds-e2.json"),
+                 split: Path = Path("data/splits/folds.json")) -> str:
+    """GRPO from round 2's fine-tunes, read as RUNBOOK phase 4 fixed before the
+    run: on the 62 newer tasks, GRPO against RFT (the result) and RFT against
+    the base model; on the held-out fold, GRPO against RFT (the regression
+    check); and each iteration's build stats (the learning curve)."""
+    from pasarbench.diagnose import load_episodes, paired_episodes
+
+    def eps(name: str) -> list[dict]:
+        cell = traces / name / "full"
+        return load_episodes(cell) if cell.is_dir() else []
+
+    base = eps("P2-base-e2")
+    head = "\n\n### GRPO, from round 2's fine-tunes\n\n"
+    gate = ""
+    if base:
+        p1, pk, _ = _passk(base)
+        gate = (f"Before it ran, the base model on the 62 newer tasks: pass^1 {p1:.3f}, "
+                f"pass^k {pk:.3f} — " + ("at or above 0.95, so GRPO is held until the harder "
+                                         "edition gives it room."
+                                         if p1 >= 0.95 else "below 0.95, so GRPO runs.") + "\n\n")
+    iters = _grpo_runs(traces)
+    if not iters:
+        return head + gate + _missing(
+            "GRPO has not been evaluated yet",
+            "PASAR_ROUND=2 bash scripts/gpu_pipeline.sh grpo   # or pn.run(\"grpo\", round=2)")
+    n = iters[-1]
+    rows = {"base": ("base", "P2-base-e2"), "rft": ("RFT", "P2-rft-e2"),
+            "grpo": (f"GRPO, {n} iteration{'s' if n > 1 else ''}", f"P2-grpo-i{n}-e2")}
+    e2 = {k: eps(run) for k, (_, run) in rows.items()}
+    out = [head + gate + "**The 62 newer tasks**, which no model trained on; each adapter "
+           "answers its own half of their split:\n",
+           "| model | run | tasks | pass^1 | pass^k | tokens per resolved |",
+           "|---|---|---|---|---|---|"]
+    for key, (label, run) in rows.items():
+        e = e2[key]
+        if not e:
+            out.append(f"| {label} | `{run}` | {MISSING} | | | |")
+            continue
+        p1, pk, k = _passk(e)
+        resolved = sum(x["passed"] for x in e)
+        tpr = sum(x["tokens"] for x in e) / resolved if resolved else float("nan")
+        out.append(f"| {label} | `{run}` | {len({x['task_id'] for x in e})} | {p1:.3f} | "
+                   f"{pk:.3f} (k={k}) | {tpr:,.0f} |")
+    g_result = (paired_episodes(e2["rft"], e2["grpo"]) if e2["rft"] and e2["grpo"]
+                else None)
+    g_carry = (paired_episodes(e2["base"], e2["rft"]) if e2["base"] and e2["rft"]
+               else None)
+    out.append("")
+    out.append("- **The result**, GRPO against RFT, paired by task: "
+               + _verdict(g_result, "GRPO helped", "GRPO hurt") + ".")
+    out.append("- **RFT on tasks it never saw**, RFT against the base model: "
+               + _verdict(g_carry, "RFT carried over", "RFT hurt") + ".")
+
+    present = [k for k in rows if e2[k]]
+    if len(present) > 1:
+        def by_trap(e):
+            d: dict[str, list[bool]] = {}
+            for x in e:
+                d.setdefault(x["trap"], []).append(x["passed"])
+            return {t: sum(v) / len(v) for t, v in d.items()}
+        rates = {k: by_trap(e2[k]) for k in present}
+        out.append("\n| trap | " + " | ".join(rows[k][0] for k in present) + " |")
+        out.append("|---|" + "---|" * len(present))
+        for t in sorted(set().union(*(set(r) for r in rates.values()))):
+            out.append(f"| `{t}` | " + " | ".join(
+                f"{rates[k][t]:.2f}" if t in rates[k] else "—" for k in present) + " |")
+
+    held = {"rft": eps("P2-rft"), "grpo": eps(f"P2-grpo-i{n}")}
+    out.append("\n**The held-out fold** (the regression check: at 0.96 INCONCLUSIVE is the "
+               "expected outcome; a trap that drops is read failure by failure, "
+               "`scripts/read_failures.py traces/P2-rft/full traces/P2-grpo-i{n}/full`):\n"
+               .replace("{n}", str(n)))
+    if held["rft"] and held["grpo"]:
+        a1, ak, _ = _passk(held["rft"])
+        b1, bk, _ = _passk(held["grpo"])
+        out.append(f"RFT {a1:.3f} (pass^k {ak:.3f}), GRPO {b1:.3f} (pass^k {bk:.3f}): "
+                   + _verdict(paired_episodes(held["rft"], held["grpo"]),
+                              "GRPO better", "GRPO worse") + ".")
+        ra = {}
+        for x in held["rft"]:
+            ra.setdefault(x["trap"], []).append(x["passed"])
+        rb = {}
+        for x in held["grpo"]:
+            rb.setdefault(x["trap"], []).append(x["passed"])
+        moved = sorted((sum(rb[t]) / len(rb[t]) - sum(ra[t]) / len(ra[t]), t)
+                       for t in ra if t in rb
+                       and abs(sum(rb[t]) / len(rb[t]) - sum(ra[t]) / len(ra[t])) > 1e-9)
+        if moved:
+            out.append("Traps that moved: " + ", ".join(
+                f"`{t}` {sum(ra[t]) / len(ra[t]):.2f} → {sum(rb[t]) / len(rb[t]):.2f}"
+                for _, t in moved) + ".")
+        photo = _photo_claims([("RFT", traces / "P2-rft" / "full", held["rft"]),
+                               ("GRPO", traces / f"P2-grpo-i{n}" / "full", held["grpo"])])
+        if photo:
+            out.append(f"\n*On the photo trap the customer said she had sent photos she was "
+                       f"told she does not have in {photo}; where she did, the verdict "
+                       f"follows her line, not the agent's policy (WHAT_FAILED #43).*")
+    else:
+        out.append(MISSING + " — `P2-rft` and `P2-grpo-i" + str(n) + "` are both needed.")
+
+    curve = []
+    for i in range(1, n + 1):
+        for fold in ("A", "B"):
+            st = _load_json(stats_dir / f"i{i}-{fold}.stats.json")
+            if st:
+                curve.append(f"| {i} | {fold} | {st.get('episodes', 0)} on {st.get('groups', 0)} "
+                             f"tasks | {st.get('pass_rate', 0):.0%} | "
+                             f"{st.get('degenerate_rate', 0):.0%} | {st.get('examples', 0)} |")
+    tasks_of = {f: _load_json(stats_dir / f"tasks-{f}.json") or {} for f in ("A", "B")}
+    if curve or any(tasks_of.values()):
+        out.append("\n**The learning curve**: the policy at temperature 1 on its own "
+                   "training tasks, each iteration's rollouts (iteration 1: the RFT "
+                   "adapter's). Rising here and flat on the newer tasks is learning the "
+                   "training tasks without carrying it over.\n")
+        for f, d in tasks_of.items():
+            if d:
+                left = d.get("skipped_tasks") or []
+                out.append(f"- fold {f}: {len(d.get('tasks', []))} tasks"
+                           + (f"; {len(left)} of {', '.join(d.get('skipped_traps', []))} left "
+                              f"out (WHAT_FAILED #43)" if left else ""))
+        if curve:
+            out.append("\n| iteration | fold | rollouts | passed | groups with nothing to "
+                       "learn | turns trained |")
+            out.append("|---|---|---|---|---|---|")
+            out += curve
+
+    checks = []
+    heads = {name: _headers(traces / name / "full")
+             for name in ("P2-base-e2", "P2-rft-e2", f"P2-grpo-i{n}-e2", "P2-rft",
+                          f"P2-grpo-i{n}") if (traces / name / "full").is_dir()}
+    sims = {h.get("simulator") for hs in heads.values() for h in hs.values()}
+    checks.append((len(sims) == 1, "one customer in every run: "
+                   + ", ".join(f"`{x}`" for x in sorted(map(str, sims)))))
+    temps = {h.get("agent_temperature") for hs in heads.values() for h in hs.values()}
+    checks.append((temps == {0.0}, "agent temperature 0 in every evaluation" if temps == {0.0}
+                   else f"agent temperatures differ or are unrecorded: {sorted(map(str, temps))}"))
+    folds_e2, folds = _load_json(e2_split), _load_json(split)
+    for name, f in ((f"P2-grpo-i{n}-e2", folds_e2), ("P2-rft-e2", folds_e2),
+                    (f"P2-grpo-i{n}", folds)):
+        if name in heads:
+            ok, msg = _routed(heads[name], traces / name / "full", f)
+            checks.append((ok, f"`{name}`: {msg}"))
+    out.append("\nChecks:\n")
+    out += [f"- {'✓ ' if ok else '✗ **'}{msg}{'' if ok else '**'}" for ok, msg in checks]
+    return "\n".join(out)
+
+
 def section_training_rounds(traces: Path = Path("traces"),
                             spec1: str = "base=P-base,rft=P-rft,reference=P-ref",
                             spec2: str = "base=P2-base,rft=P2-rft,reference=P2-ref") -> str:
@@ -1343,7 +1530,7 @@ def section_training_rounds(traces: Path = Path("traces"),
     one = section_training(traces, spec1, Path("data/rft/stats.json"))
     if not base2.is_dir() or not any(base2.glob("*.jsonl")):
         return one
-    two = section_training(traces, spec2, Path("data/rft2/stats.json"))
+    two = section_training(traces, spec2, Path("data/rft2/stats.json")) + section_grpo(traces)
     return ("### Round 2: training data balanced by trap, today's customer and tools\n\n"
             + two + "\n\n### Round 1, as context\n\n*Another simulated customer and older "
             "tools than round 2's: its numbers are never paired against round 2's.*\n\n" + one)
