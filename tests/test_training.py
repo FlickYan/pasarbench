@@ -1298,16 +1298,20 @@ def test_grpo_scripts():
     from pasarbench.rl.split import make_folds
     from pasarbench.sweep import fold_router
 
-    # Its tasks: each fold's tasks the collection failed at least once.
+    # Its tasks: each fold's tasks the collection failed at least once, none of
+    # the photo trap's (WHAT_FAILED #43).
     work = Path(tempfile.mkdtemp())
     folds = make_folds(ALL)
     fp = work / "folds.json"
     fp.write_text(json.dumps(folds))
-    xa = next(t.task_id for t in ALL if folds["task_fold"][t.task_id] == "A")
-    ya = next(t.task_id for t in ALL if folds["task_fold"][t.task_id] == "A" and t.task_id != xa)
-    xb = next(t.task_id for t in ALL if folds["task_fold"][t.task_id] == "B")
-    r = _sweep(work, "C", f"{xa},{ya},{xb}", 2)
-    m = _sweep(work, "M", f"{xa},{xb}", 1, "--backend", "mute")
+    photo = "high_value_photo_required_first"
+    in_a = [t for t in ALL if folds["task_fold"][t.task_id] == "A"]
+    xa = next(t.task_id for t in in_a if t.trap != photo)
+    ya = next(t.task_id for t in in_a if t.trap != photo and t.task_id != xa)
+    pa = next(t.task_id for t in in_a if t.trap == photo)
+    xb = next(t.task_id for t in ALL if folds["task_fold"][t.task_id] == "B" and t.trap != photo)
+    r = _sweep(work, "C", f"{xa},{ya},{pa},{xb}", 2)
+    m = _sweep(work, "M", f"{xa},{pa},{xb}", 1, "--backend", "mute")
     assert r.returncode == 0 and m.returncode == 0, (r.stderr + m.stderr)[-800:]
     cell = work / "C" / "full"
     for f in (work / "M" / "full").glob("*.jsonl"):
@@ -1317,11 +1321,35 @@ def test_grpo_scripts():
     with contextlib.redirect_stdout(out):
         g.main(["tasks", "--folds", str(fp), "--collect", str(cell), "--out-dir",
                 str(work / "stats"), "--min-tasks", "1"])
-    picked = {f: json.loads((work / "stats" / f"tasks-{f}.json").read_text())["tasks"]
-              for f in "AB"}
+    lists = {f: json.loads((work / "stats" / f"tasks-{f}.json").read_text()) for f in "AB"}
+    picked = {f: d["tasks"] for f, d in lists.items()}
     check("GRPO trains each fold on its tasks the collection failed at least once, and on "
           "nothing else -- never the newer tasks it is judged on",
           picked == {"A": [xa], "B": [xb]}, (picked, out.getvalue()))
+    check("…and leaves out the photo trap, whose verdicts follow the customer's invented "
+          "photos (#43), saying so and writing down which",
+          lists["A"]["skipped_traps"] == [photo] and lists["A"]["skipped_tasks"] == [pa]
+          and lists["B"]["skipped_tasks"] == [] and f"left out: 1 of {photo}" in out.getvalue(),
+          (lists["A"], out.getvalue()))
+
+    def chosen(*flags):
+        d = work / f"stats-{len(flags)}-{flags[-1] if flags else ''}"
+        with contextlib.redirect_stdout(io.StringIO()):
+            g.main(["tasks", "--folds", str(fp), "--collect", str(cell), "--out-dir", str(d),
+                    "--min-tasks", "0", *flags])
+        return {f: json.loads((d / f"tasks-{f}.json").read_text())["tasks"] for f in "AB"}
+    trap_of = {t.task_id: t.trap for t in ALL}
+    check("`--skip-traps none` keeps it, and any trap can be named instead",
+          chosen("--skip-traps", "none") == {"A": sorted([xa, pa]), "B": [xb]}
+          and chosen("--skip-traps", trap_of[xa]) == {
+              "A": [pa], "B": [] if trap_of[xb] == trap_of[xa] else [xb]})
+    try:
+        chosen("--skip-traps", "no_such_trap")
+        typo = ""
+    except SystemExit as e:
+        typo = str(e)
+    check("…and a trap that does not exist is refused, not silently skipped",
+          "no trap no_such_trap" in typo, typo)
     try:
         with contextlib.redirect_stdout(io.StringIO()):
             g.main(["tasks", "--folds", str(fp), "--collect", str(cell), "--out-dir",
@@ -1480,22 +1508,31 @@ def test_grpo_scripts():
     settings.write_text("PASAR_K=5\nPASAR_COLLECT_K=8\nPASAR_EPOCHS=2\nPASAR_TRAIN_MAX_LEN=16384\n"
                         "PASAR_CUSTOMER=2\nPASAR_PER_TRAP=20\n")
     code, out4 = grpo(PASAR_ROUND="2")
-    check("its first run records the rollouts a task with the round's settings",
-          "PASAR_GRPO_K=8" in settings.read_text(), (settings.read_text(), out4[-300:]))
+    check("its first run records the rollouts a task with the round's settings, and the "
+          "traps its tasks leave out",
+          "PASAR_GRPO_K=8" in settings.read_text()
+          and f"PASAR_GRPO_SKIP_TRAPS={photo}" in settings.read_text(),
+          (settings.read_text(), out4[-300:]))
     code, out5 = grpo(PASAR_ROUND="2", PASAR_GRPO_K="6")
     check("…and a later run with another number is refused", code != 0
           and "GRPO's first iteration ran with 8" in out5, out5)
+    code, out6 = grpo(PASAR_ROUND="2", PASAR_GRPO_SKIP_TRAPS="none")
+    check("…or with other traps left out: the tasks were picked once", code != 0
+          and f"picked leaving out {photo}" in out6, out6)
+    check("the stage picks its tasks with those traps left out",
+          '--skip-traps "$GRPO_SKIP"' in stage)
     sets = subprocess.run(["bash", "scripts/gpu_pipeline.sh", "settings"], cwd=work,
                           capture_output=True, text=True,
                           env={**base, "PASAR_ROUND": "2", "PASAR_GRPO_ITERS": "2"}).stdout
     check("`settings` shows GRPO's knobs for round 2",
-          "grpo: PASAR_GRPO_ITERS=2 PASAR_GRPO_K=8 PASAR_GRPO_LR=2e-5" in sets, sets)
+          "grpo: PASAR_GRPO_ITERS=2 PASAR_GRPO_K=8 PASAR_GRPO_LR=2e-5 "
+          f"PASAR_GRPO_SKIP_TRAPS={photo}" in sets, sets)
     modal_src = (root / "scripts" / "modal_pipeline.py").read_text()
     passed_on = modal_src.split("PASSED_ON = (")[1].split(")")[0]
     nb = (root / "scripts" / "pasar_notebook.py").read_text()
     check("a Modal job and a notebook run the stage, as round 2's only, with its knobs",
           all(f'"{k}"' in passed_on for k in ("PASAR_GRPO_ITERS", "PASAR_GRPO_K",
-                                               "PASAR_GRPO_LR"))
+                                               "PASAR_GRPO_LR", "PASAR_GRPO_SKIP_TRAPS"))
           and '"grpo")' in modal_src and "PASAR_ROUND=2 modal run" in modal_src
           and 'STAGES = ("smoke", "stage1", "stage2", "grpo")' in nb
           and "pn.run('grpo', round=2)" in nb)
