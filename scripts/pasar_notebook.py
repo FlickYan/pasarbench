@@ -18,6 +18,7 @@ and then any of:
     pn.run("smoke")     # a GPU stage, in this cell: smoke | stage1 | stage2
     pn.launch("stage1") # ...or as a detached Modal job on its own GPU; the notebook may stop
     pn.run("stage1", round=2)   # round 2: the second fine-tune, files of its own (v44)
+    pn.run("grpo", round=2)     # GRPO from round 2's adapters, after its stage 2 (v45)
     pn.status()         # what is running or done (a notebook sees other containers'
                         # writes as of its start: check a job from a new session)
     pn.read("logs/smoke-projection.txt")    # print a file (head=, tail= for long ones)
@@ -59,13 +60,16 @@ VENV = Path(os.environ.get("PASAR_NB_VENV") or
 REPO = "pasarbench"
 LOCK = "logs/.stage-lock.json"
 STALE = 15 * 60
-STAGES = ("smoke", "stage1", "stage2")
+STAGES = ("smoke", "stage1", "stage2", "grpo")
 # What pack() archives: what the report and the audits read (as modal_pipeline.pull).
 RESULTS = ["logs", "data/splits", "data/rft/stats.json", "data/run_settings.env",
            "traces/P-smoke", "traces/P-base", "traces/P-rft", "traces/P-ref",
            # round 2 (PASAR_ROUND=2): files of its own, round 1's left as they are
            "data/rft2/stats.json", "data/run2_settings.env", "traces/P2-base",
-           "traces/P2-base-e2", "traces/P2-rft", "traces/P2-ref"]
+           "traces/P2-base-e2", "traces/P2-rft", "traces/P2-ref",
+           # GRPO (round 2's grpo stage), patterns: its stats and evaluations; its
+           # rollouts (traces/P2-grpo-i*-collect-*) stay on the Volume
+           "data/grpo2/stats", "traces/P2-rft-e2", "traces/P2-grpo-i?", "traces/P2-grpo-i?-e2"]
 WEB_DOWNLOAD_LIMIT = 16 * 2**20    # the Modal web UI downloads files up to 16 MB
 
 _state: dict = {}
@@ -516,6 +520,8 @@ def run(stage: str, force: bool = False, round: int | None = None) -> None:
     if stage not in STAGES:
         raise SystemExit(f"stage is one of {', '.join(STAGES)}")
     env = _round(round)
+    if stage == "grpo" and env.get("PASAR_ROUND") != "2":
+        raise SystemExit("GRPO continues round 2's fine-tunes: pn.run('grpo', round=2)")
     if not _gpus():
         raise SystemExit("this notebook has no GPU: open the compute profile (sidebar), pick "
                          "B200 x1 (or H200 x1), let the kernel restart, run pn.setup() again")
@@ -541,6 +547,8 @@ def launch(stage: str, wait_min: float = 30, dry_run: bool = False,
     if stage not in STAGES + ("download", "test"):
         raise SystemExit(f"stage is one of {', '.join(STAGES + ('download', 'test'))}")
     env = _round(round)
+    if stage == "grpo" and env.get("PASAR_ROUND") != "2":
+        raise SystemExit("GRPO continues round 2's fine-tunes: pn.launch('grpo', round=2)")
     work = paths()["work"]
     cmd = [sys.executable, "-m", "modal", "run", "--detach", "scripts/modal_pipeline.py",
            "--stage", stage]
@@ -653,27 +661,40 @@ def status() -> None:
         _say("no stage running")
     for g in _gpus():
         _say(f"GPU {g}")
-    settings = work / "data" / "run_settings.env"
-    if settings.exists():
-        _say("settings: " + " ".join(settings.read_text().split()))
-    k = dict(l.split("=", 1) for l in settings.read_text().split()) if settings.exists() else {}
-    expect = {"P-smoke": 16, "P-base": 215 * int(k.get("PASAR_K", 5)),
-              "P-collect": 215 * int(k.get("PASAR_COLLECT_K", 8)),
-              "P-rft": 215 * int(k.get("PASAR_K", 5)), "P-ref": 215 * int(k.get("PASAR_K", 5))}
-    for name, n in expect.items():
-        d = work / "traces" / name
-        if d.exists():
-            files, done = _episodes(d)
-            _say(f"traces/{name}: {done} finished of ~{n}" +
-                 (f" ({files - done} unfinished)" if files > done else ""))
-    for f in ("A", "B"):
-        c = work / "checkpoints" / f"rft-{f}"
-        if (c / "adapter_config.json").exists():
-            _say(f"checkpoints/rft-{f}: trained")
-        elif c.exists():
-            steps = sorted(c.glob("checkpoint-*"), key=lambda p: int(p.name.split("-")[-1]))
-            _say(f"checkpoints/rft-{f}: training" + (f", last save {steps[-1].name}"
-                                                    if steps else ""))
+    # Round 1, round 2 and GRPO: each one's runs with the episodes it expects.
+    for rnd, fname, P, rft in ((1, "run_settings.env", "P", "rft"),
+                               (2, "run2_settings.env", "P2", "rft2")):
+        settings = work / "data" / fname
+        if settings.exists():
+            _say(f"round {rnd} settings: " + " ".join(settings.read_text().split()))
+        k = (dict(l.split("=", 1) for l in settings.read_text().split())
+             if settings.exists() else {})
+        K, CK = int(k.get("PASAR_K", 5)), int(k.get("PASAR_COLLECT_K", 8))
+        expect = {f"{P}-base": 215 * K, f"{P}-collect": 215 * CK, f"{P}-rft": 215 * K,
+                  f"{P}-ref": 215 * K}
+        expect = ({"P-smoke": 16, **expect} if rnd == 1
+                  else {**expect, "P2-base-e2": 62 * K, "P2-rft-e2": 62 * K})
+        if rnd == 2:
+            for d in sorted((work / "traces").glob("P2-grpo-i*")):
+                expect[d.name] = (None if "-collect-" in d.name else
+                                  62 * K if d.name.endswith("-e2") else 215 * K)
+        for name, n in expect.items():
+            d = work / "traces" / name
+            if d.exists():
+                files, done = _episodes(d)
+                _say(f"traces/{name}: {done} finished" + (f" of ~{n}" if n else "") +
+                     (f" ({files - done} unfinished)" if files > done else ""))
+        names = [f"{rft}-{f}" for f in ("A", "B")]
+        if rnd == 2:
+            names += sorted(c.name for c in (work / "checkpoints").glob("grpo2-i*"))
+        for name in names:
+            c = work / "checkpoints" / name
+            if (c / "adapter_config.json").exists():
+                _say(f"checkpoints/{name}: trained")
+            elif c.exists():
+                steps = sorted(c.glob("checkpoint-*"), key=lambda p: int(p.name.split("-")[-1]))
+                _say(f"checkpoints/{name}: training" + (f", last save {steps[-1].name}"
+                                                        if steps else ""))
     logs = sorted((work / "logs").glob("*.log"), key=lambda p: p.stat().st_mtime)
     if logs:
         tail = logs[-1].read_text(errors="replace").splitlines()[-8:]
@@ -692,8 +713,10 @@ def pack() -> Path:
     out = work / f"results-{time.strftime('%Y%m%d-%H%M')}.tar.gz"
     with tarfile.open(out, "w:gz") as tar:
         for rel in RESULTS:
-            if (work / rel).exists():
-                tar.add(work / rel, arcname=f"{REPO}/{rel}",
+            # An entry's last part may be a pattern: traces/P2-grpo-i? is every
+            # GRPO evaluation, and none of its rollouts (several GB).
+            for path in sorted(work.glob(rel)):
+                tar.add(path, arcname=f"{REPO}/{path.relative_to(work).as_posix()}",
                         filter=lambda ti: None if ti.name.endswith(".stage-lock.json") else ti)
     size = out.stat().st_size
     _say(f"{out} ({size / 2**20:.1f} MB)")
