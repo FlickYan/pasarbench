@@ -484,6 +484,37 @@ EOF
     echo "  data/$G/stats/i*-A.stats.json  each iteration's groups, and the policy's pass rate on its tasks"
     ;;
 
+  customer3)
+    # Customer 3 against customer 2 (RUNBOOK phase 4, customer 3; WHAT_FAILED
+    # #43): the base model at temperature 0 on the photo trap, where customer 2
+    # sends photos she was told she has none of, and on the duplicate refund,
+    # whose customer promises to check her statement -- the other trap customer
+    # 3's new rule reaches. Runs of their own, $P-c2-check and $P-c3-check, the
+    # same day, the same agent and customer model; no other stage reads them.
+    if [ "$ROUND" != 2 ]; then
+      echo "!! the customer check runs on round 2's machine and models: PASAR_ROUND=2" >&2
+      exit 1
+    fi
+    layout
+    serve agent
+    for C in 2 3; do
+      $PY scripts/train_rft.py baseline -k "$K" --customer "$C" \
+        --traps high_value_photo_required_first,duplicate_refund_escalate \
+        --run-id "$P-c$C-check" 2>&1 | tee -a "logs/${LP}customer3.log"
+    done
+    stop
+    {
+      echo "== customer 2 -> customer 3, the same agent, paired by task"
+      $PY scripts/compare_cells.py "traces/$P-c2-check/full" "traces/$P-c3-check/full"
+      for C in 2 3; do
+        echo; echo "== customer $C: photos she said she sent"
+        $PY scripts/inspect_trace.py "traces/$P-c$C-check/full" --leaks-only | sed -n '/^4\. /,$p'
+      done
+    } > "logs/${LP}customer3.txt" 2>&1 || echo "!! a comparison failed; the runs are complete"
+    echo
+    echo "Customer 3 checked. Read logs/${LP}customer3.txt (RUNBOOK phase 4, customer 3)."
+    ;;
+
   settings)
     echo "agent $AGENT_MODEL | customer $SIM_MODEL | round $ROUND: runs $P-*, adapters checkpoints/$RFT-A and -B"
     echo "PASAR_K=$K PASAR_COLLECT_K=$COLLECT_K PASAR_EPOCHS=$EPOCHS PASAR_TRAIN_MAX_LEN=$TRAIN_MAX_LEN PASAR_CUSTOMER=$PASAR_CUSTOMER PASAR_PER_TRAP=$PER_TRAP" \
@@ -495,7 +526,7 @@ EOF
     ;;
 
   *)
-    echo "usage: bash scripts/gpu_pipeline.sh smoke | stage1 | stage2 | grpo | settings" >&2
+    echo "usage: bash scripts/gpu_pipeline.sh smoke | stage1 | stage2 | grpo | customer3 | settings" >&2
     exit 1
     ;;
 esac
