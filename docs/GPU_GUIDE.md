@@ -166,19 +166,25 @@ the reading is fixed in RUNBOOK phase 4, round 2.
 
 ---
 
-## GRPO — after round 2 (v45)
+## GRPO — after round 2 (v45; v46 leaves the photo trap out)
 
 One stage after round 2's stage 2, on the same Volume. For each fold it starts
 from round 2's RFT adapter: eight rollouts at temperature 1 on each of the
-fold's tasks the base model failed at least once in round 2's collection, their
-advantages, one policy-gradient pass. Then the new adapters are evaluated
-beside the RFT adapters and the base model, on the held-out fold and on the 62
-newer tasks no model trained on (RUNBOOK phase 4, GRPO, has the reading).
+fold's tasks the base model failed at least once in round 2's collection —
+none of the photo trap's — their advantages, one policy-gradient pass. Then the
+new adapters are evaluated beside the RFT adapters and the base model, on the
+held-out fold and on the 62 newer tasks no model trained on (RUNBOOK phase 4,
+GRPO, has the reading).
 
 **Two things first.** Put this version on the Volume only after round 2's
 stage 2 has finished: a running stage reads its scripts as it goes. And send me
 round 2's results before starting — if the base model passes 95% or more of
 the newer tasks, GRPO has nowhere to show a gain and waits for harder tasks.
+Round 2's did (2026-10-12): 0.923, so GRPO runs — with v46, which leaves out
+the photo trap, whose customer sends photos she was told she has none of
+(WHAT_FAILED #43). Put v46 on the Volume before the first `grpo` run: the tasks
+are picked once, and the run records which traps it left out
+(`PASAR_GRPO_SKIP_TRAPS`; a later run with another value is refused).
 
 | what runs | one B200 | as a job | in a notebook |
 |---|---|---|---|
@@ -187,7 +193,8 @@ the newer tasks, GRPO has nowhere to show a gain and waits for harder tasks.
 
 The first figure depends on how many tasks the collection failed at least once:
 the stage prints them by fold and trap as it starts (`logs/r2-grpo-tasks.log`),
-and stops if a fold has fewer than six.
+with a "left out" line for the photo trap's, and stops if a fold has fewer than
+six.
 
 **In a notebook** (part N), after the new version is unpacked onto the Volume
 (N3–N5):
