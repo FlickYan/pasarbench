@@ -485,7 +485,7 @@ doing it twice.
   customer takes.** Offered a voucher or a human, mine often took the human, and
   the check wanted the voucher: a "gain" from reinforcement learning was her
   choosing differently.
-- **Write down what failed.** The project's failure log has 47 entries; most
+- **Write down what failed.** The project's failure log has 49 entries; most
   were found by refusing a number that couldn't be right.
 
 ## Limits
@@ -505,5 +505,5 @@ run twice, and the second's photo-trap numbers are the simulated customer's: tol
 she had no photos, she sent them anyway once she could not leave. GRPO ran one
 iteration, judged on tasks whose room was partly that customer's choice.
 
-The code, the trace generators, and all 47 failures are in the repo:
+The code, the trace generators, and all 49 failures are in the repo:
 [github.com/FlickYan/pasarbench](https://github.com/FlickYan/pasarbench).
