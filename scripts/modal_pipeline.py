@@ -14,6 +14,7 @@ Volume -- the two can be mixed).
     modal run scripts/modal_pipeline.py --stage pull        # logs and results -> this repo
     modal run --detach scripts/modal_pipeline.py --stage stage2    # one B200, hours
     modal run scripts/modal_pipeline.py --stage pull
+    PASAR_ROUND=2 modal run --detach scripts/modal_pipeline.py --stage grpo   # after round 2
 
 The GPU is one B200 unless PASAR_GPU says otherwise when you run the command:
 PASAR_GPU=H200 (one card: cheaper per hour, slower, tighter) or PASAR_GPU=H100:2
@@ -60,7 +61,10 @@ RESULTS = ["logs", "data/splits", "data/rft/stats.json", "data/run_settings.env"
            "traces/P-smoke", "traces/P-base", "traces/P-rft", "traces/P-ref",
            # round 2 (PASAR_ROUND=2): files of its own, round 1's left as they are
            "data/rft2/stats.json", "data/run2_settings.env", "traces/P2-base",
-           "traces/P2-base-e2", "traces/P2-rft", "traces/P2-ref"]
+           "traces/P2-base-e2", "traces/P2-rft", "traces/P2-ref",
+           # GRPO (round 2's grpo stage), patterns: its stats and evaluations; its
+           # rollouts (traces/P2-grpo-i*-collect-*) stay on the Volume
+           "data/grpo2/stats", "traces/P2-rft-e2", "traces/P2-grpo-i?", "traces/P2-grpo-i?-e2"]
 # One GPU stage at a time: two writing the same traces corrupt both, and bill
 # twice. The lock is a heartbeat, so a stage that dies without cleaning up
 # stops blocking after STALE seconds; Modal's restart of a preempted stage
@@ -156,8 +160,8 @@ def _run(cmd: list[str], cwd: Path) -> None:
 # simulated customer's rules).
 PASSED_ON = ("AGENT_MODEL", "SIM_MODEL", "SGLANG_ARGS", "PASAR_K", "PASAR_COLLECT_K",
              "PASAR_EPOCHS", "PASAR_TRAIN_MAX_LEN", "PASAR_CUSTOMER", "PASAR_PER_TRAP",
-             "PASAR_ROUND", "PASAR_GPU", "PASAR_AGENT_POOL_GB", "PASAR_RESERVE_GB",
-             "PASAR_USD_PER_HOUR")
+             "PASAR_ROUND", "PASAR_GRPO_ITERS", "PASAR_GRPO_K", "PASAR_GRPO_LR",
+             "PASAR_GPU", "PASAR_AGENT_POOL_GB", "PASAR_RESERVE_GB", "PASAR_USD_PER_HOUR")
 
 
 @app.function(volumes={VOL: volume}, cpu=4, memory=16384, timeout=4 * 3600,
@@ -230,7 +234,10 @@ def run_stage(name: str) -> None:
 
 def pull() -> None:
     """Copy logs and results from the Volume into this repo, where
-    make_report.py and inspect_trace.py look for them."""
+    make_report.py and inspect_trace.py look for them. A RESULTS entry's last
+    part may be a pattern (traces/P2-grpo-i?: every GRPO evaluation)."""
+    from fnmatch import fnmatchcase
+
     from modal.volume import FileEntryType
     got = 0
     for rel in RESULTS:
@@ -240,23 +247,25 @@ def pull() -> None:
                     for e in volume.listdir(parent)}
         except Exception:                                   # noqa: BLE001
             here = {}
-        if name not in here:
+        found = sorted(n for n in here if fnmatchcase(n, name))
+        if not found:
             print(f"  (not on the Volume yet: {rel})")
             continue
-        entries = (volume.listdir(f"pasarbench/{rel}", recursive=True)
-                   if here[name].type == FileEntryType.DIRECTORY else [here[name]])
-        n = 0
-        for e in entries:
-            if e.type != FileEntryType.FILE:
-                continue
-            path = e.path.lstrip("/")
-            local = ROOT / path.removeprefix("pasarbench/")
-            local.parent.mkdir(parents=True, exist_ok=True)
-            with local.open("wb") as fh:
-                volume.read_file_into_fileobj(path, fh)
-            n += 1
-        got += n
-        print(f"  {rel}: {n} files")
+        for match in found:
+            entries = (volume.listdir(f"{parent}/{match}", recursive=True)
+                       if here[match].type == FileEntryType.DIRECTORY else [here[match]])
+            n = 0
+            for e in entries:
+                if e.type != FileEntryType.FILE:
+                    continue
+                path = e.path.lstrip("/")
+                local = ROOT / path.removeprefix("pasarbench/")
+                local.parent.mkdir(parents=True, exist_ok=True)
+                with local.open("wb") as fh:
+                    volume.read_file_into_fileobj(path, fh)
+                n += 1
+            got += n
+            print(f"  {f'{parent}/{match}'.removeprefix('pasarbench/')}: {n} files")
     print(f"{got} files into {ROOT}. Read logs/ first (docs/GPU_GUIDE.md says what for).")
 
 
@@ -267,7 +276,10 @@ def main(stage: str) -> None:
         download.remote()
     elif stage == "test":
         test.remote()
-    elif stage in ("smoke", "stage1", "stage2"):
+    elif stage in ("smoke", "stage1", "stage2", "grpo"):
+        if stage == "grpo" and os.environ.get("PASAR_ROUND") != "2":
+            raise SystemExit("GRPO continues round 2's fine-tunes: PASAR_ROUND=2 modal run "
+                             "--detach scripts/modal_pipeline.py --stage grpo")
         check_gpu(GPU)
         print(f"{stage} on {GPU} (PASAR_GPU to change it); follow it at https://modal.com/apps")
         if stage == "stage2" and not os.environ.get("DEEPSEEK_API_KEY"):
@@ -277,4 +289,4 @@ def main(stage: str) -> None:
         pull()
     else:
         raise SystemExit(f"unknown stage {stage!r}: download | test | smoke | stage1 | "
-                         f"stage2 | pull")
+                         f"stage2 | grpo | pull")
