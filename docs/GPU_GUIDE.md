@@ -138,7 +138,7 @@ The hours are round 1's, measured; the smoke stage projects yours.
 (N3–N5):
 
 ```python
-pn.run("smoke")
+pn.run("smoke", round=2)       # round 1's settings refuse every stage now, the smoke test too
 pn.run("stage1", round=2)      # or pn.launch("stage1", round=2): a detached job, notebook may stop
 pn.read("logs/r2-check-A.txt") # step R, with round 2's files (below)
 pn.run("stage2", round=2)
@@ -148,7 +148,7 @@ pn.pack()                      # round 1's and round 2's results, one archive
 **As Modal jobs** (part A), from your laptop:
 
 ```bash
-modal run --detach scripts/modal_pipeline.py --stage smoke
+PASAR_ROUND=2 modal run --detach scripts/modal_pipeline.py --stage smoke
 PASAR_ROUND=2 modal run --detach scripts/modal_pipeline.py --stage stage1
 modal run scripts/modal_pipeline.py --stage pull          # read step R's files
 PASAR_ROUND=2 modal run --detach scripts/modal_pipeline.py --stage stage2
@@ -156,13 +156,64 @@ modal run scripts/modal_pipeline.py --stage pull
 ```
 
 **On Lambda** (part B), in tmux: `PASAR_ROUND=2 bash scripts/gpu_pipeline.sh
-stage1`, then `stage2` the same way.
+smoke`, then `stage1` and `stage2` the same way.
 
 Step R for round 2 reads `logs/r2-sim_audit.txt`, `logs/r2-check-A.txt` and
 `data/rft2/stats.json`, whose `episodes_by_trap` shows how many episodes each
 trap gave each fold; `logs/r2-build.log` names any trap below the quota of 20
 for want of passing episodes. Then send me the pulled results (or say done):
 the reading is fixed in RUNBOOK phase 4, round 2.
+
+---
+
+## GRPO — after round 2 (v45)
+
+One stage after round 2's stage 2, on the same Volume. For each fold it starts
+from round 2's RFT adapter: eight rollouts at temperature 1 on each of the
+fold's tasks the base model failed at least once in round 2's collection, their
+advantages, one policy-gradient pass. Then the new adapters are evaluated
+beside the RFT adapters and the base model, on the held-out fold and on the 62
+newer tasks no model trained on (RUNBOOK phase 4, GRPO, has the reading).
+
+**Two things first.** Put this version on the Volume only after round 2's
+stage 2 has finished: a running stage reads its scripts as it goes. And send me
+round 2's results before starting — if the base model passes 95% or more of
+the newer tasks, GRPO has nowhere to show a gain and waits for harder tasks.
+
+| what runs | one B200 | as a job | in a notebook |
+|---|---|---|---|
+| one iteration a fold: rollouts, then the update (servers stopped), A then B | ~1.5–3 h | ~$11–21 | ~$14–27 |
+| evaluation: 1,075 held-out episodes, then 310 + 310 on the newer tasks | ~2–2.5 h | ~$15–18 | ~$18–23 |
+
+The first figure depends on how many tasks the collection failed at least once:
+the stage prints them by fold and trap as it starts (`logs/r2-grpo-tasks.log`),
+and stops if a fold has fewer than six.
+
+**In a notebook** (part N), after the new version is unpacked onto the Volume
+(N3–N5):
+
+```python
+pn.run("grpo", round=2)                 # or pn.launch("grpo", round=2): a detached job
+pn.read("logs/r2-grpo-tasks.log")       # the tasks each fold trains on, by trap
+pn.read("logs/r2-grpo-compare-i1.txt", head=80)   # the result
+pn.pack()
+```
+
+**As Modal jobs** (part A), from your laptop:
+
+```bash
+PASAR_ROUND=2 modal run --detach scripts/modal_pipeline.py --stage grpo
+modal run scripts/modal_pipeline.py --stage pull
+```
+
+**On Lambda** (part B), in tmux: `PASAR_ROUND=2 bash scripts/gpu_pipeline.sh grpo`.
+
+A second iteration, later, continues from the first one's adapters and is
+evaluated under its own names (`P2-grpo-i2`): `os.environ["PASAR_GRPO_ITERS"] =
+"2"` in a notebook cell before `pn.run`, or `PASAR_GRPO_ITERS=2` before
+`modal run`. If the stage stops with "nothing to train on", the policy has no
+task left that it sometimes fails: that is a result, not an error — send me the
+logs.
 
 ---
 
