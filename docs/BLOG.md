@@ -384,6 +384,22 @@ item worth over SGD 200" in all five conversations; MYR 186 is SGD 56, and the
 base model never asked. Balancing decides which successes spread. It doesn't
 stop them spreading.
 
+Then GRPO, from those fine-tunes: the model trained on the difference between
+its passing and failing attempts at the same task, and judged, under a rule
+written before it ran, on 62 newer tasks no model had trained on. +2.6 points
+against the fine-tune it started from, 7 tasks better and 4 worse, p = 0.55:
+inconclusive. Eight of the eleven tasks that moved were one trap's, and reading
+them changed what the number was. Outside the return window the policy offers a
+goodwill voucher; if the customer rejects it and insists on a refund, the case
+goes to a human. The agents offer both at once — "the voucher, or a human agent
+to review a full refund" — and my simulated customer, who wants her money back
+but will take a voucher, often took the human: "I'd rather have a full refund.
+Please escalate this." The agent escalated, as the policy says, and the check,
+which wants a voucher, failed it. Forty-eight of the trap's 55 failures that
+round were this. Read the way the policy reads them, GRPO's gain is zero — and
+the base model passes 96% of the newer tasks, above the 95% at which I had said
+I would hold GRPO back. Half the room I ran it for was the customer's choice.
+
 A verifier is a reward function the moment you train on it, and its quirks
 become the model's habits. The replay that caught this cost seconds. Without
 it, the headline would have been a fine-tune that "improved", and an API model
@@ -461,7 +477,11 @@ doing it twice.
 - **Enforce in the harness what a prompt can only ask.** Told not to repeat a
   call, the agent repeated it; refused, it stopped. And the refusal has to read
   a call the way the policy does: an amount is part of a payment.
-- **Write down what failed.** The project's failure log has 45 entries; most
+- **Where the policy allows two answers, decide which one the simulated
+  customer takes.** Offered a voucher or a human, mine often took the human, and
+  the check wanted the voucher: a "gain" from reinforcement learning was her
+  choosing differently.
+- **Write down what failed.** The project's failure log has 46 entries; most
   were found by refusing a number that couldn't be right.
 
 ## Limits
@@ -478,7 +498,8 @@ had gone to the complaints team. It hadn't. The guardrail shares that blind
 spot, and its live test is one run of 192 conversations. The Thai and
 Vietnamese translations are not native-reviewed. The fine-tune is one recipe
 run twice, and the second's photo-trap numbers are the simulated customer's: told
-she had no photos, she sent them anyway once she could not leave.
+she had no photos, she sent them anyway once she could not leave. GRPO ran one
+iteration, judged on tasks whose room was partly that customer's choice.
 
-The code, the trace generators, and all 45 failures are in the repo:
+The code, the trace generators, and all 46 failures are in the repo:
 [github.com/FlickYan/pasarbench](https://github.com/FlickYan/pasarbench).
