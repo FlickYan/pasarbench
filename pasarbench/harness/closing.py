@@ -31,6 +31,14 @@ time, with MAX_STEPS of its own; the cap on customer turns does not apply, as
 no customer is left to take one. Context strategies that drop old messages
 keep the note (context.py): it is the agent's whole instruction for the phase.
 
+That budget is what the conversation left of it, and on the longest cases it
+left nothing: in 1q the episode's 120,000 tokens cut 27 of 456 closing phases
+short, 17 of them before the agent took a step -- each step's prompt is the
+whole conversation by then. With `closing_room` (v49, opt-in, in the trace
+header) the phase is bounded by its own steps alone: the episode's steps, tool
+calls and tokens end with the conversation (ROOM), its time does not, and the
+conversation itself runs exactly as before.
+
 Two notes. "check" is 1j's, unchanged since the run that fixed it. Its one
 cost in every run since has been a call made again -- 22 escalations in 1m's
 186 episodes, of cases the conversation had already escalated -- and 1k named
@@ -70,6 +78,10 @@ MODES = ("off", "check", "record", "guard")
 # The closing phase's own cap, inside the episode's budget: enough to look a
 # tool up, call it and write the note, not enough to start the case again.
 MAX_STEPS = 6
+# The episode's limits that stop at the conversation when the phase has room
+# of its own (loop.run_episode's closing_room): its steps, tool calls and
+# tokens. Not its wall clock, nor MAX_STEPS above.
+ROOM = ("max_steps", "max_tool_calls", "max_tokens")
 # The first line of every closing note, and how a note is told from any other
 # message -- by a resumed episode, and by a context strategy that must keep it.
 HEAD = ("[Support system: the customer has left the conversation and will not see "
