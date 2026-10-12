@@ -1439,7 +1439,7 @@ def test_grpo_scripts():
           in one and "--host 127.0.0.1" in one, one)
     check("…and nothing is served without one", serve("lora").startswith("exit 1"))
     pipe = (root / "scripts" / "gpu_pipeline.sh").read_text()
-    stage = pipe[pipe.index("\n  grpo)"):pipe.index("\n  settings)")]
+    stage = pipe[pipe.index("\n  grpo)"):pipe.index("\n  customer3)")]
     check("each iteration serves the adapter it starts from, rolls it out and builds from "
           "the same name, then updates from that adapter",
           'name="pasar-$(basename "$prev")"' in stage and 'export LORA="$prev"' in stage
@@ -1533,14 +1533,42 @@ def test_grpo_scripts():
     check("a Modal job and a notebook run the stage, as round 2's only, with its knobs",
           all(f'"{k}"' in passed_on for k in ("PASAR_GRPO_ITERS", "PASAR_GRPO_K",
                                                "PASAR_GRPO_LR", "PASAR_GRPO_SKIP_TRAPS"))
-          and '"grpo")' in modal_src and "PASAR_ROUND=2 modal run" in modal_src
-          and 'STAGES = ("smoke", "stage1", "stage2", "grpo")' in nb
+          and '"grpo", "customer3")' in modal_src and "PASAR_ROUND=2 modal run" in modal_src
+          and 'STAGES = ("smoke", "stage1", "stage2", "grpo", "customer3")' in nb
           and "pn.run('grpo', round=2)" in nb)
     results = re.search(r"RESULTS = \[(.*?)\]", modal_src, re.S).group(1)
     check("`pull` brings back GRPO's stats and evaluations, and not its rollouts",
           all(x in results for x in ('"data/grpo2/stats"', '"traces/P2-rft-e2"',
                                       '"traces/P2-grpo-i?"', '"traces/P2-grpo-i?-e2"'))
           and not any("collect" in x for x in re.findall(r'"([^"]+)"', results)))
+
+    # The customer check (v47): customer 3 against customer 2 on round 2's
+    # models, two traps, each under a run of its own (WHAT_FAILED #43).
+    c3 = pipe[pipe.index("\n  customer3)"):pipe.index("\n  settings)")]
+    check("the customer check runs the base model on the photo trap and the duplicate "
+          "refund under each customer, then compares them and audits her photos",
+          'for C in 2 3; do' in c3 and '--customer "$C"' in c3
+          and "--traps high_value_photo_required_first,duplicate_refund_escalate" in c3
+          and '--run-id "$P-c$C-check"' in c3 and "serve agent" in c3
+          and 'compare_cells.py "traces/$P-c2-check/full" "traces/$P-c3-check/full"' in c3
+          and "inspect_trace.py" in c3 and "--leaks-only" in c3, c3[:400])
+    r = subprocess.run(["bash", "scripts/gpu_pipeline.sh", "customer3"], cwd=work,
+                       capture_output=True, text=True, env={**base})
+    check("…on round 2's machine and models only", r.returncode != 0
+          and "PASAR_ROUND=2" in r.stderr, r.stdout + r.stderr)
+    tr2 = _script("train_rft")
+    sys.argv = ["train_rft.py", "baseline", "--customer", "3", "--traps",
+                "high_value_photo_required_first", "--run-id", "P2-c3-check", "--dry-run"]
+    o = io.StringIO()
+    with contextlib.redirect_stdout(o):
+        tr2.main()
+    check("…its sweeps: the traps named, customer 3 asked for",
+          "--traps high_value_photo_required_first" in o.getvalue()
+          and "--customer 3" in o.getvalue(), o.getvalue())
+    check("…a notebook and a Modal job run it, as round 2's, and bring its runs back",
+          "pn.run('customer3', round=2)" in nb and '"customer3")' in modal_src
+          and '"traces/P2-c?-check"' in results
+          and '"traces/P2-c?-check"' in nb)
 
 
 def _script_module(name):
