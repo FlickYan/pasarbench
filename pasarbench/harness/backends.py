@@ -12,9 +12,11 @@ interface is the same.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import urllib.error
+import urllib.parse
 import urllib.request
 from typing import Any, Protocol
 
@@ -127,6 +129,15 @@ def _post(url: str, payload: dict, headers: dict, timeout: float = 120.0) -> dic
         raise RuntimeError(f"HTTP {e.code} from {url}: {detail}") from e
 
 
+def conversation_id(messages: list[dict[str, Any]]) -> str:
+    """One id for every request of a conversation, from what does not change
+    in it: its system prompt and the customer's first message. Nothing is
+    kept between requests, so parallel conversations need no bookkeeping; two
+    with the same start (one task's repeats) share a server, and a cache."""
+    head = json.dumps(messages[:2], sort_keys=True, ensure_ascii=False)
+    return "pasarbench-" + hashlib.sha256(head.encode()).hexdigest()[:24]
+
+
 class OpenAICompatBackend:
     """Works with OpenAI, SGLang's and vLLM's servers, Together, DeepSeek,
     Modal-hosted vLLM.
@@ -144,7 +155,16 @@ class OpenAICompatBackend:
                  extra_body: dict[str, Any] | None = None):
         self.model = model
         self.base_url = base_url.rstrip("/")
-        self.api_key = api_key or os.environ.get("OPENAI_API_KEY", "EMPTY")
+        # OPENAI_API_KEY is OpenAI's: without a key given, it is used for
+        # api.openai.com and sent nowhere else (v55).
+        host = (urllib.parse.urlparse(self.base_url).hostname or "").lower()
+        openai = host == "api.openai.com"
+        self.api_key = api_key or (os.environ.get("OPENAI_API_KEY") if openai else None) or "EMPTY"
+        # xAI keeps its prompt cache on each server, and sends the requests of
+        # one conversation to one server when they carry the same
+        # x-grok-conv-id (v56). Without it each step may land where the steps
+        # before it are not cached -- the bill of a run several times over.
+        self.sticky = host == "x.ai" or host.endswith(".x.ai")
         self.temperature = temperature
         self.max_tokens = max_tokens
         # Provider-specific body fields. The one that matters here:
@@ -169,9 +189,11 @@ class OpenAICompatBackend:
             payload["tool_choice"] = "auto"
         payload.update(self.extra_body)
 
-        data = _post(f"{self.base_url}/chat/completions", payload,
-                     {"Content-Type": "application/json",
-                      "Authorization": f"Bearer {self.api_key}"})
+        headers = {"Content-Type": "application/json",
+                   "Authorization": f"Bearer {self.api_key}"}
+        if self.sticky:
+            headers["x-grok-conv-id"] = conversation_id(payload["messages"])
+        data = _post(f"{self.base_url}/chat/completions", payload, headers)
 
         choice = data["choices"][0]["message"]
         calls = []
