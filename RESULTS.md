@@ -77,7 +77,7 @@ Unpaired rates over whatever tasks each language drew in this run: a gap here mi
 ## 2. Tool scaling
 
 *Source: `traces/I-tools2` — 480 episodes, pinned with `--tools-run`.*  
-*Also qualifying: `I-tools` (480).*
+*Also qualifying: `I-tools` (480), `J-preload` (96), `J-preload-named` (96), `K-preload` (171), `K-preload-named` (171), `L-claims` (96), `L-off` (96), `L2-claims` (96), `L2-off` (96), `M-check` (171), `M-off` (171), `N-check` (474), `N-off` (474), `O-c1` (252), `O-c2` (252), `Q-check` (186), `Q-off` (186), `R-check` (186), `R-record` (186), `S-check` (186), `S-guard` (186), `T-guard` (474), `U-guard` (474).*
 
 
 | exposure | tools | schema tokens | total tokens | pass^1 | budget stops | pass^1, finished only |
@@ -109,7 +109,7 @@ Unpaired rates over whatever tasks each language drew in this run: a gap here mi
 ## 3. Multilingual diagnosis
 
 *Source: `traces/C-clean/full` — 1075 episodes, pinned with `--multilingual-run`.*  
-*Also qualifying: `B-multilingual/full` (930), `D-nozh/full` (930), `F-clean-sim/full` (1075), `G-gated/full` (1075), `H-context/full` (96), `P-base/full` (1075), `P-ref/full` (1075), `P-rft/full` (1075), `P-smoke/full` (16).*
+*Also qualifying: `B-multilingual/full` (930), `D-nozh/full` (930), `F-clean-sim/full` (1075), `G-gated/full` (1075), `H-context/full` (96), `P-base/full` (1075), `P-ref/full` (1075), `P-rft/full` (1075), `P-smoke/full` (16), `P2-base-e2/full` (310), `P2-base/full` (1075), `P2-grpo-i1-e2/full` (310), `P2-grpo-i1/full` (1075), `P2-ref/full` (1075), `P2-rft-e2/full` (310), `P2-rft/full` (1075).*
 
 ## Multilingual diagnosis
 
@@ -210,6 +210,17 @@ With no variance in the human labels both kappas are zero by construction, so th
 
 **Ceiling — inter-annotator (me vs friend): undefined.** Round 1 rated 99.9% of judgments satisfied and round 2 100.0%. Two raters who almost never say 'violated' have nothing to agree or disagree about (see the notice above), so there is no ceiling to measure a judge against.
 
+### Planted mistakes
+
+**NOT MEASURED** — the planted-mistake calibration has not been run
+
+```bash
+python scripts/judge_calibration.py build "traces/N-off/full+search-300" "traces/M-off/full+search-300"
+python scripts/judge_calibration.py run --workers 12   # the judge's API key
+python scripts/judge_calibration.py report
+```
+
+
 ### Judges against the verifier
 
 Human labels measure whether a judge reads a transcript the way a person does. This measures whether it can tell a solved case from an unsolved one, with the database as ground truth, and how that depends on what it is shown.
@@ -270,6 +281,113 @@ The transcripts that claim an action the database never saw, under every view:
 
 ## 6. Post-training
 
+### Round 2: training data balanced by trap, today's customer and tools
+
+*Split `03975ea94a24`: two folds by family — locale twins together, every trap in both. Each fine-tune is scored only on the fold it did not train on, so between them all 215 tasks are held out. This measures new worlds, markets and languages for traps the model has seen.*
+
+| model | run | tasks | pass^1 | pass^k | tokens per resolved | vs base, paired by task |
+|---|---|---|---|---|---|---|
+| base `Qwen/Qwen3.8-27B` | `P2-base` | 215 | 0.962 | 0.916 (k=5) | 48,050 | — |
+| RFT, each on its held-out fold | `P2-rft` | 215 | 0.954 | 0.907 (k=5) | 46,300 | -0.007; 11 tasks better, 14 worse, p=0.690 |
+| reference `deepseek-v4-pro` | `P2-ref` | 215 | 0.906 | 0.833 (k=5) | 42,505 | -0.056; 16 tasks better, 29 worse, p=0.072 |
+
+- RFT vs base: **INCONCLUSIVE** — 11 tasks better and 14 worse is within noise (p=0.690).
+- reference vs base: **INCONCLUSIVE** — 16 tasks better and 29 worse is within noise (p=0.072).
+
+Checks:
+
+- ✓ one customer in every run: `llm-user/v2:openai-compat:RedHatAI/gemma-4-31B-it-FP8-Dynamic`
+- ✓ one tool version in every run: v3
+- ✓ agent temperature 0 in every scored run
+- ✓ k per task: {'base': 5, 'rft': 5, 'reference': 5}
+- ✓ tasks unchanged since the split
+- ✓ 1075/1075 RFT episodes answered by the model that did not train on that task's fold
+
+| trap | base | RFT | change |
+|---|---|---|---|
+| `out_of_window_offer_voucher` | 1.00 | 0.90 | -0.10 |
+| `high_value_photo_required_first` | 0.63 | 0.54 | -0.09 |
+| `cod_cannot_refund_to_original_method` | 1.00 | 0.95 | -0.05 |
+| `customs_hold_escalate` | 0.91 | 0.89 | -0.02 |
+| `address_change_after_dispatch` | 1.00 | 1.00 | +0.00 |
+| `cod_cancel_no_refund_due` | 1.00 | 1.00 | +0.00 |
+| `cannot_cancel_shipped_order` | 1.00 | 1.00 | +0.00 |
+| `cancel_while_processing` | 1.00 | 1.00 | +0.00 |
+| `happy_path_return_refund` | 1.00 | 1.00 | +0.00 |
+| `hazmat_refund_without_return` | 1.00 | 1.00 | +0.00 |
+| `identity_verification_failure` | 1.00 | 1.00 | +0.00 |
+| `livestream_claim_overrides_window` | 1.00 | 1.00 | +0.00 |
+| `peak_period_delay_not_compensable` | 1.00 | 1.00 | +0.00 |
+| `perishable_refund_without_return` | 1.00 | 1.00 | +0.00 |
+| `out_of_window_dispute_escalate` | 0.97 | 0.99 | +0.01 |
+| `duplicate_refund_escalate` | 0.89 | 1.00 | +0.11 |
+
+*Per-trap moves are leads to read in the traces, not results: each trap is ~13 tasks, and only the paired test above says whether anything moved at all.*
+
+*The photo trap's customer is told she has no photos. She said she had sent them in 26 of 70 base episodes (failed after it 26 of 26, without it 0 of 44); 32 of 70 RFT episodes (failed after it 32 of 32, without it 0 of 38); 7 of 70 reference episodes (failed after it 7 of 7, without it 0 of 63). Where she said it, the trap's verdict follows her line, not the agent's policy (WHAT_FAILED #43).*
+
+*The voucher trap's customer, offered the voucher, declined it and asked for her money or a human in 4 of 70 RFT episodes (4 of them failed on the voucher's lines alone). P6.3 and P10 ask for the escalation that follows, and the trap's check fails it: there the verdict follows her choice (WHAT_FAILED #46).*
+
+Collection (`traces/P2-collect/full`): 1720 episodes at temperature 1.0, pass rate 0.914; examples per fold {'A': 2378, 'B': 2385}. Passing episodes were picked by today's checks at build time, 20 a trap and fold (WHAT_FAILED #31).
+
+### GRPO, from round 2's fine-tunes
+
+Before it ran, the base model on the 62 newer tasks: pass^1 0.923, pass^k 0.871 — below 0.95, so GRPO runs.
+
+**The 62 newer tasks**, which no model trained on; each adapter answers its own half of their split:
+
+| model | run | tasks | pass^1 | pass^k | tokens per resolved |
+|---|---|---|---|---|---|
+| base | `P2-base-e2` | 62 | 0.923 | 0.871 (k=5) | 51,867 |
+| RFT | `P2-rft-e2` | 62 | 0.919 | 0.871 (k=5) | 50,049 |
+| GRPO, 1 iteration | `P2-grpo-i1-e2` | 62 | 0.945 | 0.903 (k=5) | 51,623 |
+
+- **The result**, GRPO against RFT, paired by task: **INCONCLUSIVE** — +0.026; 7 tasks better, 4 worse, p=0.549.
+- **RFT on tasks it never saw**, RFT against the base model: **INCONCLUSIVE** — -0.003; 6 tasks better, 6 worse, p=1.000.
+- *After the fact, beside the result and never instead of it* (WHAT_FAILED #46): with each voucher-trap escalation after the customer declined the voucher read as P6.3 and P10 read it, GRPO against RFT: +0.000; 3 tasks better, 2 worse, p=1.000; RFT against the base model: +0.013; 4 tasks better, 2 worse, p=0.688; the base model's pass^1 0.961 — at or above the 0.95 that holds GRPO.
+
+*On the voucher trap the customer, offered the voucher, declined it and asked for her money or a human in 12 of 65 base episodes (12 of them failed on the voucher's lines alone); 17 of 65 RFT episodes (17 of them failed on the voucher's lines alone); 9 of 65 GRPO, 1 iteration episodes (9 of them failed on the voucher's lines alone); P6.3 and P10 ask for the escalation that follows, and the trap's check fails it (WHAT_FAILED #46).*
+
+| trap | base | RFT | GRPO, 1 iteration |
+|---|---|---|---|
+| `customs_hold_escalate` | 1.00 | 1.00 | 1.00 |
+| `duplicate_refund_escalate` | 0.83 | 0.92 | 0.94 |
+| `identity_verification_failure` | 1.00 | 0.97 | 1.00 |
+| `out_of_window_dispute_escalate` | 0.98 | 1.00 | 0.98 |
+| `out_of_window_offer_voucher` | 0.82 | 0.72 | 0.82 |
+
+**The held-out fold** (the regression check: at 0.96 INCONCLUSIVE is the expected outcome; a trap that drops is read failure by failure, `scripts/read_failures.py traces/P2-rft/full traces/P2-grpo-i1/full`):
+
+RFT 0.954 (pass^k 0.907), GRPO 0.951 (pass^k 0.898): **INCONCLUSIVE** — -0.004; 15 tasks better, 14 worse, p=1.000.
+Traps that moved: `perishable_refund_without_return` 1.00 → 0.93, `cod_cannot_refund_to_original_method` 0.95 → 0.91, `address_change_after_dispatch` 1.00 → 0.97, `duplicate_refund_escalate` 1.00 → 0.97, `cannot_cancel_shipped_order` 1.00 → 0.99, `identity_verification_failure` 1.00 → 0.99, `out_of_window_offer_voucher` 0.90 → 0.91, `customs_hold_escalate` 0.89 → 0.95, `high_value_photo_required_first` 0.54 → 0.61.
+*After the fact* (WHAT_FAILED #46), the voucher trap's escalations after she declined the voucher read as P6.3 and P10 read them: GRPO against RFT: -0.002; 12 tasks better, 13 worse, p=1.000.
+
+*On the photo trap the customer said she had sent photos she was told she does not have in 32 of 70 RFT episodes (failed after it 32 of 32, without it 0 of 38); 27 of 70 GRPO episodes (failed after it 27 of 27, without it 0 of 43); where she did, the verdict follows her line, not the agent's policy (WHAT_FAILED #43).*
+
+*On the voucher trap the customer, offered the voucher, declined it and asked for her money or a human in 4 of 70 RFT episodes (4 of them failed on the voucher's lines alone); 6 of 70 GRPO episodes (6 of them failed on the voucher's lines alone); P6.3 and P10 ask for the escalation that follows, and the trap's check fails it (WHAT_FAILED #46).*
+
+**The learning curve**: the policy at temperature 1 on its own training tasks, each iteration's rollouts (iteration 1: the RFT adapter's). Rising here and flat on the newer tasks is learning the training tasks without carrying it over.
+
+- fold A: 30 tasks; 7 of high_value_photo_required_first left out (WHAT_FAILED #43)
+- fold B: 31 tasks; 7 of high_value_photo_required_first left out (WHAT_FAILED #43)
+
+| iteration | fold | rollouts | passed | groups with nothing to learn | turns trained |
+|---|---|---|---|---|---|
+| 1 | A | 240 on 30 tasks | 91% | 50% | 912 |
+| 1 | B | 248 on 31 tasks | 93% | 61% | 745 |
+
+Checks:
+
+- ✓ one customer in every run: `llm-user/v2:openai-compat:RedHatAI/gemma-4-31B-it-FP8-Dynamic`
+- ✓ agent temperature 0 in every evaluation
+- ✓ `P2-grpo-i1-e2`: 310/310 episodes answered by the adapter that did not train on the task's fold
+- ✓ `P2-rft-e2`: 310/310 episodes answered by the adapter that did not train on the task's fold
+- ✓ `P2-grpo-i1`: 1075/1075 episodes answered by the adapter that did not train on the task's fold
+
+### Round 1, as context
+
+*Another simulated customer and older tools than round 2's: its numbers are never paired against round 2's.*
+
 *Split `03975ea94a24`: two folds by family — locale twins together, every trap in both. Each fine-tune is scored only on the fold it did not train on, so between them all 215 tasks are held out. This measures new worlds, markets and languages for traps the model has seen.*
 
 | model | run | tasks | pass^1 | pass^k | tokens per resolved | vs base, paired by task |
@@ -294,6 +412,7 @@ The transcripts that claim an action the database never saw, under every view:
 Checks:
 
 - ✓ one customer in every run: `llm-user:openai-compat:RedHatAI/gemma-4-31B-it-FP8-Dynamic`
+- ✓ one tool version in every run: v1
 - ✓ agent temperature 0 in every scored run
 - ✓ k per task: {'base': 5, 'rft': 5, 'reference': 5}
 - ✓ tasks unchanged since the split
@@ -320,7 +439,11 @@ Checks:
 
 *Per-trap moves are leads to read in the traces, not results: each trap is ~13 tasks, and only the paired test above says whether anything moved at all.*
 
-Collection (`traces/P-collect/full`): 1720 episodes at temperature 1.0, pass rate 0.863; examples per fold {'A': 2322, 'B': 2215}. Passing episodes were picked by the verdicts the episodes recorded, under the checker of the day (this stats.json predates `--checker`: before v19, WHAT_FAILED #30).
+*The photo trap's customer is told she has no photos. She said she had sent them in 1 of 70 base episodes (failed after it 1 of 1, without it 0 of 69). Where she said it, the trap's verdict follows her line, not the agent's policy (WHAT_FAILED #43).*
+
+*The voucher trap's customer, offered the voucher, declined it and asked for her money or a human in 4 of 70 base episodes (4 of them failed on the voucher's lines alone). P6.3 and P10 ask for the escalation that follows, and the trap's check fails it: there the verdict follows her choice (WHAT_FAILED #46).*
+
+Collection (`traces/P-collect/full`): 1720 episodes at temperature 1.0, pass rate 0.863; examples per fold {'A': 2322, 'B': 2215}. Passing episodes were picked by the verdicts the episodes recorded, under the checker of the day (this stats.json predates `--checker`: before v19, WHAT_FAILED #30), at most three a task.
 
 ## 7. Re-scoring: recorded verdicts and today's checks
 
@@ -348,15 +471,44 @@ Each episode's recorded tool calls are replayed against the world it ran in, and
 | `I-tools2/full+oracle` | 96 | 0.979 → 0.979 | 0.938 → 0.938 | 0 | 0 | 0 |
 | `I-tools2/full+random-100` | 96 | 0.927 → 0.927 | 0.812 → 0.812 | 0 | 0 | 0 |
 | `I-tools2/full+search-300` | 96 | 0.823 → 0.844 | 0.688 → 0.750 | 2 | 0 | 0 |
+| `J-preload/full+search-300` | 96 | 0.844 → 0.844 | 0.750 → 0.750 | 0 | 0 | 0 |
+| `J-preload-named/full+search-300` | 96 | 0.938 → 0.938 | 0.875 → 0.875 | 0 | 0 | 0 |
+| `K-preload/full+search-300` | 171 | 0.439 → 0.439 | 0.228 → 0.228 | 0 | 0 | 0 |
+| `K-preload-named/full+search-300` | 171 | 0.801 → 0.801 | 0.667 → 0.667 | 0 | 0 | 0 |
+| `L-claims/full+search-300` | 96 | 0.802 → 0.802 | 0.688 → 0.688 | 0 | 0 | 0 |
+| `L-off/full+search-300` | 96 | 0.812 → 0.812 | 0.719 → 0.719 | 0 | 0 | 0 |
+| `L2-claims/full+search-300` | 96 | 0.865 → 0.865 | 0.781 → 0.781 | 0 | 0 | 0 |
+| `L2-off/full+search-300` | 96 | 0.823 → 0.823 | 0.781 → 0.781 | 0 | 0 | 0 |
+| `M-check/full+search-300` | 171 | 0.959 → 0.959 | 0.912 → 0.912 | 0 | 0 | 0 |
+| `M-off/full+search-300` | 171 | 0.848 → 0.848 | 0.772 → 0.772 | 0 | 0 | 0 |
+| `N-check/full+search-300` | 474 | 0.951 → 0.951 | 0.905 → 0.905 | 0 | 0 | 0 |
+| `N-off/full+search-300` | 474 | 0.964 → 0.964 | 0.930 → 0.930 | 0 | 0 | 0 |
+| `O-c1/full+search-300` | 252 | 0.893 → 0.893 | 0.762 → 0.762 | 0 | 0 | 0 |
+| `O-c2/full+search-300` | 252 | 0.917 → 0.917 | 0.857 → 0.857 | 0 | 0 | 0 |
 | `P-base/full` | 1075 | 0.859 → 0.979 | 0.805 → 0.930 | 129 | 0 | 0 |
 | `P-ref/full` | 1075 | 0.899 → 0.913 | 0.800 → 0.833 | 15 | 0 | 0 |
 | `P-rft/full` | 1075 | 0.882 → 0.981 | 0.837 → 0.949 | 107 | 0 | 0 |
-| `P-smoke/full` | 16 | 0.812 → 0.938 | 0.812 → 0.938 | 2 | 0 | 0 |
+| `P-smoke/full` | 16 | 1.000 → 1.000 | 1.000 → 1.000 | 0 | 0 | 0 |
+| `P2-base/full` | 1075 | 0.962 → 0.962 | 0.916 → 0.916 | 0 | 0 | 0 |
+| `P2-base-e2/full` | 310 | 0.923 → 0.923 | 0.871 → 0.871 | 0 | 0 | 0 |
+| `P2-grpo-i1/full` | 1075 | 0.951 → 0.951 | 0.898 → 0.898 | 0 | 0 | 0 |
+| `P2-grpo-i1-e2/full` | 310 | 0.945 → 0.945 | 0.903 → 0.903 | 0 | 0 | 0 |
+| `P2-ref/full` | 1075 | 0.906 → 0.906 | 0.833 → 0.833 | 0 | 0 | 0 |
+| `P2-rft/full` | 1075 | 0.954 → 0.954 | 0.907 → 0.907 | 0 | 0 | 0 |
+| `P2-rft-e2/full` | 310 | 0.919 → 0.919 | 0.871 → 0.871 | 0 | 0 | 0 |
+| `Q-check/full+search-300` | 186 | 0.935 → 0.935 | 0.855 → 0.855 | 0 | 0 | 0 |
+| `Q-off/full+search-300` | 186 | 0.833 → 0.833 | 0.710 → 0.710 | 0 | 0 | 0 |
+| `R-check/full+search-300` | 186 | 0.973 → 0.973 | 0.935 → 0.935 | 0 | 0 | 0 |
+| `R-record/full+search-300` | 186 | 0.962 → 0.962 | 0.903 → 0.903 | 0 | 0 | 0 |
+| `S-check/full+search-300` | 186 | 0.973 → 0.973 | 0.919 → 0.919 | 0 | 0 | 0 |
+| `S-guard/full+search-300` | 186 | 0.946 → 0.946 | 0.903 → 0.903 | 0 | 0 | 0 |
+| `T-guard/full+search-300` | 474 | 0.970 → 0.970 | 0.930 → 0.930 | 0 | 0 | 0 |
+| `U-guard/full+search-300` | 474 | 0.973 → 0.973 | 0.943 → 0.943 | 0 | 0 | 0 |
 
 | trap | fail → pass | pass → fail |
 |---|---|---|
-| `high_value_photo_required_first` | 234 | 0 |
-| `peak_period_delay_not_compensable` | 117 | 0 |
+| `high_value_photo_required_first` | 233 | 0 |
+| `peak_period_delay_not_compensable` | 116 | 0 |
 
 Kept as recorded: 788 because the task's opening or facts changed since the run; 37 because a payload differs from the recording (a world older than the replay can rebuild).
 
