@@ -15,6 +15,7 @@ Volume -- the two can be mixed).
     modal run --detach scripts/modal_pipeline.py --stage stage2    # one B200, hours
     modal run scripts/modal_pipeline.py --stage pull
     PASAR_ROUND=2 modal run --detach scripts/modal_pipeline.py --stage grpo   # after round 2
+    PASAR_ROUND=2 modal run --detach scripts/modal_pipeline.py --stage customer3   # ~30 min
 
 The GPU is one B200 unless PASAR_GPU says otherwise when you run the command:
 PASAR_GPU=H200 (one card: cheaper per hour, slower, tighter) or PASAR_GPU=H100:2
@@ -64,7 +65,9 @@ RESULTS = ["logs", "data/splits", "data/rft/stats.json", "data/run_settings.env"
            "traces/P2-base-e2", "traces/P2-rft", "traces/P2-ref",
            # GRPO (round 2's grpo stage), patterns: its stats and evaluations; its
            # rollouts (traces/P2-grpo-i*-collect-*) stay on the Volume
-           "data/grpo2/stats", "traces/P2-rft-e2", "traces/P2-grpo-i?", "traces/P2-grpo-i?-e2"]
+           "data/grpo2/stats", "traces/P2-rft-e2", "traces/P2-grpo-i?", "traces/P2-grpo-i?-e2",
+           # the customer check (round 2's customer3 stage): customer 2 and 3
+           "traces/P2-c?-check"]
 # One GPU stage at a time: two writing the same traces corrupt both, and bill
 # twice. The lock is a heartbeat, so a stage that dies without cleaning up
 # stops blocking after STALE seconds; Modal's restart of a preempted stage
@@ -277,10 +280,10 @@ def main(stage: str) -> None:
         download.remote()
     elif stage == "test":
         test.remote()
-    elif stage in ("smoke", "stage1", "stage2", "grpo"):
-        if stage == "grpo" and os.environ.get("PASAR_ROUND") != "2":
-            raise SystemExit("GRPO continues round 2's fine-tunes: PASAR_ROUND=2 modal run "
-                             "--detach scripts/modal_pipeline.py --stage grpo")
+    elif stage in ("smoke", "stage1", "stage2", "grpo", "customer3"):
+        if stage in ("grpo", "customer3") and os.environ.get("PASAR_ROUND") != "2":
+            raise SystemExit(f"{stage} runs on round 2's models: PASAR_ROUND=2 modal run "
+                             f"--detach scripts/modal_pipeline.py --stage {stage}")
         check_gpu(GPU)
         print(f"{stage} on {GPU} (PASAR_GPU to change it); follow it at https://modal.com/apps")
         if stage == "stage2" and not os.environ.get("DEEPSEEK_API_KEY"):
@@ -290,4 +293,4 @@ def main(stage: str) -> None:
         pull()
     else:
         raise SystemExit(f"unknown stage {stage!r}: download | test | smoke | stage1 | "
-                         f"stage2 | grpo | pull")
+                         f"stage2 | grpo | customer3 | pull")
