@@ -46,6 +46,19 @@ re-scored by replaying their tool calls (`scripts/rescore.py`).
   points are the reference escalating under order "unknown", which the tool
   should have refused; refused and fixed, it would still trail by 4.7
   (p = 0.012; [#35](docs/WHAT_FAILED.md)).
+- **A second fine-tune, its data balanced by trap, moved the leak instead of
+  stopping it.** Round 2 ran everything again under today's customer and tools:
+  base 0.962, fine-tune 0.954 (11 tasks better, 14 worse, p = 0.69), the null
+  expected at that rate. The result fixed before the run was the failures: of
+  the 24 episodes the fine-tune failed on tasks the base model always passed,
+  nine were another trap's answer in the wrong place — round 1's peak-sale
+  "wait" on customs holds again, and a new one, the photo trap's rule, now as
+  present in the data as any other, applied to a MYR 186 serum read as "over
+  SGD 200" ([WHAT_FAILED #44](docs/WHAT_FAILED.md)). The photo trap's own
+  failures were the simulated customer's: told she had no photos, she sent them
+  anyway in 64 of 210 conversations, and every one of those failed — a side
+  effect of the rule that she wait for what she agreed to
+  ([#43](docs/WHAT_FAILED.md)).
 - **Search-based tool exposure cost 22% more tokens and bought nothing**: 11.5
   points below exposing all 20 tools (7 tasks worse, 1 better, p = 0.07 — it
   read p = 0.021 before the checker fix). Of 21 times a failed episode needed a
@@ -122,7 +135,11 @@ re-scored by replaying their tool calls (`scripts/rescore.py`).
   with the tool results and the policy — reached κ = 0.72 and still accepted 6
   of 15 failed episodes. It caught one of three false claims and noticed another
   but passed it; on its first run, given the same evidence, it had credited the
-  one it caught.
+  one it caught. Calibrated on mistakes planted one at a time in transcripts the
+  verifier passed, it caught every leak, invented total and rude line, but a
+  missing identity check once in 20 — it read the agent asking for the digits as
+  the check — and the 1–5 judge passed that copy 19 times in 20
+  ([RUNBOOK, planted mistakes](docs/RUNBOOK.md)).
 - **No language differed from English beyond noise overall**, in two independent
   runs. The only significant gaps in that comparison came from a fact-gating
   bug, and the simulator "leaks" behind it were the detector's
@@ -146,9 +163,9 @@ re-scored by replaying their tool calls (`scripts/rescore.py`).
 | Harness: context strategies, tool exposure, simulated customer, replay, claim guardrail, closing check and its guard | done |
 | API experiments, RUNBOOK 1a–1r: 34 runs, 14,542 episodes | done |
 | The recorded traces as a Hugging Face dataset (`scripts/export_hf.py`) | published on the Hub |
-| Judge calibration | labels nearly all "satisfied" (WHAT_FAILED #24); planted-mistake calibration built, ready to run (no GPU, under $1) |
+| Judge calibration | labels nearly all "satisfied" (WHAT_FAILED #24); planted mistakes run: 4 of 9 criteria can be left to the judge, identity verification caught 1 in 20 |
 | Post-training round 1: RFT on Qwen3.8-27B | done: no gain once the checker was fixed |
-| Post-training round 2: a fine-tune balanced by trap; GRPO | round 2 running; GRPO built and tested on toy models, runs after it |
+| Post-training round 2: a fine-tune balanced by trap; GRPO | round 2 done: no aggregate change, the leak moved (WHAT_FAILED #44); GRPO ready, its photo-trap tasks left out (#43) |
 | A hard edition of combined cases; a multi-model baseline | planned |
 | Serving cost | paused |
 
@@ -169,14 +186,14 @@ python -m pasarbench.run          # null agent → 0.0, reference agent → 1.0
 python -m tests.test_traps        # 10 naive solutions, all must be rejected
 python -m tests.test_harness      # 146 harness invariants, the claim guardrail, the closing check -- 1j's note, the case record (RUNBOOK 1n) and the guard that does not run a repeat (1o), which no reference solution trips and which since v41 reads a payment's amount (WHAT_FAILED #39) -- and every context strategy keeping either note, tools that refuse what their schemas don't allow and a cancellation that settles the payment once while old runs replay under the tools they ran with, a simulated customer told to wait for what she agreed to
 python -m tests.test_reward       # 30 reward + dataset invariants
-python -m tests.test_generated    # 119 checks over all 199 generated tasks and the 62 of the second edition (RUNBOOK 1m): dates in causal order, the same world in every process, reads of the task's own order, simulator QA
+python -m tests.test_generated    # 151 checks over all 199 generated tasks and the 62 of the second edition (RUNBOOK 1m): dates in causal order, the same world in every process, reads of the task's own order, simulator QA -- and the photos a customer told she has none says she sent, in eight languages (WHAT_FAILED #43)
 python -m tests.test_rescore      # 29 re-scoring invariants: the pre-v19 world, replay by digest and by length, the same tool errors on every Python, nothing re-scored on a guess
 python -m tests.test_context      # 39 context-strategy + analysis invariants
-python -m tests.test_judge        # 83 judge + agreement-statistics invariants, judged against today's checks
-python -m tests.test_exposure     # 193 tool-scaling + diagnosis invariants, the tool-naming experiment and its confirmation tasks, the guardrail's report and dry run, the closing check's report, its costs, two closing notes compared by task and the record each episode was given, the closing guard's refusals and its dry run, one run's closing phase read on its own, each case before and after it and what each customer last said, a write a database check needs told from one no check sees, readers that skip its case note, how episodes ended and what cancellations settled, listed, cells compared across tool versions or customers flagged, episodes a server error ended, the duplicate-refund trap by language, twin against twin, and the traces packed as a dataset with nothing in them that must stay on this machine
+python -m tests.test_judge        # 102 judge + agreement-statistics invariants, judged against today's checks, and the planted-mistake calibration
+python -m tests.test_exposure     # 196 tool-scaling + diagnosis invariants, the tool-naming experiment and its confirmation tasks, the guardrail's report and dry run, the closing check's report, its costs, two closing notes compared by task and the record each episode was given, the closing guard's refusals and its dry run, one run's closing phase read on its own, each case before and after it and what each customer last said, a write a database check needs told from one no check sees, readers that skip its case note, how episodes ended and what cancellations settled, listed, cells compared across tool versions or customers flagged, episodes a server error ended, the duplicate-refund trap by language, twin against twin, a customer's claimed photos counted in both cells, and the traces packed as a dataset with nothing in them that must stay on this machine
 python -m tests.test_serving      # 54 metrics (SGLang and vLLM), cost and quality-guard invariants
-python -m tests.test_report       # 62 report invariants: paired verdicts, ties, replication, calibration, noise floor, post-training with one customer and one tool version, both scorings in every section, a figure that matches its numbers and drops a title they stop bearing out
-python -m tests.test_training     # 180 checks: split, customer family, collection and resume, examples (Qwen3 and Qwen3.8 formats) against an SGLang-like server, adapter routing, the LoRA probe, serve and Modal scripts, one-GPU memory plans, the notebook helper (progress in place, an interrupt-proof cleanup), the CUDA compiler, run settings, LoRA steps on Qwen3 and Qwen3.8's hybrid architecture, training data picked by today's checks, a push script that keeps runs and keys off GitHub, closing-check runs refused as training data, one simulated customer in every step, kept from stage 1 to stage 2, server errors reported, round 2's training data balanced by trap and its runs named apart from round 1's (137 without transformers/torch)
+python -m tests.test_report       # 71 report invariants: paired verdicts, ties, replication, calibration and its planted mistakes, noise floor, post-training with one customer and one tool version, round 2 first and round 1 as context, both scorings in every section, a figure that matches its numbers and drops a title they stop bearing out
+python -m tests.test_training     # 228 checks: split, customer family, collection and resume, examples (Qwen3 and Qwen3.8 formats) against an SGLang-like server, adapter routing, the LoRA probe, serve and Modal scripts, one-GPU memory plans, the notebook helper (progress in place, an interrupt-proof cleanup), the CUDA compiler, run settings, LoRA steps on Qwen3 and Qwen3.8's hybrid architecture, training data picked by today's checks, a push script that keeps runs and keys off GitHub, closing-check runs refused as training data, one simulated customer in every step, kept from stage 1 to stage 2, server errors reported, round 2's training data balanced by trap and its runs named apart from round 1's, GRPO's build, update and stage, its tasks without the photo trap (168 without transformers/torch)
 
 python -m pasarbench.sweep --backend scripted --suite all
 python scripts/make_report.py     # regenerates RESULTS.md; never hand-fill it
@@ -367,7 +384,12 @@ answers, so the calibration makes its own. Transcripts the verifier passed,
 each beside a copy with one mistake planted — another customer's order read
 out, a total no tool gave, a 30-day return window, a refund with the identity
 check taken out — measure per criterion how often the judge catches it and how
-often it flags the clean originals (`scripts/judge_calibration.py`).
+often it flags the clean originals (`scripts/judge_calibration.py`). Run once,
+against a bar fixed before it: four of nine criteria can be left to the judge —
+leaks, invented facts, unexplained escalations, tone — and five score nothing.
+The worst is identity verification, caught once in 20: with the check taken out,
+the judge credited it anyway, quoting the agent's request for the digits
+([RUNBOOK, planted mistakes](docs/RUNBOOK.md)).
 
 ### Serving and cost
 
@@ -400,7 +422,9 @@ tool were corrected — on those traps the fine-tune had learned the preference
 ([WHAT_FAILED #30](docs/WHAT_FAILED.md)) — and it moved behaviour between traps
 ([#31](docs/WHAT_FAILED.md)). RESULTS.md §6 has both scorings. `train_rft.py
 build` now picks training episodes by today's checks, not the verdicts the
-collection recorded.
+collection recorded. Round 2 balanced the training data by trap, as #31 said to:
+no aggregate change again, and the leak moved to the trap the balance had added
+([#44](docs/WHAT_FAILED.md)).
 
 The design, sized for one rented B200 (`docs/RUNBOOK.md`, phase 4; every step
 of running it, for a first-time GPU user, in `docs/GPU_GUIDE.md`):
@@ -451,7 +475,7 @@ scripts/    gpu_pipeline.sh gpu_plan.py modal_pipeline.py pasar_notebook.py
             compare_cells.py naming_tasks.py guardrail_dry_run.py make_figure.py
             slurm_train.sh slurm_sweep.sh modal_vllm.py closing_guard_dry_run.py
             closing_report.py language_lead.py export_hf.py judge_calibration.py
-tests/      12 suites, 900+ assertions
+tests/      12 suites, 1,000+ assertions
 docs/       RUNBOOK.md  GPU_GUIDE.md  WHAT_FAILED.md  WRITEUP.md  BLOG.md  README_weekly.md
             img/  the results figure, light and dark, wide and narrow, and its numbers
 ```
@@ -492,8 +516,19 @@ careful reader notices.
 - **GRPO is built, not yet run.** The rollouts, advantages and update
   (`scripts/train_grpo.py`, `pasarbench/rl/grpo.py`, the `grpo` stage) are
   tested end to end on toy models only; the old log-probabilities are the
-  trainer's own, not the sampling server's, and there is no KL term. Its first
-  result follows round 2.
+  trainer's own, not the sampling server's, and there is no KL term. It trains
+  on no photo-trap task, whose verdicts in round 2 were the customer's
+  ([WHAT_FAILED #43](docs/WHAT_FAILED.md)).
+- **The simulated customer's rules are shared by every trap.** The rule that
+  she wait for what she agreed to (v31) fixed the voucher trap and made the
+  photo trap's customer send photos she was told she had none of. The stage-1
+  audit now counts that, and comparisons print it; the customer herself is
+  unchanged until the next edition, so round 2's photo-trap numbers are hers.
+- **The policy offers one thing the tools refuse.** P8.3 tells the agent to
+  offer a customs-held customer the choice to cancel; P2.2 and `cancel_order`
+  refuse a shipped order. No check reads the attempt, so no verdict moves, but
+  an agent that follows P8.3 offers what it cannot do
+  ([WHAT_FAILED #45](docs/WHAT_FAILED.md)); the next edition settles it.
 - **The leak audit is only as good as its ask-patterns.** They cover the
   phrasings `deepseek-v4-pro` used across four runs and `Qwen3.8-27B` across
   three, where no reveal outside English was unprompted
