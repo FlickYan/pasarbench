@@ -555,6 +555,13 @@ def main(argv: list[str] | None = None) -> int:
     if heads[0].get("tool_checks", 1) != heads[1].get("tool_checks", 1):
         print("!! the two cells ran under different tool checks (WHAT_FAILED #35, #37): "
               "a difference between them is partly the tools'. Re-run the older one.")
+    room = [bool(h.get("closing_room")) for h in heads]
+    if any(room):
+        print(f"{'closing_room':12s} {str(room[0]):>34s} {str(room[1]):>34s}")
+    if room[0] != room[1]:
+        print("!! one cell gave the closing phase room of its own (v49) and the other did not: "
+              "the conversations ran alike, and what happened after the customer left differs "
+              "partly by the budget.")
     if heads[0].get("simulator") != heads[1].get("simulator"):
         print("!! the two cells had different simulated customers -- another model, "
               "gating, or the rules v31 changed (WHAT_FAILED #38): a difference between "
