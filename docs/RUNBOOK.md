@@ -1889,7 +1889,11 @@ is another provider's variable's, a Qwen model, a retired model its provider
 still answers for with another one (xAI's fast models since 2026-05-15, served
 by Grok 4.3), and a name that holds another model's runs. `--provider`,
 `--model` and `--name` skip the questions; `--dry-run` shows the plan and sends
-nothing.
+nothing; `--workers` sets how many conversations run at once (8), fewer for a
+provider that limits how many requests an account has open. Each run keeps its
+own record, `logs/add_model-<name>.log` (v59): what ran, what the check requests
+met — in the provider's own words when they fail — how each sweep ended, and the
+reading; no key is in it.
 
 Every model runs at temperature 0 with reasoning off where its provider has a
 switch: DeepSeek's and MiMo's `thinking: disabled`, Grok 4.3's
@@ -1897,7 +1901,9 @@ switch: DeepSeek's and MiMo's `thinking: disabled`, Grok 4.3's
 runs at `reasoning_effort: low` with 4,096 tokens a step (the others 2,048),
 and its line in any table says so. To xAI each request carries one
 `x-grok-conv-id` a conversation, so that its steps reach the server that cached
-the steps before them (v56).
+the steps before them (v56). To Z.ai a tool call's empty text goes as `""` and a
+tool result without its tool's name, as its schema documents them (v59); every
+other provider is sent what it always was.
 
 **Which keys work, which models** (v56; v57), before any run:
 
