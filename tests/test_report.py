@@ -392,6 +392,31 @@ def test_post_training():
           and "follows her line" in two
           and "RFT" not in two[two.find("*The photo trap"):].split("\n")[0],
           two[two.find("photo trap"):][:400])
+    check("…and no voucher note where no customer declined the voucher",
+          "voucher trap's customer" not in two, two[-800:])
+    vt = next(t for t in tasks if t.trap == "out_of_window_offer_voucher")
+    gave = tmp / "traces" / "P2-rft" / "full" / f"{vt.task_id}__r1.jsonl"
+    head, foot = [json.loads(l) for l in gave.read_text().splitlines()]
+    gave.write_text("\n".join(json.dumps(r) for r in (
+        head, {"type": "step", "model_content": "A goodwill voucher, or a human agent?"},
+        {"type": "event", "kind": "user_turn", "text": "A human, please."},
+        {"type": "step", "model_content": "", "tool_calls": [{"name": "escalate_to_human",
+                                                              "arguments": {
+            "order_id": "O1004", "category": "out_of_window_dispute"}}],
+         "tool_results": [{"name": "escalate_to_human", "ok": True}]},
+        {**foot, "passed": False, "failures": [
+            "missing required action: issue_goodwill_voucher {'user_id': 'U004'}"]})) + "\n")
+    try:
+        os.chdir(tmp)
+        two = mr.section_training_rounds(Path("traces")).partition("### Round 1")[0]
+    finally:
+        os.chdir(cwd)
+    check("…while one who did is counted beside it, with what that makes of the verdict "
+          "(WHAT_FAILED #46)",
+          f"declined it and asked for her money or a human in 1 of "
+          f"{2 * sum(t.trap == vt.trap for t in tasks)} RFT episodes (1 of them failed on "
+          f"the voucher's lines alone)" in two and "follows her choice" in two,
+          two[two.find("voucher trap's customer"):][:500])
 
     empty = Path(tempfile.mkdtemp())
     try:
@@ -540,6 +565,39 @@ def test_grpo_section():
           "evaluation" in md and "✓ `P2-grpo-i1-e2`: 124/124 episodes" in md
           and "✓ `P2-rft-e2`: 124/124" in md and "✓ `P2-grpo-i1`: 80/80" in md,
           md[md.find("Checks"):])
+    check("…and with no voucher declined anywhere, no line read after the fact",
+          "After the fact" not in md and "WHAT_FAILED #46" not in md, md[:2500])
+
+    # WHAT_FAILED #46: RFT's voucher-trap episodes in which she declined the
+    # voucher and the agent escalated, failing on the voucher's lines alone.
+    vouch = [t for t in newer if t.trap == "out_of_window_offer_voucher"]
+    offer = "I can offer a goodwill voucher, or pass this to a human agent."
+    for t in vouch[:6]:
+        for k in range(2):
+            f = tmp / "traces" / "P2-rft-e2" / "full" / f"{t.task_id}__r{k}.jsonl"
+            h, foot = [json.loads(l) for l in f.read_text().splitlines()]
+            f.write_text("\n".join(json.dumps(r) for r in (
+                h, {"type": "step", "model_content": offer, "tool_calls": [],
+                    "tool_results": []},
+                {"type": "event", "kind": "user_turn", "text": "A refund, please."},
+                {"type": "step", "model_content": "",
+                 "tool_calls": [{"name": "escalate_to_human", "arguments": {
+                     "order_id": "X", "category": "out_of_window_dispute"}}],
+                 "tool_results": [{"name": "escalate_to_human", "ok": True}]},
+                {**foot, "passed": False, "failures": [
+                    "db: vouchers matching {}: found 0, expected >= 1",
+                    "missing required action: issue_goodwill_voucher {}"]})) + "\n")
+    md = section()
+    check("the voucher trap's customer who declined the voucher is counted beside the "
+          "newer tasks' table, and the comparisons are read again as P6.3 and P10 read "
+          "her escalations -- after the fact, beside the result, never instead of it",
+          f"12 of {2 * len(vouch)} RFT episodes (12 of them failed on the voucher's lines "
+          f"alone)" in md
+          and "- *After the fact, beside the result and never instead of it* (WHAT_FAILED "
+              "#46)" in md
+          and "GRPO against RFT: " in md and "RFT against the base model: " in md
+          and "the base model's pass^1 0.742" in md
+          and md.find("- **The result**") < md.find("After the fact"), md[:3000])
     one = tmp / "traces" / "P2-grpo-i1-e2" / "full" / f"{newer[0].task_id}__r0.jsonl"
     h, foot = [json.loads(l) for l in one.read_text().splitlines()]
     trained_on = grpo[f2["task_fold"][newer[0].task_id]]
