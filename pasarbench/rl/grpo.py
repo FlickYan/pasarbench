@@ -41,6 +41,14 @@ adapter the iteration started from, computed by the same forward pass training
 uses before the first step. No KL term: the adapter is the only thing that
 moves, and the clip bounds each step.
 
+The reward reads the voucher trap one of two ways (WHAT_FAILED #46). There the
+agent may offer the voucher or a human, and the customer may take the human;
+P6.3 and P10 then ask for the escalation the trap's check fails. "checks", the
+default and what round 2's GRPO began with, rewards the verdict as the check
+gives it; "policy" rewards such an episode as the pass the policy makes it, so
+that a group does not learn her choice as the agent's mistake. The stats count
+those episodes under either reading, and a run holds one reading throughout.
+
 The rollouts must come from the distribution the loss is over: the full softmax
 at temperature 1. SGLang completes a request from the model's own
 generation_config.json -- for Qwen3.8 a top-k of 20 and a top-p of 0.95 -- so
@@ -68,13 +76,33 @@ ON_POLICY = {"top_p": 1.0, "top_k": -1, "min_p": 0.0}
 # and they are left out of their groups.
 HARNESS_STOPS = ("backend_error", "interrupted", "max_wall_seconds")
 
+# How the reward reads the voucher trap (WHAT_FAILED #46): as the check scores
+# it, or with an escalation after she declined the voucher as the pass P6.3
+# and P10 make it.
+READINGS = ("checks", "policy")
+# The note an episode's reward carries when she declined the voucher and the
+# agent escalated, failing on the voucher's lines alone -- under either reading.
+VOUCHER_NOTE = "declined the voucher: P6.3 and P10 ask for the escalation (WHAT_FAILED #46)"
+
 
 def episode_reward(recs: list[dict], task, reference_steps: int | None,
-                   cfg: RewardConfig | None = None):
+                   cfg: RewardConfig | None = None, reading: str = "checks",
+                   records: list[dict] | None = None):
     """The reward of one recorded episode under today's checks, from its
-    replayed calls; None when the calls do not replay as recorded."""
-    from ..harness.replay import replay
+    replayed calls; None when the calls do not replay as recorded.
 
+    `records`: the episode's records in order, the customer's turns included
+    (sft.read_trace's), for finding the voucher trap's declined voucher; `recs`
+    stands in when they are not given. With `reading` "policy" that episode is
+    rewarded as a pass; under either reading its reward carries VOUCHER_NOTE."""
+    from dataclasses import replace
+
+    from ..harness.replay import replay
+    from ..simqa import declined_voucher, only_the_voucher
+    from ..verifier import verify
+
+    if reading not in READINGS:
+        raise ValueError(f"reading is one of {READINGS}, not {reading!r}")
     r = replay(recs, task)
     if r.diverged or r.mismatched:
         return None
@@ -82,18 +110,30 @@ def episode_reward(recs: list[dict], task, reference_steps: int | None,
     steps = (foot.get("budget") or {}).get("steps")
     if steps is None:
         steps = sum(1 for x in recs if x.get("type") == "step")
-    return compute_reward(task, r.db, steps, reference_steps, cfg)
+    result = verify(task, r.db, n_turns=steps)
+    declined = (not result.passed and declined_voucher(task.trap, records or recs)
+                and only_the_voucher(task.trap, result.failures))
+    if declined and reading == "policy":
+        result = replace(result, passed=True, failures=[])
+    rb = compute_reward(task, r.db, steps, reference_steps, cfg, result=result)
+    if declined:
+        rb.notes.append(VOUCHER_NOTE)
+    return rb
 
 
 def build(run_dir: str | Path, tasks: dict[str, Any], tokenizer,
           solutions: dict[str, list] | None = None, cfg: RewardConfig | None = None,
           server=None, max_len: int = 16384, expect_model: str | None = None,
-          episodes: list[dict] | None = None) -> tuple[list[dict], dict[str, Any]]:
+          episodes: list[dict] | None = None,
+          reading: str = "checks") -> tuple[list[dict], dict[str, Any]]:
     """GRPO examples from one collection run, and the stats to read first.
 
-    `episodes` stands in for reading `run_dir` (tests). Returns one row per
-    agent turn, each with its episode's `advantage` and `norm` (the token count
-    of the episode's turns together)."""
+    `episodes` stands in for reading `run_dir` (tests). `reading`: how the
+    reward reads the voucher trap (READINGS). Returns one row per agent turn,
+    each with its episode's `advantage` and `norm` (the token count of the
+    episode's turns together)."""
+    if reading not in READINGS:
+        raise ValueError(f"reading is one of {READINGS}, not {reading!r}")
     eps = episodes if episodes is not None else [
         read_trace(p) for p in sorted(Path(run_dir).glob("*.jsonl"))]
     if not eps:
@@ -146,7 +186,8 @@ def build(run_dir: str | Path, tasks: dict[str, Any], tokenizer,
             skipped[f"stopped by the harness ({stop})"] += 1
             continue
         recs = [e["header"], *e["steps"], *([e["footer"]] if e["footer"] else [])]
-        rb = episode_reward(recs, task, len(solutions.get(tid, [])) or None, cfg)
+        rb = episode_reward(recs, task, len(solutions.get(tid, [])) or None, cfg,
+                            reading=reading, records=e.get("records"))
         if rb is None:
             skipped["does not replay"] += 1
             continue
@@ -156,10 +197,15 @@ def build(run_dir: str | Path, tasks: dict[str, Any], tokenizer,
     groups = []
     for tid, members in sorted(by_task.items()):
         passed = [rb.passed for _, rb in members]
+        # Her declined voucher, counted whichever way the reward reads it; the
+        # checks' verdict is the reward's except where "policy" passed it.
+        declined = sum(VOUCHER_NOTE in rb.notes for _, rb in members)
         mixed = 0 < sum(passed) < len(passed)
         adv = group_advantages([rb.reward for _, rb in members]) if mixed else []
         groups.append({"task_id": tid, "trap": tasks[tid].trap, "k": len(members),
                        "passed": sum(passed),
+                       "checked": sum(passed) - (declined if reading == "policy" else 0),
+                       "voucher_declined": declined,
                        "pass_rate": round(sum(passed) / len(passed), 3),
                        "degenerate": not mixed})
         if not mixed:
@@ -207,9 +253,18 @@ def build(run_dir: str | Path, tasks: dict[str, Any], tokenizer,
         "episodes": len(eps),
         # The policy that sampled them, at the collection's temperature, on
         # these tasks: iteration by iteration, the learning curve on the
-        # training tasks (the held-out evaluation is the result).
-        "passed": sum(g["passed"] for g in groups),
-        "pass_rate": round(sum(g["passed"] for g in groups) / scored, 4) if scored else 0.0,
+        # training tasks (the held-out evaluation is the result). By the
+        # checks, whichever way the reward reads the voucher, so that every
+        # iteration's point is the same measure.
+        "passed": sum(g["checked"] for g in groups),
+        "pass_rate": round(sum(g["checked"] for g in groups) / scored, 4) if scored else 0.0,
+        # How the reward read the voucher trap, and the episodes in which she
+        # declined the voucher and the agent escalated as P6.3 and P10 ask
+        # (WHAT_FAILED #46): failures by the checks, passes as "policy" reads them.
+        "reward_reading": reading,
+        "voucher_declined": sum(g["voucher_declined"] for g in groups),
+        "pass_rate_rewarded": (round(sum(g["passed"] for g in groups) / scored, 4)
+                               if scored else 0.0),
         "groups": len(groups),
         "degenerate_groups": dead,
         "degenerate_rate": round(dead / len(groups), 4) if groups else 0.0,
