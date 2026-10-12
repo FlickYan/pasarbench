@@ -2272,7 +2272,10 @@ def test_notebook_helper():
             pn.status()
             archive = pn.pack()
         check("setup finds the Volume holding the repo and links /vol to it, as a Modal "
-              "job mounts it", st["root"] == base / "vol" and (base / "vol").resolve() == vol
+              "job mounts it", st["root"] == base / "vol"
+              # resolved on both sides: macOS's temporary folders are under /var, a
+              # link to /private/var, and resolve() follows that link too (v57)
+              and (base / "vol").resolve() == vol.resolve()
               and os.environ["HF_HOME"] == str(base / "vol" / "hf"), (st, out.getvalue()))
         check("status counts finished episodes and shows the newest log",
               "traces/P-base: 3 finished of ~1075 (1 unfinished)" in out.getvalue()
