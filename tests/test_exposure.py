@@ -2146,6 +2146,105 @@ def test_photo_claims_compared():
           and "customers told they have no photos" in out.getvalue(), out.getvalue()[-600:])
 
 
+def test_voucher_choice_compared():
+    """WHAT_FAILED #46: on the voucher trap the agents offer "the voucher, or a
+    human to review a full refund", and the customer -- who wants her money and
+    will accept a voucher -- may take the human. P6.3 and P10 then ask for the
+    escalation, and the trap's check fails it. simqa finds that road in a trace,
+    diagnose reads it as the policy does, and compare_cells counts it in each
+    cell and prints the paired line read that way beside the result."""
+    print("\n=== the voucher trap's customer who declines the voucher ===")
+    import contextlib
+    import io
+    import json
+    import tempfile
+    from pathlib import Path
+
+    from pasarbench.diagnose import load_episodes, voucher_choice
+    from pasarbench.rescore import all_tasks
+    from pasarbench.simqa import declined_voucher, only_the_voucher
+    from pasarbench.sweep import ALL_SOLUTIONS
+
+    tasks = all_tasks()
+    ids = ["OOWOV-SG", "OOWOV-MY", "OOWOV-ID", "OOWOV-TH", "OOWOV-PH"]
+    offer = ("It is past the 14-day window. I can offer a goodwill voucher, or pass your "
+             "case to a human agent to review a full refund. Which would you like?")
+    tmp = Path(tempfile.mkdtemp())
+    for tid in ids:
+        verify, look, voucher = ALL_SOLUTIONS[tid]
+        order = tasks[tid].hidden_facts["order_id"]
+        esc = ("escalate_to_human", {"order_id": order, "category": "out_of_window_dispute",
+                                     "reason": "voucher declined, customer asks for a refund"})
+        _language_cell(tmp, "V", tid, [[look, offer, verify, voucher, "Your voucher is issued."]],
+                       replies=("The voucher is fine. My digits are "
+                                + tasks[tid].hidden_facts["phone_last4"] + ".", "Thanks."))
+        _language_cell(tmp, "H", tid, [[look, offer, esc, "A human agent will be in touch."]],
+                       replies=("I'd rather have a full refund. Please escalate this.",
+                                "Thanks."))
+
+    def recs(cell, tid):
+        f = tmp / cell / "full" / f"{tid}__r0.jsonl"
+        return [json.loads(l) for l in f.read_text(encoding="utf-8").splitlines()]
+    took, gave = recs("V", "OOWOV-MY"), recs("H", "OOWOV-MY")
+
+    def step(text, *calls):
+        return {"type": "step", "model_content": text,
+                "tool_calls": [{"name": n, "arguments": a} for n, a in calls],
+                "tool_results": [{"name": n, "ok": True} for n, _ in calls]}
+    esc = ("escalate_to_human", {"order_id": "O1", "category": "out_of_window_dispute"})
+    her = {"type": "event", "kind": "user_turn", "text": "A refund, please."}
+    early = [step(offer + " I have passed it on.", esc)]
+    unasked = [step("It is past the window."), her, step("", esc)]
+    paid = [step(offer), her, step("", ("issue_refund", {"order_id": "O1"}), esc)]
+    check("the road is found: the voucher offered, her answer, then the dispute's "
+          "escalation and no payment -- not where she took the voucher, nor an escalation "
+          "made before she could answer or with no voucher offered, nor one beside a "
+          "refund, nor on another trap",
+          declined_voucher("out_of_window_offer_voucher", gave)
+          and declined_voucher("out_of_window_offer_voucher", [step(offer), her, step("", esc)])
+          and not declined_voucher("out_of_window_offer_voucher", took)
+          and not any(declined_voucher("out_of_window_offer_voucher", r)
+                      for r in (early, unasked, paid))
+          and not declined_voucher("duplicate_refund_escalate", gave))
+    lines = gave[-1].get("failures") or []
+    check("…and it fails on the voucher's lines alone, which only the voucher needed",
+          gave[-1].get("passed") is False and only_the_voucher("out_of_window_offer_voucher",
+                                                                lines)
+          and not only_the_voucher("out_of_window_offer_voucher",
+                                   lines + ["forbidden action taken: issue_refund {}"])
+          and not only_the_voucher("two_orders_voucher_and_cancel",
+                                   ["missing required action: verify_identity {}"]), str(lines))
+    eps = load_episodes(tmp / "H" / "full", checker="recorded")
+    read, n = voucher_choice(tmp / "H" / "full", eps, checker="recorded")
+    check("diagnose reads them as P6.3 and P10 do, and counts them",
+          n == {"episodes": 5, "declined": 5, "read_as_pass": 5, "failed_without": 0}
+          and all(e["passed"] for e in read) and not any(e["passed"] for e in eps), str(n))
+    cc = _load_script("compare_cells")
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out):
+        cc.main([str(tmp / "V" / "full"), str(tmp / "H" / "full"), "--checker", "recorded"])
+    text = out.getvalue()
+    block = text[text.find("customers offered the voucher"):]
+    rows = {line.split("  ")[1].strip(): line.split()[-2:] for line in block.splitlines()[1:4]}
+    check("compare_cells: each cell's episodes she declined it in, those failed on the "
+          "voucher alone, and the trap's other failures",
+          rows == {"episodes she declined it in": ["0/5", "5/5"],
+                   "failed on the voucher alone": ["0", "5"],
+                   "trap failures without it": ["0", "0"]}
+          and "P6.3 and P10 ask for the escalation the check fails" in block, block[:700])
+    check("…and the paired line again, read as the policy reads those escalations, beside "
+          "the result and marked as after the fact",
+          "paired by task (5 shared): -1.000; 0 tasks better, 5 worse" in text
+          and "read as P6.3 and P10 read them (after the fact, WHAT_FAILED #46): +0.000; 0 "
+          "tasks better, 0 worse, p=1.000" in text, text[:1500])
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out):
+        cc.main([str(tmp / "V" / "full"), str(tmp / "V" / "full"), "--checker", "recorded"])
+    check("…neither where she never declined it",
+          "read as P6.3 and P10" not in out.getvalue()
+          and "P6.3 and P10 ask for" not in out.getvalue(), out.getvalue()[-700:])
+
+
 def test_read_failures():
     """The reading fixed before round 2 and GRPO: every episode a run fails on
     a task its control always passed, read for another trap's answer (#31,
@@ -2201,6 +2300,11 @@ def test_read_failures():
           "with what that makes of the verdict",
           "T07__r0" in text and "CUSTOMER CLAIMED PHOTOS" in text
           and "1 of them after the customer said she sent photos" in text, text)
+    check("…as is an escalation after the voucher offer and her answer, to be read as "
+          "P6.3 and P10 read it (WHAT_FAILED #46)",
+          "T05__r1  [out_of_window_offer_voucher, en]  control 2/2  stop=done  ESCALATED "
+          "AFTER THE VOUCHER OFFER" in text
+          and "1 of them escalated after the customer was offered the voucher" in text, text)
     out = io.StringIO()
     with contextlib.redirect_stdout(out):
         rf.main([str(control), str(treated), "--trap", "high_value_photo_required_first",
@@ -2240,6 +2344,7 @@ def main() -> int:
     test_claim_reader_check()
     test_language_swap()
     test_photo_claims_compared()
+    test_voucher_choice_compared()
     test_read_failures()
     test_export_hf()
     print(f"\n{len(PASS)} passed, {len(FAIL)} failed")
