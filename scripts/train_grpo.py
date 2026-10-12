@@ -24,7 +24,9 @@ ONE ITERATION (gpu_pipeline.sh grpo, PASAR_ROUND=2)
     tasks    once: each fold's tasks the base model failed at least once in
              round 2's collection (8 rollouts a task at temperature 1, within the
              model's own top-k and top-p, #42). A task it always solved is all
-             but certain to be a group with nothing in it to learn
+             but certain to be a group with nothing in it to learn. The photo
+             trap is left out: there the customer sends photos she was told she
+             does not have, and every verdict follows her (#43)
     collect  the current adapter served, k rollouts a task at temperature 1 from
              the full softmax (no top-k, no top-p: the sampler the loss assumes),
              conversations saved (the sweep, as RFT's collection)
@@ -87,6 +89,14 @@ STATS = Path("data/grpo2/stats")
 ON_POLICY = {"top_p": 1.0, "top_k": -1, "min_p": 0.0, "repetition_penalty": 1.0,
              "presence_penalty": 0.0, "frequency_penalty": 0.0}
 ROLLOUTS = json.dumps({"chat_template_kwargs": {"enable_thinking": False}, **ON_POLICY})
+# Traps whose verdicts are the customer's, not the agent's. On the photo trap
+# the customer is told she has no photos and will send them tonight; the
+# customer of v31 cannot leave until the agent has done what she needs (#38),
+# so tonight comes inside the conversation: "(Attached: photo.jpg)". Every
+# failure on the trap in round 2 -- base 26 of 26, RFT 32 of 32 -- follows
+# that line, and no episode without it failed (WHAT_FAILED #43). Its groups
+# would teach the agent to doubt her, not P3.3. `--skip-traps none` keeps it.
+SKIP_TRAPS = ("high_value_photo_required_first",)
 
 
 def passes(cell: str | Path) -> dict[str, tuple[int, int]]:
@@ -100,10 +110,25 @@ def passes(cell: str | Path) -> dict[str, tuple[int, int]]:
 
 
 def pick(collect: dict[str, tuple[int, int]], task_fold: dict[str, str],
-         fold: str) -> list[str]:
+         fold: str, trap_of: dict[str, str] | None = None,
+         skip: tuple[str, ...] = ()) -> list[str]:
     """One fold's GRPO tasks: the fold's tasks the collection failed at least
-    once. The newer tasks are never picked: they are what GRPO is judged on."""
-    return sorted(t for t, (p, n) in collect.items() if task_fold.get(t) == fold and p < n)
+    once, but none of a trap in `skip`. The newer tasks are never picked: they
+    are what GRPO is judged on."""
+    return sorted(t for t, (p, n) in collect.items() if task_fold.get(t) == fold and p < n
+                  and (trap_of or {}).get(t) not in skip)
+
+
+def skip_traps(value: str, known: set[str]) -> tuple[str, ...]:
+    """`--skip-traps`: comma-separated trap names, or `none`."""
+    if value.strip().lower() in ("", "none"):
+        return ()
+    names = tuple(sorted({x.strip() for x in value.split(",") if x.strip()}))
+    unknown = [x for x in names if x not in known]
+    if unknown:
+        raise SystemExit(f"--skip-traps: no trap {', '.join(unknown)} (traps: "
+                         f"{', '.join(sorted(known))}; or `none`)")
+    return names
 
 
 def tasks(args) -> None:
@@ -116,17 +141,25 @@ def tasks(args) -> None:
         raise SystemExit(f"no finished episodes in {args.collect}: GRPO picks its tasks "
                          f"from round 2's collection (stage 1)")
     every = all_tasks()
+    skip = skip_traps(args.skip_traps, {t.trap for t in every.values()})
+    trap_of = {t: every[t].trap for t in col if t in every}
     out, short = {}, []
     for fold in args.fold or folds["folds"]:
-        chosen = pick(col, folds["task_fold"], fold)
+        chosen = pick(col, folds["task_fold"], fold, trap_of, skip)
         mine = [t for t in col if folds["task_fold"].get(t) == fold]
+        left = sorted(set(pick(col, folds["task_fold"], fold)) - set(chosen))
         traps = Counter(every[t].trap for t in chosen)
         out[fold] = {"fold": fold, "source": str(args.collect),
-                     "rule": "the fold's tasks the collection failed at least once",
+                     "rule": "the fold's tasks the collection failed at least once"
+                             + (f", but none of {', '.join(skip)}" if skip else ""),
+                     "skipped_traps": list(skip), "skipped_tasks": left,
                      "tasks": chosen, "by_trap": dict(sorted(traps.items())),
                      "collection_pass": {t: list(col[t]) for t in chosen}}
-        print(f"fold {fold}: {len(chosen)} of its {len(mine)} tasks failed at least once in "
-              f"{args.collect}")
+        print(f"fold {fold}: {len(chosen) + len(left)} of its {len(mine)} tasks failed at "
+              f"least once in {args.collect}")
+        if left:
+            print(f"  left out: {len(left)} of {', '.join(skip)} -- their verdicts follow the "
+                  f"customer, not the agent (WHAT_FAILED #43; --skip-traps none keeps them)")
         print("  by trap: " + (", ".join(f"{t} {k}" for t, k in sorted(traps.items())) or "-"))
         print(f"  {len(chosen)} tasks x k={args.k}: {len(chosen) * args.k} rollouts an iteration")
         if len(chosen) < args.min_tasks:
@@ -224,6 +257,9 @@ def main(argv: list[str] | None = None) -> None:
                    help="round 2's collection: 8 rollouts a task at temperature 1")
     t.add_argument("-k", type=int, default=8, help="GRPO's rollouts per task, for the count")
     t.add_argument("--min-tasks", type=int, default=6)
+    t.add_argument("--skip-traps", default=",".join(SKIP_TRAPS),
+                   help="traps never trained on, comma-separated, or `none` (default: the "
+                        "photo trap, whose verdicts follow the customer -- WHAT_FAILED #43)")
     t.add_argument("--out-dir", default=str(STATS))
     t.set_defaults(fn=tasks)
 
