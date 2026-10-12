@@ -255,7 +255,7 @@ episodes at temperature 0, with the server start. Its reading on 2026-10-12:
 customer 3 holds, and the hard edition runs with her (RUNBOOK phase 4, customer
 3).
 
-## The hard edition — after the customer check (v48, optional, ~1.5 hours)
+## The hard edition — after the customer check (v48; run 2026-10-12 in 19 minutes)
 
 The hard edition's 36 combined cases on round 2's models: the base model, the
 RFT adapters and GRPO's (RUNBOOK phase 4, the hard edition; 1s says what the
@@ -272,9 +272,11 @@ pn.pack()
 ```
 
 As a Modal job: `PASAR_ROUND=2 modal run --detach scripts/modal_pipeline.py --stage
-edition3`, then `--stage pull`. About an hour and a half of one B200 (~$15): 540
+edition3`, then `--stage pull`. About 20 minutes of one B200 (~$3): 540
 episodes at temperature 0 and three server starts. Run it again after a failure:
-finished runs are not served again.
+finished runs are not served again. Its reading on 2026-10-12: room, RFT and
+GRPO INCONCLUSIVE, the two orders the one hard case (RUNBOOK phase 4, the hard
+edition).
 
 ## GRPO on its own tasks — optional (v52; run 2026-10-12 in 22 minutes)
 
