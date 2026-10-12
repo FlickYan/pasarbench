@@ -12,6 +12,7 @@ Week 3 turns on LLMUser and tunes the persona prompt.
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 from typing import Protocol
 
 from .types import Message, Usage
@@ -94,6 +95,26 @@ ENDING = {
        "  and wait for it to be done. Never put ###END### in a message that agrees to\n"
        "  something.",
 }
+# Version 3: version 2, and a promise she cannot keep inside the conversation
+# ends it. Version 2's rule -- wait for what you agreed to -- has no way out when
+# what she needs waits on something she does not have: on the photo trap she is
+# told to say she will send the photos tonight, the agent waits for them, she
+# may not leave, and the next turn is tonight -- "(Attached: photo.jpg)", the
+# photos her persona says she has none of. Every failure on the trap in round 2
+# followed that line (WHAT_FAILED #43). She now leaves once she has promised
+# something for later and the agent has answered; and should she still claim
+# photos her persona forbids, the turn is written again with the rule restated
+# and, claimed a second time, ends the conversation (LLMUser.respond). Not the
+# default: every run since v31 has had customer 2, and a comparison needs one
+# customer on both sides (compare_cells.py flags two).
+ENDING[3] = ENDING[2] + (
+    "\n- If you have told the agent you will do something later -- send photos,\n"
+    "  check your card statement -- you cannot do it in this conversation. Once\n"
+    "  the agent has answered that, reply with exactly: ###END###")
+# What a customer of version 3 is told when a turn of hers claimed photos her
+# persona says she does not have.
+NO_PHOTOS_NOTE = ("\n\nYou have NOT sent any photos and you cannot send any in this "
+                  "conversation. Do not say, or act out, that you sent or attached photos.")
 CUSTOMER = 2
 
 
@@ -151,6 +172,8 @@ class LLMUser:
         # roughly half -- and the simulator is usually on a DIFFERENT provider
         # at a different price, so you cannot just scale the agent number.
         self.usage = Usage()
+        # What the guard of version 3 did on the last turn, for the trace.
+        self.last_guard: str | None = None
 
     def _visible_facts(self, transcript) -> dict[str, str]:
         """Facts the simulator is allowed to KNOW right now."""
@@ -201,6 +224,26 @@ class LLMUser:
         resp = self.backend.chat(convo, tools=[])
         self.usage = self.usage + resp.usage
         text = (resp.content or "").strip()
+        self.last_guard = None
+        if self.customer >= 3 and self._claims_forbidden_photos(text):
+            # Written again with the rule restated in her instructions -- the
+            # system message, which every chat template accepts at the start.
+            convo[0] = Message(role="system", content=convo[0].content + NO_PHOTOS_NOTE)
+            resp = self.backend.chat(convo, tools=[])
+            self.usage = self.usage + resp.usage
+            again = (resp.content or "").strip()
+            if self._claims_forbidden_photos(again):
+                # Twice: she has nothing she can do here. She leaves.
+                self.last_guard = "photos: claimed twice, ended"
+                return "", True
+            self.last_guard = "photos: written again"
+            text = again
         if "###END###" in text:
             return text.replace("###END###", "").strip(), True
         return text, False
+
+    def _claims_forbidden_photos(self, text: str) -> bool:
+        """A turn claiming photos a persona that has none forbids (#43)."""
+        from ..simqa import claims_photos, forbids_photos
+        return forbids_photos(SimpleNamespace(persona=self.persona)) and claims_photos(
+            text.replace("###END###", ""))
