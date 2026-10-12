@@ -1765,6 +1765,162 @@ def section_edition3(traces: Path = Path("traces"),
     return "\n".join(out)
 
 
+def section_hard_edition(traces: Path = Path("traces")) -> str:
+    """RUNBOOK 1s: the hard edition against its parts on every agent with both
+    runs (V-<name> and V-<name>-parts), read as fixed before the runs: per agent
+    each case against its part, paired, sign test; the cases' table; every pair
+    of agents on the cases and on the parts -- the hard edition separates two
+    agents the parts do not if their comparison resolves on the cases and not on
+    the parts; the changed request's customer and the voucher choice beside them;
+    one customer, temperature 0, one model and setting an agent."""
+    from pasarbench.diagnose import load_episodes, paired_episodes
+    from pasarbench.generate import EDITION3_PARTS, part_of
+    from pasarbench.rescore import all_tasks
+
+    names = [d.name[2:] for d in traces.glob("V-*")
+             if not d.name.endswith("-parts") and any((d / "full").glob("*.jsonl"))
+             and any((traces / f"{d.name}-parts" / "full").glob("*.jsonl"))]
+    if not names:
+        return _missing("no agent has run the hard edition and its parts yet",
+                        "python scripts/add_model.py --provider deepseek --model "
+                        "deepseek-v4-pro --name dsk   # RUNBOOK 1s")
+    tasks = all_tasks()
+    agents = {}
+    for n in names:
+        hcell, pcell = traces / f"V-{n}" / "full", traces / f"V-{n}-parts" / "full"
+        heads = {**_headers(hcell), **_headers(pcell)}
+        hard = [e for e in load_episodes(hcell) if e["task_id"] in tasks
+                and tasks[e["task_id"]].trap in EDITION3_PARTS]
+        parts = load_episodes(pcell)
+        twin = {e["task_id"]: part_of(tasks[e["task_id"]]) for e in hard}
+        theirs = [e for e in parts if e["task_id"] in set(twin.values())]
+        agents[n] = dict(hcell=hcell, pcell=pcell, heads=heads, hard=hard, parts=parts,
+                         twin=twin, theirs=theirs,
+                         start=min((h.get("started_at") or "" for h in heads.values()),
+                                   default=""),
+                         g=paired_episodes(parts, [{**e, "task_id": twin[e["task_id"]]}
+                                                   for e in hard]))
+    order = sorted(agents, key=lambda n: (agents[n]["start"], n))
+
+    def rate(eps: list[dict]) -> str:
+        if not eps:
+            return "—"
+        p1, pk, _ = _passk(eps)
+        return f"{p1:.3f} ({pk:.2f})"
+
+    def settings(heads: dict[str, dict]) -> str:
+        bodies = {json.dumps(h.get("agent_extra_body") or {}, sort_keys=True)
+                  for h in heads.values()}
+        return ", ".join(f"`{b}`" for b in sorted(bodies) if b != "{}") or "—"
+
+    out = ["Each agent on the hard edition's 36 cases and on their parts — the first "
+           "edition's task of the trap each case turns on, in the same market and language "
+           "— the same day, against one customer; read as fixed before the runs "
+           "(RUNBOOK 1s, 2026-10-12). Each case against its part, paired, sign test: "
+           "HARDER at p < 0.05 with the cases failing more.\n",
+           "| agent | model | settings | hard cases, pass^1 (pass^k) | their parts | each "
+           "case against its part |", "|---|---|---|---|---|---|"]
+    harder = []
+    for n in order:
+        a = agents[n]
+        models = sorted({str(h.get("requested_model")) for h in a["heads"].values()})
+        g = a["g"]
+        if g is None:
+            v = "fewer than 5 cases with their part — not testable"
+        else:
+            head = (("HARDER" if g["diff"] < 0 else "EASIER") if g["resolved"]
+                    else "INCONCLUSIVE")
+            harder += [n] if head == "HARDER" else []
+            v = (f"**{head}** — {g['diff']:+.3f}; {g['worse']} cases failed more than "
+                 f"their part, {g['better']} less, p={g['p']:.3f}")
+        out.append(f"| {n} | {', '.join(f'`{m}`' for m in models)} | {settings(a['heads'])} "
+                   f"| {rate(a['hard'])} | {rate(a['theirs'])} | {v} |")
+    out.append("\n- **Harder:** " + (f"shown for {', '.join(harder)}." if harder else
+                                      "shown for none of them."))
+
+    out.append("\n| case (its part) | " + " | ".join(order) + " |")
+    out.append("|---|" + "---|" * len(order))
+    for trap, part in EDITION3_PARTS.items():
+        cells = []
+        for n in order:
+            a = agents[n]
+            mine = [e for e in a["hard"] if tasks[e["task_id"]].trap == trap]
+            twins = {a["twin"][e["task_id"]] for e in mine}
+            theirs = [e for e in a["parts"] if e["task_id"] in twins]
+            cells.append(f"{sum(e['passed'] for e in mine)}/{len(mine)} · "
+                         f"{sum(e['passed'] for e in theirs)}/{len(theirs)}")
+        out.append(f"| `{trap}` (`{part}`) | " + " | ".join(cells) + " |")
+    out.append("\n*Each cell: the case's passes · its part's.*")
+
+    if len(order) > 1:
+        out.append("\n| agents, paired by task | on the hard cases | on the parts' run | |")
+        out.append("|---|---|---|---|")
+        separated, reverse = [], []
+        for i, x in enumerate(order):
+            for y in order[i + 1:]:
+                # The parts' whole run, as compare_cells.py pairs it -- the reading
+                # fixed before the runs: its 39 tasks, the three Singapore duplicate
+                # refunds that have no case among them.
+                gh = paired_episodes(agents[x]["hard"], agents[y]["hard"])
+                gp = paired_episodes(agents[x]["parts"], agents[y]["parts"])
+                ch = bool(gh and gh["resolved"])
+                cp = bool(gp and gp["resolved"])
+                mark = ("the cases separate them, the parts do not" if ch and not cp else
+                        "the parts separate them, the cases do not" if cp and not ch else "")
+                (separated if ch and not cp else reverse if cp and not ch else []).append(
+                    f"{x}–{y}")
+                out.append(f"| {x} → {y} | {_verdict(gh, f'{y} better', f'{y} worse')} | "
+                           f"{_verdict(gp, f'{y} better', f'{y} worse')} | {mark} |")
+        out.append("\n- **Separation:** " + (
+            f"the hard edition separates {', '.join(separated)}, which the parts do not."
+            if separated else "the hard edition separates no pair of agents the parts do "
+            "not.") + (f" The parts separate {', '.join(reverse)}, which the cases do not."
+                       if reverse else ""))
+
+    runs = [(n, agents[n]["hcell"], agents[n]["hard"]) for n in order]
+    late = _changed_requests(runs)
+    out.append("\n*The customer:* " + (
+        f"in the changed request her phone digits came without the change of mind her "
+        f"persona puts in that message in {late}; those failures are hers, not the "
+        f"agent's." if late else
+        "in every changed-request conversation her phone digits came with her change of "
+        "mind, as her persona has it: the case measures the agent."))
+    vouch = _voucher_choices(runs + [(f"{n}'s parts", agents[n]["pcell"],
+                                      agents[n]["parts"]) for n in order])
+    out.append("\n*The voucher choice:* " + (
+        f"offered the voucher, she declined it in {vouch} (WHAT_FAILED #46)." if vouch
+        else "offered the voucher, she never declined it — a voucher the agent tried to "
+        "issue counts as hers taken (WHAT_FAILED #49): nothing to read as P6.3 and P10 "
+        "read it."))
+
+    checks = []
+    heads = [h for n in order for h in agents[n]["heads"].values()]
+    sims = {h.get("simulator") for h in heads}
+    checks.append((len(sims) == 1, "one customer in every run: "
+                   + ", ".join(f"`{x}`" for x in sorted(map(str, sims)))))
+    temps = {h.get("agent_temperature") for h in heads}
+    checks.append((temps == {0.0}, "agent temperature 0 in every run" if temps == {0.0}
+                   else f"agent temperatures differ or are unrecorded: "
+                        f"{sorted(map(str, temps))}"))
+    for n in order:
+        a = agents[n]
+        models = {str(h.get("requested_model")) for h in a["heads"].values()}
+        bodies = {json.dumps(h.get("agent_extra_body") or {}, sort_keys=True)
+                  for h in a["heads"].values()}
+        if len(models) > 1 or len(bodies) > 1:
+            checks.append((False, f"{n}: its runs differ in model or settings: "
+                                  f"{sorted(models)} {sorted(bodies)}"))
+        missing = sorted({t for t, p in a["twin"].items()
+                          if p not in {e["task_id"] for e in a["parts"]}})
+        if missing:
+            checks.append((False, f"{n}: {len(missing)} cases whose part did not run"))
+    checks.append((all(ok for ok, _ in checks[2:]),
+                   "each agent's two runs: one model, one setting, every case's part"))
+    out.append("\nChecks:\n")
+    out += [f"- {'✓ ' if ok else '✗ **'}{msg}{'' if ok else '**'}" for ok, msg in checks]
+    return "\n".join(out)
+
+
 def section_training_rounds(traces: Path = Path("traces"),
                             spec1: str = "base=P-base,rft=P-rft,reference=P-ref",
                             spec2: str = "base=P2-base,rft=P2-rft,reference=P2-ref") -> str:
@@ -1890,6 +2046,10 @@ is shown inline. **Do not fill these in by hand** — re-run and regenerate.
 
 {rescoring}
 
+## 8. The hard edition against its parts, on several labs' models
+
+{hard}
+
 ---
 
 ## Reporting rules this project holds itself to
@@ -1963,6 +2123,8 @@ def main() -> None:
                      section_training_rounds(Path(args.traces), args.post_training,
                                              args.post_training_2)),
         "rescoring": ("7. Re-scoring", section_rescoring(Path(args.traces))),
+        "hard": ("8. The hard edition on several labs' models",
+                 section_hard_edition(Path(args.traces))),
     }
     body = TEMPLATE.format(missing=MISSING, suite=section_suite(), scoring=scoring,
                            noise=section_noise(Path(args.traces), args.noise_pair),
