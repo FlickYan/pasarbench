@@ -1820,9 +1820,13 @@ reads it as the policy does where it failed on the voucher's lines alone.
 comparison that has the trap, and print the paired line read that way beside
 the result. The hard edition's two-orders cases hold the same choice, so their
 reading says so before they run (RUNBOOK, the hard edition on round 2's
-models). The next edition's fix is the persona's: she takes the voucher when it
-is offered, whatever else is, so that the trap measures the agent's offer and
-not her pick.
+models). GRPO's build counts the road in every iteration's stats, and can
+reward it as the pass the policy makes it (`--reward-reading policy`,
+`PASAR_GRPO_READING`); a run keeps one reading throughout, so round 2's GRPO
+keeps the checks it began with, and a GRPO on new tasks starts with the policy's.
+The next edition's fix is the persona's: she takes the voucher when it is
+offered, whatever else is, so that the trap measures the agent's offer and not
+her pick.
 
 **Lesson.** A check is right for the customer it was written for. Where the
 policy allows two answers, a simulated customer who may choose between them
