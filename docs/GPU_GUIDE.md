@@ -226,6 +226,13 @@ On the laptop, after `pn.pack()` and the download, `python scripts/make_report.p
 puts GRPO's result in RESULTS.md, section 6 (RUNBOOK phase 4, GRPO, "Where to
 read it").
 
+Round 2's first iteration ran on 2026-10-12: INCONCLUSIVE, and half of the
+newer tasks' room turned out to be the voucher trap's customer choosing a human
+over the voucher (RUNBOOK phase 4, GRPO, "What it found"; WHAT_FAILED #46). So
+a second iteration on the same tasks is not the next run; the customer check
+and the hard edition are, below — with v51 or later on the Volume, which reads
+that choice beside every comparison the hard edition prints.
+
 **Put a newer version on the Volume only between stages.** A stage reads its
 scripts as it goes — bash reads `gpu_pipeline.sh` line by line — so a version
 unpacked while GRPO runs can change what the rest of the run does.
