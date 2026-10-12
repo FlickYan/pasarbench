@@ -1044,6 +1044,92 @@ def test_figure():
           str(linked))
 
 
+def test_hard_edition_section():
+    """Section 8 (v60): RUNBOOK 1s on several agents, read as fixed before the
+    runs -- each agent's cases against their parts, paired, in its words; the
+    cases' table; every pair of agents on the cases and on the parts' whole run,
+    and which of them the hard edition separates where the parts do not; the
+    customer and the voucher choice; one customer and temperature 0."""
+    print("\n=== section 8: the hard edition against its parts, several agents ===")
+    mr = _report()
+    from pasarbench.generate import EDITION3_PARTS, generate, part_of
+    from pasarbench.rescore import all_tasks
+    from pasarbench.simqa import CHANGED_REQUEST
+    tasks = all_tasks()
+    cases = [t for t in generate(edition=3)[0] if t.trap in EDITION3_PARTS]
+    twins = {t.task_id: part_of(t) for t in cases}
+    tmp = Path(tempfile.mkdtemp())
+    v3 = "llm-user/v3:openai-compat:qwen3.8-flash"
+
+    def run(name, model, start, case_ok, part_ok):
+        for cell, ids, ok in ((f"V-{name}", [t.task_id for t in cases], case_ok),
+                              (f"V-{name}-parts", sorted(set(twins.values())), part_ok)):
+            d = tmp / "traces" / cell / "full"
+            d.mkdir(parents=True, exist_ok=True)
+            for tid in ids:
+                t = tasks[tid]
+                for k in range(3):
+                    head = {"type": "header", "task_id": tid, "language": t.language,
+                            "trap": t.trap, "requested_model": model, "simulator": v3,
+                            "agent_temperature": 0.0, "started_at": start,
+                            "agent_extra_body": {"thinking": {"type": "disabled"}}}
+                    said = ([{"type": "event", "kind": "user_turn", "text":
+                              f"{t.hidden_facts.get('phone_last4', '0000')}. Actually don't "
+                              f"cancel it, send it to my new address instead."}]
+                            if t.trap == CHANGED_REQUEST else [])
+                    foot = {"type": "footer", "passed": ok(t), "stop_reason": "done",
+                            "budget": {"tokens": 1000, "steps": 5}}
+                    (d / f"{tid}__r{k}.jsonl").write_text(
+                        "\n".join(json.dumps(r) for r in (head, *said, foot)) + "\n")
+
+    def section():
+        cwd = os.getcwd()
+        try:
+            os.chdir(tmp)
+            return mr.section_hard_edition(Path("traces"))
+        finally:
+            os.chdir(cwd)
+
+    md = section()
+    check("before any agent has run both: what is missing and the command",
+          "**NOT MEASURED**" in md and "scripts/add_model.py" in md, md)
+    every = lambda t: True                                                   # noqa: E731
+    run("x", "model-x", "2026-10-13T01:00", every, every)
+    run("y", "model-y", "2026-10-13T02:00", every,
+        lambda t: t.trap != "duplicate_refund_escalate")
+    run("z", "model-z", "2026-10-13T03:00", lambda t: t.trap != "duplicate_refund_cod_livestream",
+        every)
+    md = section()
+    check("each agent's cases against their parts, paired, in the words fixed before the "
+          "run: EASIER where the parts fail more, HARDER where the cases do",
+          "| x | `model-x` | `{\"thinking\": {\"type\": \"disabled\"}}` | 1.000 (1.00) | 1.000 "
+          "(1.00) | **INCONCLUSIVE**" in md
+          and "| y | `model-y` |" in md and "**EASIER** — +0.278; 0 cases failed more than "
+              "their part, 10 less, p=0.002" in md
+          and "**HARDER** — -0.278; 10 cases failed more than their part, 0 less, p=0.002"
+              in md and "- **Harder:** shown for z." in md, md[:3000])
+    check("…the cases' table, each cell the case's passes and its part's",
+          "| `duplicate_refund_cod_livestream` (`duplicate_refund_escalate`) | 30/30 · 30/30 "
+          "| 30/30 · 0/30 | 0/30 · 30/30 |" in md, md[md.find("| case"):][:800])
+    check("…and every pair on the cases and on the parts' run: the hard edition separates "
+          "x and z, which the parts do not, and the parts x and y, which the cases do not",
+          "| x → y | **INCONCLUSIVE**" in md
+          and "the parts separate them, the cases do not |" in md
+          and "| x → z | **z worse** — -0.278; 0 tasks better, 10 worse, p=0.002 | "
+              "**INCONCLUSIVE**" in md
+          and "- **Separation:** the hard edition separates x–z, which the parts do not. "
+              "The parts separate x–y, which the cases do not." in md,
+          md[md.find("| agents"):][:1500])
+    check("…the customer and the voucher choice said even when there is nothing to set "
+          "aside, and one customer at temperature 0",
+          "her phone digits came with her change of mind" in md
+          and "she never declined it" in md
+          and "- ✓ one customer in every run: `llm-user/v3:openai-compat:qwen3.8-flash`" in md
+          and "- ✓ agent temperature 0 in every run" in md
+          and "- ✓ each agent's two runs: one model, one setting, every case's part" in md,
+          md[md.find("*The customer"):])
+
+
 def main() -> int:
     test_context_verdicts_need_a_paired_test()
     test_ties_are_said_out_loud()
@@ -1055,6 +1141,7 @@ def main() -> int:
     test_planted_mistakes_section()
     test_grpo_section()
     test_edition3_section()
+    test_hard_edition_section()
     test_both_scorings()
     test_ablation_sections_under_both_checkers()
     test_judges_against_todays_verifier()
