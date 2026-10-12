@@ -533,7 +533,7 @@ def test_grpo_section():
     for f, rate in (("A", 0.5), ("B", 0.625)):
         (st / f"i1-{f}.stats.json").write_text(json.dumps(
             {"episodes": 64, "groups": 8, "pass_rate": rate, "degenerate_rate": 0.25,
-             "examples": 300}))
+             "examples": 300, "model": f"Qwen/Qwen3.8-27B:pasar-rft2-{f}"}))
         (st / f"tasks-{f}.json").write_text(json.dumps(
             {"tasks": [f"X{i}" for i in range(8)],
              "skipped_traps": ["high_value_photo_required_first"],
@@ -555,10 +555,30 @@ def test_grpo_section():
           and "Traps that moved:" in md, md[md.find("held-out"):][:900])
     check("…the learning curve from each iteration's build, and the traps its tasks left "
           "out",
-          "| 1 | A | 64 on 8 tasks | 50% | 25% | 300 |" in md
-          and "| 1 | B | 64 on 8 tasks | 62% | 25% | 300 |" in md
-          and "- fold A: 8 tasks; 2 of high_value_photo_required_first left out" in md,
-          md[md.find("learning curve"):][:900])
+          "| 1 | A | `pasar-rft2-A` | 64 on 8 tasks | 50% | — | 25% | 300 |" in md
+          and "| 1 | B | `pasar-rft2-B` | 64 on 8 tasks | 62% | — | 25% | 300 |" in md
+          and "- fold A: 8 tasks; 2 of high_value_photo_required_first left out" in md
+          and "— built before the build counted the voucher she declined (v52)." in md
+          and "(measured)" not in md, md[md.find("learning curve"):][:900])
+    # The learning curve's second point (grpo-measure, v52): GRPO's adapters on
+    # the same tasks, measured and not trained on.
+    for f, rate in (("A", 0.75), ("B", 0.8)):
+        (st / f"i2-{f}.stats.json").write_text(json.dumps(
+            {"episodes": 64, "groups": 8, "pass_rate": rate, "degenerate_rate": 0.5,
+             "examples": 120, "voucher_declined": 3,
+             "model": f"Qwen/Qwen3.8-27B:pasar-grpo2-i1-{f}"}))
+    md = section()
+    check("…and the point grpo-measure adds: GRPO's adapters on the same tasks, measured and "
+          "not trained on, with the voucher she declined counted and where to read the pairing",
+          "| 2 (measured) | A | `pasar-grpo2-i1-A` | 64 on 8 tasks | 75% | 3 | 50% | 0 |" in md
+          and "\"She declined the voucher\": rollouts the checks failed where P6.3 and P10 "
+              "ask for the escalation (WHAT_FAILED #46), counted whichever way the reward "
+              "read them; — built before" in md
+          and "Point 2 is GRPO's last adapters on the same tasks" in md
+          and "logs/r2-grpo-measure-i2.txt" in md, md[md.find("learning curve"):][:1500])
+    for f in ("A", "B"):
+        (st / f"i2-{f}.stats.json").unlink()
+    md = section()
     check("…and the checks: one customer, temperature 0, every episode answered by the "
           "adapter that did not train on its fold",
           "✓ one customer in every run" in md and "✓ agent temperature 0 in every "
