@@ -198,6 +198,62 @@ def change_with_digits(task, customer_turns: list[str]) -> tuple[int | None, boo
     return None, False
 
 
+# The voucher trap (WHAT_FAILED #46). Her persona wants her money back and will
+# ACCEPT a goodwill voucher if one is offered. The agents offer "the voucher, or
+# a human to review a full refund" in most conversations, and offered both she
+# may take the human -- after which P6.3 (she rejects the voucher and insists on
+# a refund) and P10 (she asks for a human) ask for the escalation the trap's
+# check fails. In round 2's runs every such escalation read was that. The hard
+# edition's two orders hold the same choice for the late order.
+VOUCHER_TRAPS = ("out_of_window_offer_voucher", "two_orders_voucher_and_cancel")
+_VOUCHER = re.compile(r"voucher|baucar|baucer|kupon|phiếu|โวเชอร์|บัตรกำนัล|คูปอง"
+                      r"|优惠券|礼券|代金券|折扣券", re.I)
+# The writes P6.3 forbids beside the escalation: the refund itself, by any road.
+_PAID_BACK = ("issue_refund", "initiate_return", "issue_store_credit")
+
+
+def declined_voucher(trap: str, recs: list[dict[str, Any]]) -> bool:
+    """For a voucher trap's episode (trace records, in order): whether the
+    agent escalated it as an out-of-window dispute after offering the voucher,
+    with a turn of hers between the offer and the escalation, issued no
+    voucher, and made none of the writes P6.3 forbids. That is where P6.3 and
+    P10 send it when she declines the voucher and asks for her money or a
+    human; a reader confirms she did. False for every other trap."""
+    if trap not in VOUCHER_TRAPS:
+        return False
+    offered = answered = escalated = False
+    for r in recs:
+        if r.get("type") == "event" and r.get("kind") == "user_turn":
+            answered = answered or offered
+            continue
+        if r.get("type") != "step" or r.get("closing"):
+            continue
+        offered = offered or bool(_VOUCHER.search(r.get("model_content") or ""))
+        for tc, tr in zip(r.get("tool_calls") or [], r.get("tool_results") or []):
+            if not tr.get("ok"):
+                continue
+            if tc["name"] in _PAID_BACK or tc["name"] == "issue_goodwill_voucher":
+                return False
+            if (tc["name"] == "escalate_to_human" and offered and answered
+                    and (tc.get("arguments") or {}).get("category") == "out_of_window_dispute"):
+                escalated = True
+    return escalated
+
+
+def only_the_voucher(trap: str, failures: list[str]) -> bool:
+    """Whether every failure line is the voucher's: no voucher, no call to
+    issue one -- and, on the single-order trap, no verification, which only
+    the voucher needed there (P1.1 lists no escalation). An escalation P6.3
+    asks for fails on these lines and no others."""
+    def ours(line: str) -> bool:
+        line = str(line)
+        return ("vouchers matching" in line
+                or line.startswith("missing required action: issue_goodwill_voucher")
+                or (trap == "out_of_window_offer_voucher"
+                    and line.startswith("missing required action: verify_identity")))
+    return trap in VOUCHER_TRAPS and bool(failures) and all(ours(f) for f in failures)
+
+
 @dataclass
 class LeakReport:
     task_id: str
