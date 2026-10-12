@@ -1763,10 +1763,12 @@ call writes nothing. The conversations: an agent that follows P8.3 offers what
 it cannot do, and takes it back.
 
 **Fix.** Not in this edition: the customs tasks are among the 62 GRPO is judged
-on, and the world they run in stays as round 2 ran it. The next edition says
-how the cancellation happens — the escalation carries the customer's choice,
-and `cancel_order` is not called — and its customs check reads a refused
-cancellation as the attempt P2.2 forbids.
+on, and the world they run in stays as round 2 ran it. Nor in the hard edition
+(v48), which leaves customs out: the fix is to P8.3's text — the escalation
+carries the customer's choice, and `cancel_order` is not called — and every
+edition's agent reads that text in its system prompt, so changing it changes
+every run after it. It waits for a policy version of its own, with a customs
+check that reads a refused cancellation as the attempt P2.2 forbids.
 
 **Lesson.** A rule that offers the customer something needs a way for it to
 happen. Read the policy as a customer would hear it: every "you can" is a
