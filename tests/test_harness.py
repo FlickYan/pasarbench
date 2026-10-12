@@ -362,6 +362,225 @@ def test_claim_guardrail():
               r.stderr[-500:] or str(heads))
 
 
+def test_claim_reader():
+    """RUNBOOK 1u: a model reads the reply in place of the English list, in any
+    language, and only that changes -- the check against the tool log stays
+    mechanical. What it may say is narrow: actions from a fixed list, each with
+    the reply's own words; a claim whose words are not in the reply is dropped
+    and counted. Its answers are cached, recorded on the step, and read back."""
+    print("\n=== the claim reader: a model where the English list was ===")
+    import json
+    import os
+    from types import SimpleNamespace
+
+    from pasarbench.claim_reader import ACTIONS, ClaimReader, parse
+    from pasarbench.harness import guardrail as g
+    from pasarbench.harness.simulator import LLMUser
+    from pasarbench.harness.types import ModelResponse, Usage
+
+    text = "Saya sudah eskalasikan kes anda kepada pasukan pakar. Sila tunggu e-mel."
+    ok = parse('{"claims": [{"action": "escalate", "quote": "Saya sudah eskalasikan kes '
+               'anda"}]}', text)
+    fenced = parse('```json\n{"claims": [{"action": "escalate", "quote": "saya SUDAH '
+                   'eskalasikan"}]}\n```', text)
+    check("an answer as asked: the action named on the list, its words found in the reply "
+          "-- through a code fence, a change of case or a curly apostrophe",
+          ok == {"claims": [("escalate_to_human", "Saya sudah eskalasikan kes anda")],
+                 "dropped": 0, "unreadable": False}
+          and fenced["claims"] == [("escalate_to_human", "saya SUDAH eskalasikan")]
+          and parse('{"claims": [{"action": "escalate", "quote": "I\'ve escalated"}]}',
+                    "I’ve escalated it.")["claims"] == [("escalate_to_human", "I've escalated")],
+          str((ok, fenced)))
+    odd = parse('{"claims": [{"action": "escalate", "quote": "Saya sudah hantar wang"}, '
+                '{"action": "teleport", "quote": "Saya sudah"}, '
+                '{"action": "escalate", "quote": "kepada pasukan pakar"}, '
+                '{"action": "escalate", "quote": "kes anda"}]}', text)
+    check("…a quote that is not in the reply, or an action not on the list, dropped and "
+          "counted -- and one claim a tool, the first",
+          odd == {"claims": [("escalate_to_human", "kepada pasukan pakar")], "dropped": 2,
+                  "unreadable": False}, str(odd))
+    check("…and an answer that is not the JSON asked for is no claims, marked unreadable",
+          parse("I think the agent escalated.", text) == {"claims": [], "dropped": 0,
+                                                          "unreadable": True}
+          and parse('{"claims": "none"}', text)["unreadable"]
+          and sorted(ACTIONS.values()) == sorted(
+              ["issue_refund", "issue_store_credit", "issue_goodwill_voucher",
+               "initiate_return", "cancel_order", "modify_shipping_address",
+               "escalate_to_human", "send_message_to_seller"]))
+
+    class FakeReaderBackend:
+        """Reads an escalation in Malay, as a model would."""
+        model = "fake-reader"
+        calls = 0
+
+        def chat(self, messages, tools):
+            FakeReaderBackend.calls += 1
+            reply = messages[1].content
+            if "eskalasikan" in reply:
+                return ModelResponse(content=json.dumps({"claims": [
+                    {"action": "escalate", "quote": "Saya sudah eskalasikan kes anda"}]}),
+                    usage=Usage(1, 1))
+            return ModelResponse(content='{"claims": []}', usage=Usage(1, 1))
+    cache = Path(tempfile.mkdtemp()) / "claims.json"
+    reader = ClaimReader(FakeReaderBackend(), cache)
+    first = reader(text)
+    reader(text)
+    reader("")
+    reader.save()
+    again = ClaimReader(FakeReaderBackend(), cache)
+    check("one answer a text, cached, and none asked for an empty reply -- a rerun reads "
+          "the file", first == [("escalate_to_human", "Saya sudah eskalasikan kes anda")]
+          and FakeReaderBackend.calls == 1 and again(text) == first
+          and FakeReaderBackend.calls == 1 and again.read(text)["raw"].startswith('{"claims"'))
+
+    class Customer:
+        name, reports_usage = "seen", False
+
+        def __init__(self):
+            self.views: list[list[str]] = []
+
+        def chat(self, messages, tools):
+            self.views.append([m.content for m in messages[1:]])
+            return ModelResponse(content="ok ###END###" if len(self.views) > 1 else "baik",
+                                 usage=Usage(1, 1))
+
+    class Rec:
+        def __init__(self):
+            self.meta, self.steps = {}, []
+
+        def open_episode(self, task_id, run_index=None, meta=None):
+            self.meta = meta or {}
+
+        def step(self, record):
+            self.steps.append(json.loads(json.dumps(record, default=str)))
+
+        def event(self, *a, **kw):
+            pass
+
+    task = BY_ID["T14"]
+    esc = ("escalate_to_human", {"order_id": "O1009", "category": "duplicate_refund",
+                                 "reason": "refund already issued for this order"})
+    cust, rec = Customer(), Rec()
+    db = Database.fresh(task.db_patch)
+    run_episode(task, db, ScriptedBackend([text, esc, text]), trace=rec,
+                guardrail="reader", claim_reader=ClaimReader(FakeReaderBackend()),
+                simulator=LLMUser(cust, persona="a customer", facts={}))
+    held = [s for s in rec.steps if s.get("guardrail")]
+    read = [s["claims_read"] for s in rec.steps if "claims_read" in s]
+    check("in the loop: a claim in Malay no call backs is held back, the customer sees "
+          "only the reply after the call, and the header names the reader",
+          len(held) == 1 and held[0]["guardrail"]["claims"][0][0] == "escalate_to_human"
+          and cust.views[-1].count(text) == 1 and rec.meta.get("guardrail") == "reader"
+          and rec.meta.get("claim_reader") == "fake-reader"
+          and any(a.tool == "escalate_to_human" and a.ok for a in db.action_log),
+          str(cust.views))
+    r = g.review(rec.steps)
+    check("…what it read of every reply the customer was meant to see is on the step, held "
+          "or not, and the review reads the run back with it, asking nothing again",
+          read == [[["escalate_to_human", "Saya sudah eskalasikan kes anda"]],
+                   [["escalate_to_human", "Saya sudah eskalasikan kes anda"]], []]
+          and r["outcomes"] == ["made the call"] and not r["delivered"], str((read, r)))
+    off = Rec()
+    run_episode(task, Database.fresh(task.db_patch), ScriptedBackend([text]), trace=off,
+                guardrail="claims", simulator=LLMUser(Customer(), persona="a", facts={}))
+    check("the English list, as before, holds nothing it cannot read, and its steps carry "
+          "no reading", not any(s.get("guardrail") or "claims_read" in s for s in off.steps)
+          and "claim_reader" not in off.meta)
+    refused = []
+    for kw in ({"guardrail": "reader"}, {"guardrail": "claims",
+                                         "claim_reader": ClaimReader(FakeReaderBackend())}):
+        try:
+            run_episode(task, Database.fresh(task.db_patch), ScriptedBackend([]), **kw)
+            refused.append(False)
+        except ValueError:
+            refused.append(True)
+    check("a reader guardrail without a reader is refused, and a reader without its "
+          "guardrail", refused == [True, True])
+
+    class Down:
+        model = "down"
+
+        def read(self, text):
+            raise ConnectionError("reader unreachable")
+    res = run_episode(task, Database.fresh(task.db_patch), ScriptedBackend([text]),
+                      guardrail="reader", claim_reader=Down(),
+                      simulator=LLMUser(Customer(), persona="a", facts={}))
+    check("a reader that cannot be reached ends the episode as a server error, which "
+          "--resume runs again -- it does not end the sweep -- and the record keeps the "
+          "reply it could not read",
+          res.stop_reason == StopReason.BACKEND_ERROR and "claim reader" in (res.error or "")
+          and len(res.steps) == 1 and res.steps[0].model_content == text
+          and res.steps[0].claims_read is None and res.steps[0].guardrail is None,
+          f"{res.stop_reason} {len(res.steps)}")
+
+    class Garbled:
+        """An answer cut short, then one that quotes words the reply never had."""
+        model = "garbled"
+
+        def chat(self, messages, tools):
+            if "eskalasikan" in messages[1].content:
+                return ModelResponse(content='{"claims": [{"action": "escalate", "quo',
+                                     usage=Usage(1, 1))
+            return ModelResponse(content=json.dumps({"claims": [
+                {"action": "refund", "quote": "I have refunded you"}]}), usage=Usage(1, 1))
+    rec = Rec()
+    run_episode(task, Database.fresh(task.db_patch),
+                ScriptedBackend([text, "Your order is on its way."]), trace=rec,
+                guardrail="reader", claim_reader=ClaimReader(Garbled()),
+                simulator=LLMUser(Customer(), persona="a", facts={}))
+    check("an answer the reader could not give is on the step -- unreadable, or a claim "
+          "dropped -- and holds nothing back",
+          [s.get("reader_issue") for s in rec.steps if "claims_read" in s]
+          == [{"unreadable": True}, {"dropped": 1}]
+          and not any(s.get("guardrail") for s in rec.steps),
+          str([(s.get("claims_read"), s.get("reader_issue")) for s in rec.steps]))
+
+    from pasarbench.claim_reader import MAX_TOKENS, make_backend
+    built = make_backend("qwen3.8-flash", "http://localhost:1/v1", "EMPTY",
+                         {"reasoning_effort": "low"})
+    shared = Path(tempfile.mkdtemp()) / "reader-cache.json"
+    one, two = ClaimReader(FakeReaderBackend(), shared), ClaimReader(FakeReaderBackend(), shared)
+    one(text)
+    two("Pesanan anda sedang dihantar.")
+    one.save()
+    two.save()
+    longer = FakeReaderBackend()
+    longer.max_tokens = 4096
+    check("the reader is made one way wherever it reads, and a reader made another way is "
+          "another reader; two processes saving one cache keep both their answers",
+          built.temperature == 0.0 and built.max_tokens == MAX_TOKENS
+          and built.extra_body == {"reasoning_effort": "low"}
+          and ClaimReader(longer).key(text) != ClaimReader(FakeReaderBackend()).key(text)
+          and len(json.loads(shared.read_text(encoding="utf-8"))) == 2
+          and not list(shared.parent.glob("*.tmp")))
+
+    from pasarbench.claim_reader import CACHE
+    from pasarbench.sweep import make_reader
+    keys = {k: os.environ.pop(k) for k in list(os.environ)
+            if k.endswith("_API_KEY") or k.startswith("PASARBENCH_")}
+    try:
+        args = SimpleNamespace(guardrail="reader", reader_url="", base_url="https://api.x/v1",
+                               sim_url="https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
+                               api_key="sk-agent", sim_api_key="", reader_model="qwen3.8-flash",
+                               reader_extra_body="", reader_cache="", run_id="g")
+        try:
+            make_reader(args)
+            leak = True
+        except SystemExit as e:
+            leak = "Refusing to fall back to the agent's key" not in str(e)
+        os.environ["DASHSCOPE_API_KEY"] = "sk-reader"
+        built = make_reader(args)
+        same = make_reader(SimpleNamespace(**{**vars(args), "reader_url": "https://api.x/v1"}))
+        check("the sweep's reader takes its key as the customer does: never the agent's for "
+              "another provider", not leak and built.backend.api_key == "sk-reader"
+              and built.model == "qwen3.8-flash" and same.backend.api_key == "sk-agent"
+              and str(built.path) == str(Path(CACHE))
+              and make_reader(SimpleNamespace(**{**vars(args), "guardrail": "claims"})) is None)
+    finally:
+        os.environ.pop("DASHSCOPE_API_KEY", None)
+        os.environ.update(keys)
+
+
 def test_tool_input_checks():
     """WHAT_FAILED #35. escalate_to_human listed eight categories and took any
     string, and took "unknown" for an order; the agent was told it had
@@ -1603,6 +1822,7 @@ def main() -> int:
     test_traces()
     test_prompt_modes()
     test_claim_guardrail()
+    test_claim_reader()
     test_tool_input_checks()
     test_closing_check()
     test_context_keeps_the_closing_note()
