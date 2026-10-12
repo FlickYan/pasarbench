@@ -16,7 +16,7 @@ Volume -- the two can be mixed).
     modal run scripts/modal_pipeline.py --stage pull
     PASAR_ROUND=2 modal run --detach scripts/modal_pipeline.py --stage grpo   # after round 2
     PASAR_ROUND=2 modal run --detach scripts/modal_pipeline.py --stage customer3   # ~10 min
-    PASAR_ROUND=2 modal run --detach scripts/modal_pipeline.py --stage edition3    # ~1-2 h
+    PASAR_ROUND=2 modal run --detach scripts/modal_pipeline.py --stage edition3    # ~20 min
     PASAR_ROUND=2 modal run --detach scripts/modal_pipeline.py --stage grpo-measure   # ~25 min
 
 The GPU is one B200 unless PASAR_GPU says otherwise when you run the command:
