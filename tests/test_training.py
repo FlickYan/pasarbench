@@ -716,6 +716,135 @@ def _grpo_cell(root: Path) -> tuple[Path, str, str]:
     return cell, X, Y
 
 
+def _voucher_rollouts(root: Path) -> Path:
+    """T05, the voucher trap, as GRPO's collection would hold it: two rollouts
+    that issue the voucher, and two in which the customer declines it for a
+    human and the agent escalates -- what P6.3 and P10 ask for, and what the
+    check fails (WHAT_FAILED #46). Conversations saved, the full softmax."""
+    from pasarbench.db import Database
+    from pasarbench.harness.backends import ScriptedBackend
+    from pasarbench.harness.loop import run_episode
+    from pasarbench.harness.simulator import ScriptedUser
+    from pasarbench.harness.trace import TraceWriter
+    from pasarbench.rl.grpo import ON_POLICY
+    from pasarbench.run import SOLUTIONS
+    from pasarbench.verifier import verify
+
+    task = BY_ID["T05"]
+    verify_, check_win, voucher = SOLUTIONS["T05"]
+    offer = ("It is past the 14-day window: I can offer a goodwill voucher, or pass this "
+             "to a human agent to review a full refund.")
+    esc = ("escalate_to_human", {"order_id": "O1004", "category": "out_of_window_dispute",
+                                 "reason": "voucher declined, customer asks for a refund"})
+    plans = [([verify_, check_win, offer, voucher, "Done."], ("The voucher, please.", "Thanks.")),
+             ([verify_, check_win, offer, voucher, "Done."], ("Yes, the voucher.", "Thanks.")),
+             ([check_win, offer, esc, "Escalated."], ("A human, please.", "Thanks.")),
+             ([check_win, offer, esc, "Escalated."], ("I'd rather have a full refund.",
+                                                       "Thanks."))]
+    for i, (plan, replies) in enumerate(plans):
+        w = TraceWriter(root=str(root), run_id="V/full")
+        db = Database.fresh(task.db_patch)
+        agent = ScriptedBackend(list(plan))
+        res = run_episode(task, db, agent, trace=w, run_index=i,
+                          simulator=ScriptedUser(list(replies)))
+        v = verify(task, db)
+        w.messages([m.to_dict() for m in res.state.messages],
+                   tool_names=[st.tool_names for st in res.steps],
+                   context_messages=[st.context_messages for st in res.steps])
+        w.close_episode(res.stop_reason.value, v.passed, v.failures, res.budget)
+        w.close()
+    cell = root / "V" / "full"
+    for f in cell.glob("*.jsonl"):
+        lines = f.read_text().splitlines()
+        head = json.loads(lines[0])
+        head["requested_model"] = "toy"
+        head["agent_extra_body"] = {"chat_template_kwargs": {"enable_thinking": False},
+                                    **ON_POLICY}
+        head["agent_temperature"] = 1.0
+        f.write_text("\n".join([json.dumps(head), *lines[1:]]) + "\n")
+    return cell
+
+
+def test_grpo_voucher_reading():
+    """WHAT_FAILED #46: on the voucher trap GRPO's reward can read an escalation
+    after she declined the voucher as the check does (round 2's) or as the pass
+    P6.3 and P10 make it; either way the reward says it happened."""
+    print("\n=== GRPO's reward and the voucher she declined ===")
+    from pasarbench.rl.grpo import READINGS, VOUCHER_NOTE, episode_reward
+    from pasarbench.rl.sft import read_trace
+    from pasarbench.run import SOLUTIONS
+
+    cell = _voucher_rollouts(Path(tempfile.mkdtemp()))
+    eps = [read_trace(f) for f in sorted(cell.glob("*.jsonl"))]
+
+    def reward(e, reading):
+        return episode_reward([e["header"], *e["steps"], e["footer"]], BY_ID["T05"],
+                              len(SOLUTIONS["T05"]), reading=reading, records=e["records"])
+    checks = [reward(e, "checks") for e in eps]
+    policy = [reward(e, "policy") for e in eps]
+    check("by the checks, as round 2's GRPO was rewarded: the voucher passes, the "
+          "escalation after she declined it fails -- and says what it was",
+          [r.passed for r in checks] == [True, True, False, False]
+          and [VOUCHER_NOTE in r.notes for r in checks] == [False, False, True, True],
+          [(r.passed, r.notes) for r in checks])
+    check("…as the policy reads it, that escalation is a pass, rewarded as one",
+          [r.passed for r in policy] == [True, True, True, True]
+          and policy[2].reward == policy[3].reward > checks[2].reward
+          and READINGS == ("checks", "policy"), [r.reward for r in policy])
+    check("…while without the customer's turns it cannot be found, and stays the check's",
+          not episode_reward([eps[2]["header"], *eps[2]["steps"], eps[2]["footer"]],
+                             BY_ID["T05"], 3, reading="policy").passed)
+    try:
+        episode_reward([eps[0]["header"], *eps[0]["steps"], eps[0]["footer"]], BY_ID["T05"],
+                       3, reading="both")
+        bad = ""
+    except ValueError as e:
+        bad = str(e)
+    check("…and a reading that is neither is refused", "checks" in bad, bad)
+
+
+def test_grpo_curve():
+    """The learning curve's second point (RUNBOOK phase 4, GRPO): the adapters
+    after an iteration on their own training tasks, against the rollouts the
+    iteration started from, task by task -- per fold and over both."""
+    print("\n=== grpo_curve.py: GRPO on its own tasks, before and after ===")
+    import contextlib
+    import io
+    root = Path(tempfile.mkdtemp())
+    a_tasks = "T01,T03,T04,T06,T08,T09"
+    b_tasks = "T10,T11,T12,T13,T15,T16"
+    for run, tasks, backend in (("A1", a_tasks, "mute"), ("A2", a_tasks, "scripted"),
+                                ("B1", b_tasks, "scripted"), ("B2", b_tasks, "scripted")):
+        r = _sweep(root, run, tasks, 2, "--backend", backend)
+        assert r.returncode == 0, r.stderr[-800:]
+    gc = _script("grpo_curve")
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out):
+        gc.main([str(root / "A1" / "full"), str(root / "A2" / "full"),
+                 str(root / "B1" / "full"), str(root / "B2" / "full"), "--checker", "recorded"])
+    text = out.getvalue()
+    check("each pair paired by task, then all of them together, in the words fixed before "
+          "the run: six tasks better and none worse is LEARNED",
+          "A1 -> A2: pass^1 0.000 -> 1.000 over 6 tasks" in text
+          and "B1 -> B2: pass^1 1.000 -> 1.000 over 6 tasks" in text
+          and "all the pairs together: pass^1 0.500 -> 1.000; paired by task (12 tasks): "
+              "+0.500; 6 tasks better, 0 worse, sign test p=0.031  ->  LEARNED" in text
+          and "by trap" in text and "the voucher trap" not in text, text)
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out):
+        gc.main([str(root / "B1" / "full"), str(root / "B2" / "full"), "--checker", "recorded"])
+    check("…and no difference is NOT SHOWN", "->  NOT SHOWN" in out.getvalue(), out.getvalue())
+    try:
+        gc.main([str(root / "A1" / "full")])
+        odd = ""
+    except SystemExit as e:
+        odd = str(e)
+    check("…the cells come in pairs", "pairs" in odd, odd)
+    check("the verdict's words: WORSE when the sign test resolves the other way",
+          gc.verdict({"resolved": True, "diff": -0.2}) == "WORSE"
+          and gc.verdict(None) == "NOT SHOWN")
+
+
 def test_grpo_build():
     print("\n=== GRPO: groups, advantages, the examples of a turn ===")
     import _tokenizer
@@ -811,6 +940,24 @@ def test_grpo_build():
           "to learn", wall["skipped"].get("stopped by the harness (max_wall_seconds)") == 1
           and wall["learning_tasks"] == [] and wall["examples"] == 0, wall["skipped"])
 
+    # WHAT_FAILED #46: the voucher trap's escalation after she declined the
+    # voucher, counted under either reading; learned from as a failure by the
+    # checks, and as the pass the policy makes it with "policy".
+    vcell = _voucher_rollouts(root / "voucher")
+    vrows, vchk = build(vcell, BY_ID, tok, ALL_SOLUTIONS, expect_model="toy")
+    prow, vpol = build(vcell, BY_ID, tok, ALL_SOLUTIONS, expect_model="toy", reading="policy")
+    check("by the checks her declined voucher is a failure to learn from, and counted",
+          vchk["reward_reading"] == "checks" and vchk["voucher_declined"] == 2
+          and vchk["passed"] == 2 and vchk["pass_rate_rewarded"] == 0.5
+          and vchk["learning_tasks"] == ["T05"]
+          and {r["passed"] for r in vrows} == {True, False}, vchk)
+    check("…as the policy reads it, the group has nothing to learn, while the learning curve "
+          "keeps the checks' verdicts, so every point is the same measure",
+          vpol["reward_reading"] == "policy" and vpol["voucher_declined"] == 2
+          and vpol["passed"] == 2 and vpol["pass_rate"] == 0.5
+          and vpol["pass_rate_rewarded"] == 1.0 and vpol["learning_tasks"] == [] and not prow,
+          vpol)
+
     # The command: the stats written last, no fallback to the local template.
     import contextlib
     import io
@@ -839,6 +986,25 @@ def test_grpo_build():
     down = cli("--server", "http://127.0.0.1:9")
     check("…and with the server down it stops, rather than train on prompts the local "
           "template rendered (#27)", down.startswith("exit:") and "server built" in down, down)
+
+    def vcli(*extra):
+        o = io.StringIO()
+        try:
+            with contextlib.redirect_stdout(o):
+                g_.main(["build", "--run", str(vcell), "--model", str(tdir), "--served-model",
+                         "toy", "--out", str(out / "examples" / "v.jsonl"),
+                         "--stats", str(out / "stats" / "v.stats.json"), *extra])
+            return o.getvalue()
+        except SystemExit as e:
+            return f"exit: {e}"
+    said = vcli("--reward-reading", "policy")
+    measured = vcli("--reward-reading", "policy", "--measure")
+    check("with nothing to train on the build stops -- unless it only measures, when it "
+          "writes the stats and says so; and it says how it read her declined voucher",
+          said.startswith("exit:") and "nothing to train on" in said
+          and "Measured only" in measured and "rewarded as passes" in measured
+          and json.loads((out / "stats" / "v.stats.json").read_text())["voucher_declined"] == 2,
+          said + measured)
 
 
 def _toy_model(work: Path, tok) -> Path:
@@ -1533,10 +1699,61 @@ def test_grpo_scripts():
     check("a Modal job and a notebook run the stage, as round 2's only, with its knobs",
           all(f'"{k}"' in passed_on for k in ("PASAR_GRPO_ITERS", "PASAR_GRPO_K",
                                                "PASAR_GRPO_LR", "PASAR_GRPO_SKIP_TRAPS"))
-          and '"grpo", "customer3", "edition3")' in modal_src
+          and '"grpo", "customer3", "edition3",' in modal_src
           and "PASAR_ROUND=2 modal run" in modal_src
-          and 'STAGES = ("smoke", "stage1", "stage2", "grpo", "customer3", "edition3")' in nb
+          and 'STAGES = ("smoke", "stage1", "stage2", "grpo", "customer3", "edition3",'
+              ' "grpo-measure")' in nb
           and "pn.run('grpo', round=2)" in nb)
+    # The reward's reading of the voucher trap (WHAT_FAILED #46): one a run,
+    # round 2's the checks it began with.
+    code, out7 = grpo(PASAR_ROUND="2", PASAR_GRPO_READING="policy")
+    check("GRPO's reading of the voucher trap is recorded at its first run, and a later run "
+          "with the other is refused: one reading a run (#46)",
+          "PASAR_GRPO_READING=checks" in settings.read_text() and code != 0
+          and "rewarded by checks" in out7, (settings.read_text(), out7[-400:]))
+    settings.write_text("".join(l + "\n" for l in settings.read_text().splitlines()
+                                if not l.startswith("PASAR_GRPO_READING")))
+    (work / "data" / "grpo2" / "stats").mkdir(parents=True, exist_ok=True)
+    (work / "data" / "grpo2" / "stats" / "i1-A.stats.json").write_text('{"passed": 1}')
+    code, out8 = grpo(PASAR_ROUND="2", PASAR_GRPO_READING="policy")
+    check("…and an iteration built before the reading could be chosen counts as the checks",
+          "PASAR_GRPO_READING=checks" in settings.read_text() and code != 0
+          and "rewarded by checks" in out8, (settings.read_text(), out8[-400:]))
+    check("…passed to every build, and an empty iteration stops before an update",
+          '--reward-reading "$GRPO_READING"' in stage and 'if [ ! -s "$ex" ]' in stage
+          and stage.index('if [ ! -s "$ex" ]') < stage.index("train_rft.py train"))
+
+    # The learning curve's second point (v52): the last GRPO adapters on their
+    # own training tasks, measured, not trained on and not evaluated.
+    ms = pipe[pipe.index("\n  grpo-measure)"):pipe.index("\n  customer3)")]
+    check("grpo-measure rolls the last GRPO adapters out on their own training tasks, as the "
+          "next iteration would, builds their stats without an update, and pairs them with "
+          "the rollouts the iteration started from",
+          'name="pasar-$G-i$N-$F"' in ms and 'export LORA="checkpoints/$G-i$N-$F"' in ms
+          and '--tasks-file "data/$G/stats/tasks-$F.json"' in ms
+          and '--run-id "$P-grpo-i$i-collect-$F"' in ms and "--measure" in ms
+          and '--reward-reading "$GRPO_READING"' in ms and "train_rft.py" not in ms
+          and "scripts/grpo_curve.py" in ms
+          and '"traces/$P-grpo-i$N-collect-A/full" "traces/$P-grpo-i$i-collect-A/full"' in ms
+          and 'logs/${LP}grpo-measure-i$i.txt' in ms, ms[:600])
+
+    def measure(**extra):
+        r = subprocess.run(["bash", "scripts/gpu_pipeline.sh", "grpo-measure"], cwd=work,
+                           capture_output=True, text=True, env={**base, **extra})
+        return r.returncode, r.stdout + r.stderr
+    m1, mo1 = measure()
+    m2, mo2 = measure(PASAR_ROUND="2")
+    for f in "AB":
+        (work / "checkpoints" / f"grpo2-i1-{f}").mkdir(parents=True, exist_ok=True)
+        (work / "checkpoints" / f"grpo2-i1-{f}" / "adapter_config.json").write_text("{}")
+    m3, mo3 = measure(PASAR_ROUND="2")
+    check("…round 2's only, after GRPO has trained, and beside the rollouts it compares with",
+          m1 != 0 and "PASAR_ROUND=2" in mo1 and m2 != 0
+          and "no checkpoints/grpo2-i1-A and -B" in mo2 and m3 != 0
+          and "traces/P2-grpo-i1-collect-A" in mo3, mo1 + mo2 + mo3)
+    check("…and a notebook and a Modal job run it as round 2's",
+          "pn.run('grpo-measure', round=2)" in nb and '"grpo-measure"' in modal_src
+          and '"PASAR_GRPO_READING"' in passed_on)
     results = re.search(r"RESULTS = \[(.*?)\]", modal_src, re.S).group(1)
     check("`pull` brings back GRPO's stats and evaluations, and not its rollouts",
           all(x in results for x in ('"data/grpo2/stats"', '"traces/P2-rft-e2"',
@@ -1567,7 +1784,7 @@ def test_grpo_scripts():
           "--traps high_value_photo_required_first" in o.getvalue()
           and "--customer 3" in o.getvalue(), o.getvalue())
     check("…a notebook and a Modal job run it, as round 2's, and bring its runs back",
-          "pn.run('customer3', round=2)" in nb and '"customer3", "edition3")' in modal_src
+          "pn.run('customer3', round=2)" in nb and '"customer3", "edition3",' in modal_src
           and '"traces/P2-c?-check"' in results
           and '"traces/P2-c?-check"' in nb)
 
@@ -2422,6 +2639,8 @@ def main() -> int:
     test_markup_audit()
     test_wrappers()
     test_train_smoke()
+    test_grpo_voucher_reading()
+    test_grpo_curve()
     test_grpo_build()
     test_grpo_train()
     test_qwen38_turns()
