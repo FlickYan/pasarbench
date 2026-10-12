@@ -562,6 +562,10 @@ def main(argv: list[str] | None = None) -> int:
         print("!! one cell gave the closing phase room of its own (v49) and the other did not: "
               "the conversations ran alike, and what happened after the customer left differs "
               "partly by the budget.")
+    # The model the reader guardrail read with (v50, RUNBOOK 1u).
+    readers = [h.get("claim_reader") for h in heads]
+    if any(readers):
+        print(f"{'claim_reader':12s} {readers[0] or '-':>34s} {readers[1] or '-':>34s}")
     if heads[0].get("simulator") != heads[1].get("simulator"):
         print("!! the two cells had different simulated customers -- another model, "
               "gating, or the rules v31 changed (WHAT_FAILED #38): a difference between "
@@ -624,6 +628,12 @@ def main(argv: list[str] | None = None) -> int:
     print(f"  {'guardrail reading, episodes':28s} {f'{told[0]}/{len(va)}':>18s} "
           f"{f'{told[1]}/{len(vb)}':>18s}")
     print(f"  {'audit reading, failures read':28s} {f'{ca_}/{na}':>18s} {f'{cb_}/{nb}':>18s}")
+    if any(readers):
+        print("  !! the guardrail reading reads each cell as its run did -- "
+              + ", ".join(f"{n} with {('the reader ' + r) if r else 'the English list'}"
+                          for n, r in zip(names, readers))
+              + ": not one instrument. Both read by one reader: "
+                "scripts/claim_reader_check.py delivered (RUNBOOK 1u)")
     for name, cell, rv in zip(names, cells, (va, vb)):
         held = [(tid, t) for tid, r in rv.items() for t in r["held"]]
         if not held:
