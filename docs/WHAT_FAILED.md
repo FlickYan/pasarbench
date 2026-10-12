@@ -1675,8 +1675,11 @@ once she has promised what she cannot do in the conversation, and a turn that
 claims photos her persona forbids is written again, then ends the conversation
 (`simulator.ENDING`, `LLMUser.respond`; the trace records each time). She is
 `--customer 3`, not the default: every comparison GRPO is part of needs round
-2's customer. A half-hour run on round 2's machine checks her before the next
-edition uses her (RUNBOOK, customer 3).
+2's customer. Checked on round 2's machine before the next edition uses her
+(RUNBOOK, customer 3; 2026-10-12): no claim of photos reached the agent in the
+trap's 70 conversations, where customer 2's did in 31; her guard never had to
+act; and the duplicate refund held, 64 → 63 of 70 (p = 1.00). The hard edition
+runs with her.
 
 **Lesson.** A simulated customer's rules are shared by every trap: a rule
 written for one is a rule for all of them. After any change to the customer,
