@@ -2587,6 +2587,18 @@ def test_voucher_choice_compared():
     early = [step(offer + " I have passed it on.", esc)]
     unasked = [step("It is past the window."), her, step("", esc)]
     paid = [step(offer), her, step("", ("issue_refund", {"order_id": "O1"}), esc)]
+    over = step("", ("issue_goodwill_voucher", {"user_id": "U1", "amount_minor": 300000,
+                                                "currency": "VND"}))
+    over["tool_results"] = [{"name": "issue_goodwill_voucher", "ok": False,
+                             "error": "voucher exceeds SGD 15 equivalent cap (P6.2)"}]
+    took_refused = [step(offer), {"type": "event", "kind": "user_turn",
+                                  "text": "I'll take the voucher."}, over,
+                    {"type": "event", "kind": "user_turn", "text": "Then escalate, please."},
+                    step("", esc)]
+    check("v60, WHAT_FAILED #49: a voucher the agent tried and the tool refused means she "
+          "took it -- the escalation she then asked for is not her declining it",
+          not declined_voucher("two_orders_voucher_and_cancel", took_refused)
+          and not declined_voucher("out_of_window_offer_voucher", took_refused))
     check("the road is found: the voucher offered, her answer, then the dispute's "
           "escalation and no payment -- not where she took the voucher, nor an escalation "
           "made before she could answer or with no voucher offered, nor one beside a "
