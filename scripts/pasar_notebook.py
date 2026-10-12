@@ -20,6 +20,7 @@ and then any of:
     pn.run("stage1", round=2)   # round 2: the second fine-tune, files of its own (v44)
     pn.run("grpo", round=2)     # GRPO from round 2's adapters, after its stage 2 (v45)
     pn.run("customer3", round=2)   # customer 3 against customer 2, ~30 min (v47)
+    pn.run("edition3", round=2)    # the hard edition: base, RFT, GRPO, ~1-2 h (v48)
     pn.status()         # what is running or done (a notebook sees other containers'
                         # writes as of its start: check a job from a new session)
     pn.read("logs/smoke-projection.txt")    # print a file (head=, tail= for long ones)
@@ -61,7 +62,7 @@ VENV = Path(os.environ.get("PASAR_NB_VENV") or
 REPO = "pasarbench"
 LOCK = "logs/.stage-lock.json"
 STALE = 15 * 60
-STAGES = ("smoke", "stage1", "stage2", "grpo", "customer3")
+STAGES = ("smoke", "stage1", "stage2", "grpo", "customer3", "edition3")
 # What pack() archives: what the report and the audits read (as modal_pipeline.pull).
 RESULTS = ["logs", "data/splits", "data/rft/stats.json", "data/run_settings.env",
            "traces/P-smoke", "traces/P-base", "traces/P-rft", "traces/P-ref",
@@ -72,7 +73,9 @@ RESULTS = ["logs", "data/splits", "data/rft/stats.json", "data/run_settings.env"
            # rollouts (traces/P2-grpo-i*-collect-*) stay on the Volume
            "data/grpo2/stats", "traces/P2-rft-e2", "traces/P2-grpo-i?", "traces/P2-grpo-i?-e2",
            # the customer check (round 2's customer3 stage): customer 2 and 3
-           "traces/P2-c?-check"]
+           "traces/P2-c?-check",
+           # the hard edition (round 2's edition3 stage): base, RFT, GRPO
+           "traces/P2-base-e3", "traces/P2-rft-e3", "traces/P2-grpo-i?-e3"]
 WEB_DOWNLOAD_LIMIT = 16 * 2**20    # the Modal web UI downloads files up to 16 MB
 
 _state: dict = {}
@@ -528,6 +531,9 @@ def run(stage: str, force: bool = False, round: int | None = None) -> None:
     if stage == "customer3" and env.get("PASAR_ROUND") != "2":
         raise SystemExit("the customer check runs on round 2's models: "
                          "pn.run('customer3', round=2)")
+    if stage == "edition3" and env.get("PASAR_ROUND") != "2":
+        raise SystemExit("the hard edition runs on round 2's models: "
+                         "pn.run('edition3', round=2)")
     if not _gpus():
         raise SystemExit("this notebook has no GPU: open the compute profile (sidebar), pick "
                          "B200 x1 (or H200 x1), let the kernel restart, run pn.setup() again")
@@ -558,6 +564,9 @@ def launch(stage: str, wait_min: float = 30, dry_run: bool = False,
     if stage == "customer3" and env.get("PASAR_ROUND") != "2":
         raise SystemExit("the customer check runs on round 2's models: "
                          "pn.launch('customer3', round=2)")
+    if stage == "edition3" and env.get("PASAR_ROUND") != "2":
+        raise SystemExit("the hard edition runs on round 2's models: "
+                         "pn.launch('edition3', round=2)")
     work = paths()["work"]
     cmd = [sys.executable, "-m", "modal", "run", "--detach", "scripts/modal_pipeline.py",
            "--stage", stage]
