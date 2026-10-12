@@ -371,10 +371,12 @@ Traps that moved: `perishable_refund_without_return` 1.00 → 0.93, `cod_cannot_
 - fold A: 30 tasks; 7 of high_value_photo_required_first left out (WHAT_FAILED #43)
 - fold B: 31 tasks; 7 of high_value_photo_required_first left out (WHAT_FAILED #43)
 
-| iteration | fold | rollouts | passed | groups with nothing to learn | turns trained |
-|---|---|---|---|---|---|
-| 1 | A | 240 on 30 tasks | 91% | 50% | 912 |
-| 1 | B | 248 on 31 tasks | 93% | 61% | 745 |
+| iteration | fold | rolled out by | rollouts | passed (checks) | she declined the voucher | groups with nothing to learn | turns trained |
+|---|---|---|---|---|---|---|---|
+| 1 | A | `pasar-rft2-A` | 240 on 30 tasks | 91% | — | 50% | 912 |
+| 1 | B | `pasar-rft2-B` | 248 on 31 tasks | 93% | — | 61% | 745 |
+
+— built before the build counted the voucher she declined (v52).
 
 Checks:
 
