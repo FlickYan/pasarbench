@@ -2590,6 +2590,55 @@ customer's, and GRPO's groups score her choice as the agent's. The hard edition
 is the next run with room (below); its two-orders cases hold the same choice,
 and their reading now says so.
 
+**The reward's reading of the voucher trap** (v52; WHAT_FAILED #46). `train_grpo.py
+build --reward-reading` (`PASAR_GRPO_READING`): `checks` rewards the episode in
+which she declined the voucher as the check scores it, a failure; `policy`
+rewards it as the pass P6.3 and P10 make it, so that a group does not learn
+her choice as the agent's mistake. Either way the build counts those episodes
+(`voucher_declined` in its stats), and the learning curve's pass rate stays
+the checks'. A run holds one reading for every iteration, as it holds its
+rollouts a task: round 2's GRPO began with the checks and keeps them, and the
+stage refuses another. A GRPO on new tasks starts with `policy`.
+
+### GRPO on its own tasks: the learning curve's second point (v52)
+
+GRPO's evaluation says nothing about the tasks it trained on. One iteration
+drew one point of the learning curve — the RFT adapters at temperature 1 on
+GRPO's training tasks, 91% and 93% — and no second, so its null cannot tell
+"it learned its tasks and did not carry them over" from "one update this small
+moved nothing". The next GRPO design depends on which.
+
+```bash
+PASAR_ROUND=2 bash scripts/gpu_pipeline.sh grpo-measure   # or pn.run("grpo-measure", round=2)
+```
+
+The GRPO adapters on their own training tasks (30 and 31) at temperature 1,
+eight rollouts a task, sampled and built exactly as iteration 1's were — no
+update, no evaluation. About an hour of one B200 (~$7). They are the next
+iteration's rollouts: a later `grpo` with `PASAR_GRPO_ITERS=2` trains on them
+rather than rolling out again. `logs/r2-grpo-measure-i2.txt`
+(`scripts/grpo_curve.py`) pairs them with iteration 1's, each fold and both
+together; RESULTS §6's learning curve gains its second row.
+
+**The reading, fixed before the run** (2026-10-12):
+
+- **Primary.** Over both folds' 61 tasks, each task's passes out of its eight
+  rollouts, iteration 1's (the RFT adapters) against these (the GRPO adapters),
+  paired by task with the sign test, on today's checks: LEARNED if GRPO passes
+  more at p < 0.05, WORSE if it passes fewer, NOT SHOWN otherwise.
+- **With the evaluation.** LEARNED here while the newer tasks and the held-out
+  fold were INCONCLUSIVE: GRPO learned its own tasks and did not carry it over,
+  and the next design trains on tasks like the ones it is judged on. NOT SHOWN:
+  one update of this size moved nothing measurable even where it trained, and
+  the next design needs more signal — more groups with a pass and a fail, more
+  iterations — before another held-out test. WORSE: the update hurt the tasks
+  it trained on.
+- **Beside it, never instead of it.** The voucher trap read as P6.3 and P10 read
+  a declined voucher (#46): how often she declined it before and after, and the
+  pooled line read that way. A gain the voucher trap alone carries is read as
+  the customer's.
+- Each fold, and each trap: leads to read, not results.
+
 ### Customer 3, checked (v47)
 
 Customer 2 sends photos she was told she has none of (WHAT_FAILED #43).
