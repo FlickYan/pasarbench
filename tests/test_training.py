@@ -1533,8 +1533,9 @@ def test_grpo_scripts():
     check("a Modal job and a notebook run the stage, as round 2's only, with its knobs",
           all(f'"{k}"' in passed_on for k in ("PASAR_GRPO_ITERS", "PASAR_GRPO_K",
                                                "PASAR_GRPO_LR", "PASAR_GRPO_SKIP_TRAPS"))
-          and '"grpo", "customer3")' in modal_src and "PASAR_ROUND=2 modal run" in modal_src
-          and 'STAGES = ("smoke", "stage1", "stage2", "grpo", "customer3")' in nb
+          and '"grpo", "customer3", "edition3")' in modal_src
+          and "PASAR_ROUND=2 modal run" in modal_src
+          and 'STAGES = ("smoke", "stage1", "stage2", "grpo", "customer3", "edition3")' in nb
           and "pn.run('grpo', round=2)" in nb)
     results = re.search(r"RESULTS = \[(.*?)\]", modal_src, re.S).group(1)
     check("`pull` brings back GRPO's stats and evaluations, and not its rollouts",
@@ -1544,7 +1545,7 @@ def test_grpo_scripts():
 
     # The customer check (v47): customer 3 against customer 2 on round 2's
     # models, two traps, each under a run of its own (WHAT_FAILED #43).
-    c3 = pipe[pipe.index("\n  customer3)"):pipe.index("\n  settings)")]
+    c3 = pipe[pipe.index("\n  customer3)"):pipe.index("\n  edition3)")]
     check("the customer check runs the base model on the photo trap and the duplicate "
           "refund under each customer, then compares them and audits her photos",
           'for C in 2 3; do' in c3 and '--customer "$C"' in c3
@@ -1566,9 +1567,60 @@ def test_grpo_scripts():
           "--traps high_value_photo_required_first" in o.getvalue()
           and "--customer 3" in o.getvalue(), o.getvalue())
     check("…a notebook and a Modal job run it, as round 2's, and bring its runs back",
-          "pn.run('customer3', round=2)" in nb and '"customer3")' in modal_src
+          "pn.run('customer3', round=2)" in nb and '"customer3", "edition3")' in modal_src
           and '"traces/P2-c?-check"' in results
           and '"traces/P2-c?-check"' in nb)
+
+    # The hard edition (v48, RUNBOOK 1s): the base model, round 2's RFT
+    # adapters and GRPO's on its 36 cases, under customer 3 once she is checked.
+    e3 = pipe[pipe.index("\n  edition3)"):pipe.index("\n  settings)")]
+    check("the hard edition runs the base model, the RFT adapters and GRPO's last ones on "
+          "its cases, under one customer, then compares them in pairs and audits the "
+          "changed request",
+          "rl.split --suite edition3" in e3 and "serve agent" in e3 and "serve rft" in e3
+          and 'baseline -k "$K" --suite edition3 --customer "$E3_CUSTOMER"' in e3
+          and '--run-id "$P-base-e3"' in e3
+          and '--adapter-prefix "pasar-$RFT-" --run-id "$P-rft-e3"' in e3
+          and '--adapter-prefix "pasar-$G-i$N-" --run-id "$P-grpo-i$N-e3"' in e3
+          and e3.count('--suite edition3 --customer "$E3_CUSTOMER"') == 3
+          and 'compare_cells.py "traces/$P-base-e3/full" "traces/$P-rft-e3/full"' in e3
+          and 'compare_cells.py "traces/$P-rft-e3/full" "traces/$P-grpo-i$N-e3/full"' in e3
+          and "sed -n '/^4b\\. /,$p'" in e3, e3[:400])
+
+    def edition3(**extra):
+        r = subprocess.run(["bash", "scripts/gpu_pipeline.sh", "edition3"], cwd=work,
+                           capture_output=True, text=True, env={**base, **extra})
+        return r.returncode, r.stdout + r.stderr
+    code, o1 = edition3()
+    code2, o2 = edition3(PASAR_ROUND="2")
+    check("…on round 2's models only, and with customer 3 only once the customer check has "
+          "run", code != 0 and "PASAR_ROUND=2" in o1 and code2 != 0
+          and "customer 3 has not been checked" in o2 and "PASAR_E3_CUSTOMER=2" in o2, o1 + o2)
+    edition3(PASAR_ROUND="2", PASAR_E3_CUSTOMER="2")
+    (work / "traces" / "P2-c3-check" / "full").mkdir(parents=True)
+    code3, o3 = edition3(PASAR_ROUND="2", PASAR_E3_CUSTOMER="3")
+    sets = subprocess.run(["bash", "scripts/gpu_pipeline.sh", "settings"], cwd=work,
+                          capture_output=True, text=True,
+                          env={**base, "PASAR_ROUND": "2"}).stdout
+    check("…its first run records its customer, and a later one with another is refused",
+          "PASAR_E3_CUSTOMER=2" in settings.read_text() and code3 != 0
+          and "the hard edition's first run had customer 2" in o3
+          and "edition3: PASAR_E3_CUSTOMER=2" in sets, (settings.read_text(), o3, sets))
+    sys.argv = ["train_rft.py", "eval", "--suite", "edition3", "--customer", "3",
+                "--adapter-prefix", "pasar-rft2-", "--run-id", "P2-rft-e3", "--dry-run"]
+    o = io.StringIO()
+    with contextlib.redirect_stdout(o):
+        tr2.main()
+    check("…its sweeps: the hard edition, shared out between the adapters by its own split, "
+          "with the customer asked for",
+          "--suite edition3" in o.getvalue() and "--folds data/splits/folds-e3.json" in o.getvalue()
+          and "--customer 3" in o.getvalue(), o.getvalue())
+    check("…a notebook and a Modal job run it, as round 2's, pass its customer on, and bring "
+          "its runs back",
+          "pn.run('edition3', round=2)" in nb and "pn.launch('edition3', round=2)" in nb
+          and '"PASAR_E3_CUSTOMER"' in passed_on
+          and all(f'"{x}"' in results and f'"{x}"' in nb
+                  for x in ("traces/P2-base-e3", "traces/P2-rft-e3", "traces/P2-grpo-i?-e3")))
 
 
 def _script_module(name):
