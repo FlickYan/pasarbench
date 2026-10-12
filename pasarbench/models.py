@@ -29,7 +29,9 @@ SIM_DEFAULT = "RedHatAI/gemma-4-31B-it-FP8-Dynamic"
 _FAMILIES: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("qwen", ("seallm", "sailor", "qwen", "qwq")),
     ("llama", ("llama",)),
-    ("gemma", ("gemma",)),
+    # Gemini is Google's, as Gemma is: one family, so neither plays the
+    # other's customer.
+    ("gemma", ("gemma", "gemini")),
     ("deepseek", ("deepseek",)),
     ("mistral", ("mistral", "mixtral", "ministral", "codestral", "magistral")),
     ("openai", ("gpt-", "gpt4", "o1-", "o3-", "o4-")),
@@ -38,6 +40,7 @@ _FAMILIES: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("moonshot", ("kimi", "moonshot")),
     ("microsoft", ("phi-",)),
     ("cohere", ("command-", "aya")),
+    ("xai", ("grok",)),
 )
 
 
