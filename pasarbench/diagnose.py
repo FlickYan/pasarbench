@@ -410,6 +410,53 @@ def _sign_p(worse: int, better: int) -> float:
     return min(1.0, 2 * sum(comb(n, i) for i in range(k + 1)) / 2 ** n)
 
 
+def voucher_choice(run_dir: str | Path, eps: list[dict[str, Any]],
+                   checker: str | None = None) -> tuple[list[dict[str, Any]], dict[str, int]]:
+    """WHAT_FAILED #46. The episodes again, with each voucher-trap episode in
+    which she declined the offered voucher and the agent escalated -- what
+    P6.3 and P10 ask for (simqa.declined_voucher) -- read as a pass where it
+    failed on the voucher's lines alone; and the counts: the voucher trap's
+    episodes, those she declined it in, those read as a pass, and the trap's
+    failures without it. Read after the fact, beside a result, never instead
+    of it. `checker` as load_episodes'."""
+    from .simqa import VOUCHER_TRAPS, declined_voucher, only_the_voucher
+    checker = checker or CHECKER
+    out, n = [], {"episodes": 0, "declined": 0, "read_as_pass": 0, "failed_without": 0}
+    for e in eps:
+        if e.get("trap") not in VOUCHER_TRAPS:
+            out.append(e)
+            continue
+        n["episodes"] += 1
+        f = Path(run_dir) / f"{e['transcript_id']}.jsonl"
+        try:
+            recs = [json.loads(l) for l in f.read_text(encoding="utf-8").splitlines()
+                    if l.strip()]
+        except (OSError, ValueError):
+            out.append(e)
+            continue
+        said = declined_voucher(e["trap"], recs)
+        n["declined"] += said
+        if e["passed"]:
+            out.append(e)
+            continue
+        if not said:
+            n["failed_without"] += 1
+            out.append(e)
+            continue
+        if checker == "current":
+            from .rescore import rescore_file
+            failures = rescore_file(f).failures
+        else:
+            foot = next((r for r in reversed(recs) if r.get("type") == "footer"), {})
+            failures = foot.get("failures") or []
+        if only_the_voucher(e["trap"], failures):
+            n["read_as_pass"] += 1
+            out.append({**e, "passed": True})
+        else:
+            out.append(e)
+    return out, n
+
+
 def paired_episodes(ea: list[dict[str, Any]], eb: list[dict[str, Any]],
                     metric: str = "passed") -> dict[str, Any] | None:
     """Two sets of episodes over shared tasks: per-task mean difference and an
