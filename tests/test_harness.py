@@ -1875,10 +1875,11 @@ def test_keys_by_provider():
         del os.environ["OPENAI_API_KEY"]
         from pasarbench.harness import backends
         from pasarbench.harness.types import Message
-        sent = []
+        sent, bodies = [], []
 
         def fake_post(url, payload, headers, timeout=120.0):
             sent.append((url, headers))
+            bodies.append((url, payload))
             return {"choices": [{"message": {"content": "ok"}, "finish_reason": "stop"}],
                     "usage": {"prompt_tokens": 10, "completion_tokens": 1}}
         real, backends._post = backends._post, fake_post
@@ -1898,6 +1899,27 @@ def test_keys_by_provider():
               "no other provider is sent one",
               ids[0] and ids[0] == ids[1] and ids[2] and ids[2] != ids[0]
               and ids[3:] == [None, None, None], ids)
+        from pasarbench.harness.types import ToolCall
+        bodies.clear()
+        backends._post = fake_post
+        try:
+            turn = [*start, Message(role="assistant", content="",
+                                    tool_calls=[ToolCall(name="get_order", id="c1",
+                                                         arguments={"order_id": "GO-1"})]),
+                    Message(role="tool", tool_call_id="c1", name="get_order", content="{}")]
+            for url in ("https://api.z.ai/api/paas/v4", "https://open.bigmodel.cn/api/paas/v4",
+                        "https://api.deepseek.com/v1"):
+                OpenAICompatBackend("m", url, api_key="k").chat(turn, [])
+        finally:
+            backends._post = real
+        zai, zhipu, dsk = (b["messages"][-2:] for _, b in bodies)
+        check("v59: to Z.ai and Zhipu, a tool call's empty content as \"\" and a tool result "
+              "without its tool's name, as their schema documents; every other provider "
+              "sent exactly what it was sent before",
+              zai == zhipu and zai[0]["content"] == "" and "name" not in zai[1]
+              and zai[1] == {"role": "tool", "tool_call_id": "c1", "content": "{}"}
+              and dsk[0]["content"] is None and dsk[1]["name"] == "get_order"
+              and list(dsk[1]) == ["role", "tool_call_id", "name", "content"], (zai, dsk))
         r = subprocess.run([sys.executable, "-m", "pasarbench.sweep", "--backend", "openai",
                             "--model", "gpt-x", "--base-url", "https://api.openai.com/v1",
                             "--suite", "edition3", "-k", "1", "--run-id", "never"],
