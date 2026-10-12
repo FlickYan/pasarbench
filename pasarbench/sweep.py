@@ -25,6 +25,7 @@ import json
 import re
 import os
 from pathlib import Path
+from urllib.parse import urlparse
 from collections import Counter, defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
@@ -87,47 +88,94 @@ def select_tasks(args) -> list[Task]:
     return pool
 
 
-API_KEY_ENV = ("PASARBENCH_API_KEY", "DEEPSEEK_API_KEY", "OPENAI_API_KEY",
-               "DASHSCOPE_API_KEY", "TOGETHER_API_KEY", "GROQ_API_KEY")
+# Which variable holds which provider's key. A key goes only to the endpoint it
+# belongs to (v55; WHAT_FAILED #47): before v55 the agent took the first of a
+# fixed list -- DeepSeek's key whatever --base-url said -- so pointing the agent
+# at a second provider with .env loaded would have sent DeepSeek's key there.
+PROVIDER_KEYS: dict[str, tuple[str, ...]] = {
+    "api.deepseek.com": ("DEEPSEEK_API_KEY",),
+    "dashscope.aliyuncs.com": ("DASHSCOPE_API_KEY",),
+    "dashscope-intl.aliyuncs.com": ("DASHSCOPE_API_KEY",),
+    "api.openai.com": ("OPENAI_API_KEY",),
+    "generativelanguage.googleapis.com": ("GEMINI_API_KEY", "GOOGLE_API_KEY"),
+    "api.anthropic.com": ("ANTHROPIC_API_KEY",),
+    "api.mistral.ai": ("MISTRAL_API_KEY",),
+    "api.x.ai": ("XAI_API_KEY", "GROK_API_KEY"),
+    # Z.ai, GLM's international platform, and Zhipu's own in China: one
+    # company's two platforms, each key for its own.
+    "api.z.ai": ("ZAI_API_KEY", "Z_AI_API_KEY", "GLM_API_KEY", "ZHIPU_API_KEY",
+                 "ZHIPUAI_API_KEY"),
+    "open.bigmodel.cn": ("ZHIPUAI_API_KEY", "ZHIPU_API_KEY", "GLM_API_KEY"),
+    # Xiaomi MiMo: api.xiaomimimo.com, and its token-plan hosts.
+    "xiaomimimo.com": ("MIMO_API_KEY", "XIAOMI_MIMO_API_KEY", "XIAOMI_API_KEY"),
+    "openrouter.ai": ("OPENROUTER_API_KEY",),
+    "api.together.xyz": ("TOGETHER_API_KEY",),
+    "api.groq.com": ("GROQ_API_KEY",),
+}
+# This run's keys, for whatever endpoint the command names: the agent's, and
+# the customer's (which the claim reader and the translator share). They come
+# before a provider's own variable; scripts/add_model.py sets them for its runs.
+AGENT_KEY = "PASARBENCH_API_KEY"
+SIM_KEY = "PASARBENCH_SIM_API_KEY"
+ANTHROPIC_URL = "https://api.anthropic.com/v1"
 
-# The simulator usually lives on a DIFFERENT provider from the agent, so it
-# needs its own key resolved separately -- otherwise you end up passing it on
-# the command line, where other users on a shared node can read it.
-SIM_KEY_ENV = ("PASARBENCH_SIM_API_KEY", "DASHSCOPE_API_KEY", "OPENAI_API_KEY",
-               "TOGETHER_API_KEY", "GROQ_API_KEY")
+
+def provider_key_names(url: str) -> tuple[str, ...]:
+    """The variables that may hold the key of the provider `url` is on, in the
+    order they are read: all of them that provider's. () for an endpoint no
+    provider here is known by."""
+    host = (urlparse(url).hostname or "").lower()
+    for h, names in PROVIDER_KEYS.items():
+        if host == h or host.endswith("." + h):
+            return names
+    return ()
 
 
-def resolve_api_key() -> str:
-    """First key found in the environment, in priority order.
+def provider_key_env(url: str) -> str | None:
+    """The variable that holds `url`'s provider's key: the first of its names
+    that is set, else the first of them; None for an unknown endpoint."""
+    names = provider_key_names(url)
+    return next((n for n in names if os.environ.get(n, "").strip()),
+                names[0] if names else None)
 
-    Prefer this over `--api-key sk-...` on a SHARED CLUSTER. Command-line
+
+def key_for(url: str, override: str | None = AGENT_KEY) -> str:
+    """The key for one endpoint: "EMPTY" for a local server; else `override`
+    (this run's key), if set; else the first set of the variables of the
+    provider the endpoint is on. Never another provider's: "" when there is
+    none.
+
+    Prefer a variable to `--api-key sk-...` on a SHARED CLUSTER. Command-line
     arguments land in /proc/<pid>/cmdline, which is world-readable -- any other
     user on the node can read your key out of `ps aux`. Environment variables
     live in /proc/<pid>/environ, readable only by you and root. They also stay
-    out of ~/.bash_history.
-    """
-    for name in API_KEY_ENV:
-        v = os.environ.get(name)
-        if v:
-            return v
-    return "EMPTY"
+    out of ~/.bash_history."""
+    if _local(url):
+        return "EMPTY"
+    # A value with a space or a Windows line end round it (an .env saved on
+    # Windows) is the same key: a header cannot carry the line end.
+    if override and os.environ.get(override, "").strip():
+        return os.environ[override].strip()
+    return next((os.environ[n].strip() for n in provider_key_names(url)
+                 if os.environ.get(n, "").strip()), "")
 
 
-def resolve_sim_api_key() -> str:
-    for name in SIM_KEY_ENV:
-        v = os.environ.get(name)
-        if v:
-            return v
-    return ""
+def key_hint(url: str, override: str | None = AGENT_KEY) -> str:
+    """What to set for `url`'s key."""
+    names = provider_key_names(url)
+    host = urlparse(url).hostname or url
+    if names:
+        return (f"set {names[0]}" + (f" (or {', '.join(names[1:])})" if names[1:] else "")
+                + (f", or {override} for this run" if override else ""))
+    return (f"set {override}: no provider variable is known for {host}" if override
+            else f"no provider variable is known for {host}")
 
 
-def check_key(args) -> None:
-    remote = not any(h in args.base_url for h in ("localhost", "127.0.0.1", "0.0.0.0"))
-    if remote and args.api_key in ("", "EMPTY"):
+def check_key(args, url: str) -> None:
+    if not _local(url) and args.api_key in ("", "EMPTY"):
         raise SystemExit(
-            f"No API key found for {args.base_url}.\n"
-            f"Set one of: {', '.join(API_KEY_ENV)}\n"
-            f"  export DEEPSEEK_API_KEY=sk-...\n"
+            f"No API key for {url}: {key_hint(url)}.\n"
+            f"No other provider's key is sent there.\n"
             f"Failing here rather than sending the request and handing you a 401.")
 
 
@@ -158,7 +206,8 @@ def make_backend(kind: str, args) -> callable:
                                              max_tokens=args.max_tokens,
                                              extra_body=_extra_body(args.extra_body))
     if kind == "anthropic":
-        return lambda t: AnthropicBackend(model=args.model, temperature=args.temperature)
+        return lambda t: AnthropicBackend(model=args.model, api_key=args.api_key,
+                                          temperature=args.temperature)
     raise ValueError(kind)
 
 
@@ -251,7 +300,7 @@ def make_simulator(kind: str, args) -> callable:
         return lambda t: SilentUser()
     if kind == "openai":
         sim_url = args.sim_url or args.base_url
-        sim_key = args.sim_api_key or resolve_sim_api_key()
+        sim_key = args.sim_api_key or key_for(sim_url, SIM_KEY)
         if _local(sim_url):
             # A local server needs no key, and a real one set in the environment
             # for some provider has no business being sent to it.
@@ -264,9 +313,8 @@ def make_simulator(kind: str, args) -> callable:
             # TO A DIFFERENT COMPANY'S SERVERS. That is a credential disclosure,
             # not an inconvenience.
             raise SystemExit(
-                f"The simulator is on {sim_url} but no simulator key is set.\n"
-                f"Set one of: {', '.join(SIM_KEY_ENV)}\n"
-                f"  export PASARBENCH_SIM_API_KEY=sk-...\n\n"
+                f"The simulator is on {sim_url} but no simulator key is set: "
+                f"{key_hint(sim_url, SIM_KEY)}.\n\n"
                 f"Refusing to fall back to the agent's key: that would send your "
                 f"{args.base_url} credential to a different provider.")
 
@@ -286,7 +334,11 @@ def make_simulator(kind: str, args) -> callable:
                                  gate_facts=args.gate_facts,
                                  customer=getattr(args, "customer", CUSTOMER))
     if kind == "anthropic":
-        sim = AnthropicBackend(model=args.sim_model, temperature=0.7)
+        sim_key = args.sim_api_key or key_for(ANTHROPIC_URL, SIM_KEY)
+        if not sim_key:
+            raise SystemExit(f"The simulator is on {ANTHROPIC_URL} but no simulator key is "
+                             f"set: {key_hint(ANTHROPIC_URL, SIM_KEY)}.")
+        sim = AnthropicBackend(model=args.sim_model, api_key=sim_key, temperature=0.7)
         return lambda t: LLMUser(sim, t.persona, t.hidden_facts, t.language,
                                  gate_facts=args.gate_facts,
                                  customer=getattr(args, "customer", CUSTOMER))
@@ -307,10 +359,10 @@ def make_reader(args):
     elif url == args.base_url:
         key = args.api_key
     else:
-        key = args.sim_api_key or resolve_sim_api_key()
+        key = args.sim_api_key or key_for(url, SIM_KEY)
         if not key:
-            raise SystemExit(f"The claim reader is on {url} but no key is set for it.\n"
-                             f"Set one of: {', '.join(SIM_KEY_ENV)}\n"
+            raise SystemExit(f"The claim reader is on {url} but no key is set for it: "
+                             f"{key_hint(url, SIM_KEY)}.\n"
                              f"Refusing to fall back to the agent's key: that would send "
                              f"your {args.base_url} credential to a different provider.")
     backend = make_backend(args.reader_model, url, key, _extra_body(args.reader_extra_body))
@@ -551,16 +603,18 @@ def main() -> None:
     ap.add_argument("--model", default="gpt-4o-mini")
     ap.add_argument("--sim-model", default="gpt-4o-mini")
     ap.add_argument("--base-url", default="https://api.openai.com/v1")
-    ap.add_argument("--api-key", default=resolve_api_key(),
-                    help="prefer an env var (%s); a key passed here is visible "
-                         "to other users via `ps` on a shared machine"
-                         % "/".join(API_KEY_ENV[:3]))
+    ap.add_argument("--api-key", default="",
+                    help="prefer the provider's variable (DEEPSEEK_API_KEY for "
+                         "api.deepseek.com, OPENAI_API_KEY for api.openai.com, ...) or "
+                         "PASARBENCH_API_KEY for this run; a key passed here is visible "
+                         "to other users via `ps` on a shared machine")
     ap.add_argument("--temperature", type=float, default=0.0)
     ap.add_argument("--max-tokens", type=int, default=2048)
     ap.add_argument("--sim-url", default="", help="simulator endpoint, if different")
     ap.add_argument("--sim-api-key", default="",
-                    help="prefer PASARBENCH_SIM_API_KEY / DASHSCOPE_API_KEY in "
-                         "the environment; a key passed here is visible in `ps`")
+                    help="prefer the provider's variable (DASHSCOPE_API_KEY for "
+                         "DashScope) or PASARBENCH_SIM_API_KEY for this run; a key "
+                         "passed here is visible in `ps`")
     ap.add_argument("--extra-body", default="",
                     help='provider-specific JSON merged into the request body. '
                          'DeepSeek V4 REQUIRES \'{"thinking":{"type":"disabled"}}\' '
@@ -671,8 +725,12 @@ def main() -> None:
         # localhost without one, and a provider key picked up from the
         # environment has no business leaving the machine for a local process.
         args.api_key = "EMPTY"
-    if args.backend in ("openai", "anthropic"):
-        check_key(args)
+    elif args.backend == "openai":
+        args.api_key = args.api_key or key_for(args.base_url)
+        check_key(args, args.base_url)
+    elif args.backend == "anthropic":
+        args.api_key = args.api_key or key_for(ANTHROPIC_URL)
+        check_key(args, ANTHROPIC_URL)
     fold_models = ([kv.split("=", 1)[-1] for kv in args.fold_models.split(",")]
                    if args.fold_models else [])
     if args.backend in ("openai", "anthropic") and args.simulator in ("openai", "anthropic"):
@@ -702,9 +760,16 @@ def main() -> None:
 
     summarizer = None
     if args.summarizer_model:
-        summarizer = OpenAICompatBackend(model=args.summarizer_model,
-                                         base_url=args.summarizer_url or args.base_url,
-                                         api_key=args.api_key, temperature=0.0)
+        url = args.summarizer_url or args.base_url
+        # The agent's key only on the agent's endpoint; elsewhere, the key of
+        # the provider the summarizer is on.
+        key = args.api_key if url == args.base_url else key_for(url, None)
+        if not key:
+            raise SystemExit(f"The summarizer is on {url} but no key is set for it: "
+                             f"{key_hint(url, None)}. The agent's key is not sent to "
+                             f"another provider.")
+        summarizer = OpenAICompatBackend(model=args.summarizer_model, base_url=url,
+                                         api_key=key, temperature=0.0)
 
     exposures = [e.strip() for e in args.exposure.split(",")] if args.exposure else [""]
     reader = make_reader(args)
