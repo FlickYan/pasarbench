@@ -1813,6 +1813,107 @@ def test_customer_3():
           make_simulator("openai", args)(task).name.startswith("llm-user/v3:"))
 
 
+def test_keys_by_provider():
+    """WHAT_FAILED #47. A key goes only to the provider it belongs to. The sweep
+    took the first key of a fixed list -- DeepSeek's, whatever --base-url said
+    -- so an agent pointed at a second provider with .env loaded would have been
+    sent DeepSeek's key. Since v55 each key is found by the endpoint it goes to,
+    a run's own key comes first, and no other provider's is ever sent."""
+    print("\n=== each key to its own provider ===")
+    import os
+    import subprocess
+    import sys
+
+    from pasarbench.harness.backends import OpenAICompatBackend
+    from pasarbench.sweep import key_for, key_hint, provider_key_env
+    root = Path(__file__).resolve().parent.parent
+    keys = {k: os.environ.pop(k) for k in list(os.environ) if k.endswith("_API_KEY")}
+    try:
+        os.environ.update(DEEPSEEK_API_KEY="sk-dsk", DASHSCOPE_API_KEY="sk-ds")
+        check("DeepSeek's key for DeepSeek, DashScope's for either of its regions, and none "
+              "for OpenAI while only those two are set",
+              key_for("https://api.deepseek.com/v1") == "sk-dsk"
+              and key_for("https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
+                          "PASARBENCH_SIM_API_KEY") == "sk-ds"
+              and key_for("https://dashscope.aliyuncs.com/compatible-mode/v1") == "sk-ds"
+              and key_for("https://api.openai.com/v1") == ""
+              and "set OPENAI_API_KEY" in key_hint("https://api.openai.com/v1"))
+        check("a host that only looks like a provider's gets no provider's key, and a local "
+              "server none at all",
+              key_for("https://api.deepseek.com.example.net/v1") == ""
+              and provider_key_env("https://xapi.openai.com.io/v1") is None
+              and key_for("http://localhost:8000/v1") == "EMPTY")
+        os.environ.update(GLM_API_KEY="glm-k", MIMO_API_KEY="mimo-k", GROK_API_KEY="grok-k")
+        zai = "https://api.z.ai/api/paas/v4"
+        check("v56: a provider's key under any of the names it goes by -- Z.ai's as "
+              "GLM_API_KEY, Xiaomi's on its token-plan hosts too, xAI's as GROK_API_KEY -- "
+              "and still none for another provider",
+              key_for(zai) == "glm-k" and provider_key_env(zai) == "GLM_API_KEY"
+              and key_for("https://api.xiaomimimo.com/v1") == "mimo-k"
+              and key_for("https://token-plan-sgp.xiaomimimo.com/v1") == "mimo-k"
+              and key_for("https://api.x.ai/v1") == "grok-k"
+              and key_for("https://xiaomimimo.com.example.net/v1") == ""
+              and key_for("https://api.openai.com/v1") == ""
+              and key_for("https://api.deepseek.com/v1") == "sk-dsk"
+              and "set ZAI_API_KEY (or Z_AI_API_KEY, GLM_API_KEY" in key_hint(zai))
+        os.environ["ZAI_API_KEY"] = " zai-k\r"
+        check("…the first of its names that is set, and a key without the space or line end "
+              "round it (an .env saved on Windows): a header cannot carry them",
+              key_for(zai) == "zai-k" and provider_key_env(zai) == "ZAI_API_KEY")
+        for k in ("GLM_API_KEY", "MIMO_API_KEY", "GROK_API_KEY", "ZAI_API_KEY"):
+            del os.environ[k]
+        os.environ.update(OPENAI_API_KEY="sk-oai", PASARBENCH_API_KEY="sk-run")
+        check("a run's own key comes first, for whatever endpoint the run names; the "
+              "provider's own variable after it",
+              key_for("https://api.openai.com/v1") == "sk-run"
+              and key_for("https://api.openai.com/v1", None) == "sk-oai"
+              and key_for("https://api.deepseek.com/v1", None) == "sk-dsk")
+        del os.environ["PASARBENCH_API_KEY"]
+        check("the backend sends OPENAI_API_KEY to OpenAI and nowhere else",
+              OpenAICompatBackend("m", "https://api.openai.com/v1").api_key == "sk-oai"
+              and OpenAICompatBackend("m", "https://api.mistral.ai/v1").api_key == "EMPTY")
+        del os.environ["OPENAI_API_KEY"]
+        from pasarbench.harness import backends
+        from pasarbench.harness.types import Message
+        sent = []
+
+        def fake_post(url, payload, headers, timeout=120.0):
+            sent.append((url, headers))
+            return {"choices": [{"message": {"content": "ok"}, "finish_reason": "stop"}],
+                    "usage": {"prompt_tokens": 10, "completion_tokens": 1}}
+        real, backends._post = backends._post, fake_post
+        try:
+            start = [Message(role="system", content="policy"), Message(role="user", content="hi")]
+            for url in ("https://api.x.ai/v1", "https://api.deepseek.com/v1"):
+                b = OpenAICompatBackend("m", url, api_key="k")
+                b.chat(start, [])
+                b.chat([*start, Message(role="assistant", content="hello"),
+                        Message(role="user", content="my order")], [])
+                b.chat([start[0], Message(role="user", content="another chat")], [])
+        finally:
+            backends._post = real
+        ids = [h.get("x-grok-conv-id") for _, h in sent]
+        check("v56: to xAI, every request of one conversation carries one x-grok-conv-id, so "
+              "its steps meet their cache on one server; another conversation another id; "
+              "no other provider is sent one",
+              ids[0] and ids[0] == ids[1] and ids[2] and ids[2] != ids[0]
+              and ids[3:] == [None, None, None], ids)
+        r = subprocess.run([sys.executable, "-m", "pasarbench.sweep", "--backend", "openai",
+                            "--model", "gpt-x", "--base-url", "https://api.openai.com/v1",
+                            "--suite", "edition3", "-k", "1", "--run-id", "never"],
+                           capture_output=True, text=True, cwd=root, env=dict(os.environ))
+        said = r.stdout + r.stderr
+        check("pointed at OpenAI with only DeepSeek's and DashScope's keys set, the sweep "
+              "stops before any request and says which variable to set",
+              r.returncode != 0 and "set OPENAI_API_KEY" in said
+              and "No other provider's key is sent there" in said
+              and not (root / "traces" / "never").exists(), said[-600:])
+    finally:
+        for k in [k for k in os.environ if k.endswith("_API_KEY")]:
+            os.environ.pop(k)
+        os.environ.update(keys)
+
+
 def main() -> int:
     test_reference_through_loop()
     test_budgets_bite()
@@ -1829,6 +1930,7 @@ def main() -> int:
     test_cancellation_settles()
     test_customer_waits()
     test_customer_3()
+    test_keys_by_provider()
     print(f"\n{len(PASS)} passed, {len(FAIL)} failed")
     for f in FAIL:
         print(f"  FAILED: {f}")
