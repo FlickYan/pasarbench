@@ -1548,10 +1548,11 @@ def test_answers_and_customers():
 
 
 def _language_cell(root, run, task_id, plans, replies=("Oh, I didn't notice.",),
-                   closing="off", first=0):
+                   closing="off", first=0, **setup):
     """Episodes of one task -- a generated one too -- through the real loop,
     the customer saying `replies` in turn and then leaving, written as a sweep
-    writes them, under an agent model called "m"."""
+    writes them, under an agent model called "m". `setup`: run_episode's
+    exposure, guardrail or context, as a sweep would pass them."""
     from pasarbench.harness.simulator import ScriptedUser
     from pasarbench.harness.trace import TraceWriter
     from pasarbench.rescore import all_tasks
@@ -1564,7 +1565,7 @@ def _language_cell(root, run, task_id, plans, replies=("Oh, I didn't notice.",),
         agent = ScriptedBackend(list(plan))
         agent.model = "m"
         res = run_episode(t, db, agent, trace=w, run_index=first + i,
-                          simulator=ScriptedUser(list(replies)), closing=closing)
+                          simulator=ScriptedUser(list(replies)), closing=closing, **setup)
         v = verify(t, db)
         w.close_episode(res.stop_reason.value, v.passed, v.failures, res.budget)
         w.close()
@@ -1649,6 +1650,269 @@ def test_language_lead():
                     r"of 1, above 0, level 0; mean gap -100 points; sign test p=1\.0000\n    "
                     r"customs_hold_escalate +below their English twin 0 of 1, above 0, level 1",
                     text) is not None, text[-1800:])
+
+
+def test_closing_room_compared():
+    """v49: a closing phase may have room of its own. Two cells, one with it
+    and one without, are not one experiment after the customer left, and
+    compare_cells says so; two cells without it print as they always did."""
+    print("\n=== compare_cells flags a closing phase with room of its own ===")
+    import contextlib
+    import io
+    import tempfile
+    from pathlib import Path
+
+    order = {"order_id": "GO-A096E7"}
+    look = ("get_order", order)
+    esc = ("escalate_to_human", {**order, "category": "duplicate_refund",
+                                 "reason": "refund already issued"})
+    tmp = Path(tempfile.mkdtemp())
+    plans = [[look, "A refund was already issued.", esc, "Escalated."]]
+    a = _language_cell(tmp, "A", "DRE-VN", plans, closing="check")
+    b = _language_cell(tmp, "B", "DRE-VN", plans, closing="check", closing_room=True)
+    c = _language_cell(tmp, "C", "DRE-VN", plans, closing="check")
+    cc = _load_script("compare_cells")
+
+    def compare(x, y):
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            cc.main([str(x), str(y), "--checker", "recorded"])
+        return out.getvalue()
+    flagged, plain = compare(a, b), compare(a, c)
+    check("one cell with room and one without: the row, and the warning",
+          "closing_room" in flagged and "!! one cell gave the closing phase room of its own"
+          in flagged, flagged[:900])
+    check("…two without it: neither", "closing_room" not in plain, plain[:900])
+
+
+def test_language_swap():
+    """RUNBOOK 1t holds a recorded duplicate-refund conversation fixed at the
+    moment the agent reads the refund and changes only its language. A prefix
+    must be what the agent saw -- the system prompt, every message, every
+    payload replayed and checked, the world as those calls left it -- and only
+    a conversation that can be rebuilt exactly is one; the arms change only the
+    words, through one cache; the agent then continues until it next speaks;
+    and the report pairs the arms by prefix, both directions apart."""
+    print("\n=== the language swap: a conversation held fixed, its language changed ===")
+    import argparse
+    import contextlib
+    import io
+    import json
+    import os
+    import tempfile
+    from pathlib import Path
+
+    from pasarbench.harness.exposure import build_exposure
+    from pasarbench.harness.prompts import system_prompt
+    from pasarbench.harness.types import ModelResponse, ToolCall, Usage
+    from pasarbench.rescore import all_tasks
+    from pasarbench.swap import (Translator, arm_messages, continue_agent, decision_prefix,
+                                 local_language)
+    from pasarbench.sweep import ALL_SOLUTIONS
+
+    tasks = all_tasks()
+    tmp = Path(tempfile.mkdtemp())
+    traces = tmp / "traces"
+
+    def plan(tid, escalate):
+        oid = tasks[tid].hidden_facts["order_id"]
+        look = ("get_order", {"order_id": oid})
+        esc = ("escalate_to_human", {"order_id": oid, "category": "duplicate_refund",
+                                     "reason": "refund already issued"})
+        return ["What is your order number?", look] + ([esc] if escalate else []) + ["Noted."]
+
+    def cell(run, tid, escalates, **setup):
+        oid = tasks[tid].hidden_facts["order_id"]
+        return _language_cell(traces, run, tid, [plan(tid, e) for e in escalates],
+                              replies=(oid, "Oh, I didn't notice."), **setup)
+    a = cell("A", "DRE-MY", [True, False])
+    cell("A", "DRE-MY.ms", [False])
+    cell("A", "DRE-MY.zh-MY", [False])
+    cell("A", "DRE-SG.sg-en", [True])
+    cell("A", "DRE-PH", [False])
+    cell("B", "DRE-MY.ms", [False], guardrail="claims")
+    cell("C", "DRE-MY.ms", [False], exposure=build_exposure("search-300", ALL_SOLUTIONS))
+    stale = a / "DRE-MY__r9.jsonl"
+    recs = [json.loads(l) for l in (a / "DRE-MY__r0.jsonl").read_text().splitlines()]
+    stale.write_text("\n".join(json.dumps({**r, "task_digest": "000000000000"}
+                                          if r["type"] == "header" else r) for r in recs) + "\n")
+    ls = _load_script("language_swap")
+    found, why = ls.find_prefixes([traces], "m")
+    check("the conversations that can be rebuilt exactly, and why the others cannot: a claim "
+          "guardrail, a task changed since the run, a market with no other language",
+          len(found) == 6 and why == {"claim guardrail": 1,
+                                      "task or world changed since the run": 1,
+                                      "no other language in its market": 1}, str(why))
+    p = next(x for x in found if x.pid == "A.full.DRE-MY.r0")
+    t = tasks["DRE-MY"]
+    roles = [m["role"] for m in p.messages]
+    payload = json.loads(p.messages[-1]["content"])
+    check("a prefix is the agent's context up to the lookup: its system prompt, her opening and "
+          "turns, its replies and calls, and the lookup's payload with the refund already paid",
+          roles == ["system", "user", "assistant", "user", "assistant", "tool"]
+          and p.messages[0]["content"] == system_prompt(t.user_id, t.market, "preload")
+          and p.messages[1]["content"] == t.opening
+          and p.messages[3]["content"] == t.hidden_facts["order_id"]
+          and p.messages[4]["tool_calls"][0]["name"] == "get_order"
+          and payload["order"]["existing_refunds"]
+          and (p.steps, p.turns) == (2, 1), str(roles))
+    other = next(x for x in found if x.pid == "A.full.DRE-MY.r1")
+    check("…with what the recording did next: escalated before its next reply, or not",
+          p.escalated and not other.escalated and not p.escalated_later)
+    by = {x.pid: x for x in found}
+    check("English is swapped into its market's other language, every other into English, "
+          "Singlish into Singapore's Chinese",
+          by["A.full.DRE-MY.ms.r0"].target == "en" and p.target in ("ms", "zh-MY")
+          and by["A.full.DRE-SG.sg-en.r0"].target == "zh-SG"
+          and local_language(by["A.full.DRE-SG.sg-en.r0"]) == "zh-SG"
+          and by["C.full.DRE-MY.ms.r0"].head["exposure"] == "search-300")
+    lookup = next(i for i, r in enumerate(recs) if r.get("type") == "step"
+                  and any(tc["name"] == "get_order" for tc in r["tool_calls"]))
+    both = [dict(r) for r in recs]
+    both[lookup] = {**both[lookup],
+                    "tool_calls": both[lookup]["tool_calls"] + [{"id": "x", "name":
+                                                                 "escalate_to_human",
+                                                                 "arguments": {}}],
+                    "tool_results": both[lookup]["tool_results"] + [{"ok": True}]}
+    windowed = [{**r, "context": "window8+pin"} if r["type"] == "header" else r for r in recs]
+    check("…and none where the escalation came in the lookup's own step, or under a context "
+          "strategy that showed the agent less",
+          decision_prefix(both, t)[1] == "escalated in the lookup's own step"
+          and decision_prefix(windowed, t)[1] == "context strategy not full")
+    picked = ls.choose(found, 1)
+    pfile = tmp / "found.jsonl"
+    pfile.write_text("".join(json.dumps(x.to_dict(), default=str) + "\n" for x in found))
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out):
+        code = ls.main(["check", str(pfile)])
+    check("before any spend, each prefix continued with a probe is shown what the recording's "
+          "next step was: as many messages, the same tools -- under tool search too",
+          code == 0 and "6 prefixes continued with a probe; 0 shown other" in out.getvalue(),
+          out.getvalue())
+    check("one prefix a group at most -- each language other than English, in each "
+          "direction -- never chosen by what the agent did",
+          sorted(ls.group(x) for x in picked)
+          == sorted({ls.group(x) for x in found}) and len(picked) == len({ls.group(x)
+                                                                          for x in found}))
+
+    class FakeTranslator:
+        model = "fake-tr"
+        calls = 0
+
+        def chat(self, messages, tools):
+            FakeTranslator.calls += 1
+            lang = messages[0].content.split("Translate it into ")[1].split(". Keep")[0]
+            text = messages[1].content.split("] ", 1)[-1]
+            return ModelResponse(content=f"[{lang}] {text}", usage=Usage(1, 1))
+    cache = tmp / "tr.json"
+    tr = Translator(FakeTranslator(), cache)
+    ms = by["A.full.DRE-MY.ms.r0"]
+    swap, back = arm_messages(ms, "swap", tr), arm_messages(ms, "back", tr)
+    calls = FakeTranslator.calls
+    arm_messages(ms, "swap", tr)
+    tr.save()
+    again = Translator(FakeTranslator(), cache)
+    arm_messages(ms, "back", again)
+    words = [i for i, m in enumerate(ms.messages) if m["role"] in ("user", "assistant")
+             and m["content"].strip()]
+    check("the arms change the words and nothing else: the system prompt, the calls and the "
+          "payloads as recorded, every reply and turn translated -- and back again",
+          arm_messages(ms, "orig", tr) == ms.messages
+          and all(swap[i] == ms.messages[i] and back[i] == ms.messages[i]
+                  for i in range(len(ms.messages)) if i not in words)
+          and all(swap[i]["content"].startswith("[English] ")
+                  and back[i]["content"].startswith("[Bahasa Malaysia] ") for i in words)
+          and [m.get("tool_calls") for m in swap] == [m.get("tool_calls") for m in ms.messages],
+          str([m["content"][:30] for m in swap]))
+    check("…through one cache: a text is translated once, and a rerun reads it from the file",
+          FakeTranslator.calls == calls == 2 * len(words) and calls == FakeTranslator.calls)
+
+    class FakeAgent:
+        reports_usage = False
+        name, model = "fake", "m"
+
+        def chat(self, messages, tools):
+            """Escalates when her last turn is in English or Singlish -- after
+            finding the tool, where the tools are behind search."""
+            last = next(m.content for m in reversed(messages) if m.role == "user")
+            done = any(tc.name == "escalate_to_human" for m in messages for tc in m.tool_calls)
+            if last.startswith(("[English]", "[Singlish")) and not done:
+                if "escalate_to_human" not in {t["function"]["name"] for t in tools}:
+                    return ModelResponse(tool_calls=[ToolCall("search_tools", {
+                        "query": "escalate to a human agent"})], usage=Usage(1, 1))
+                order = json.loads(next(m.content for m in reversed(messages)
+                                        if m.role == "tool" and '"order"' in m.content)
+                                   )["order"]["order_id"]
+                return ModelResponse(tool_calls=[ToolCall("escalate_to_human", {
+                    "order_id": order, "category": "duplicate_refund",
+                    "reason": "already refunded"})], usage=Usage(1, 1))
+            return ModelResponse(content="That refund was already paid.", usage=Usage(1, 1))
+    tm = tasks[ms.task_id]
+    out_swap = continue_agent(ms, swap, tm, FakeAgent())
+    out_orig = continue_agent(ms, ms.messages, tm, FakeAgent())
+    check("the agent continues from the prefix until it next speaks to the customer, in the "
+          "prefix's world: an escalation it makes there is counted, with its category",
+          out_swap.escalated and out_swap.category == "duplicate_refund"
+          and out_swap.calls == ["escalate_to_human"] and out_swap.reply
+          and not out_orig.escalated and out_orig.calls == [] and out_orig.stop == "done",
+          str((out_swap, out_orig)))
+
+    run = argparse.Namespace(prefixes=str(tmp / "P.jsonl"), limit=0, k=2,
+                             out_root=str(tmp / "swap"), run_id="W", dry_run=False,
+                             translator_model="fake-tr", cache=str(tmp / "tr2.json"),
+                             workers=3, max_tokens=256, max_steps=4,
+                             base_url="http://localhost:9/v1",
+                             translator_url="http://localhost:9/v1", translator_extra_body="")
+    with contextlib.redirect_stdout(io.StringIO()):
+        ls.main(["prefixes", str(traces), "--model", "m", "--out", run.prefixes,
+                 "--per-group", "8"])
+        ls.cmd_run(run, agent_factory=lambda p: FakeAgent(),
+                   translator_backend=FakeTranslator())
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out):
+        ls.main(["report", str(tmp / "swap" / "W")])
+    text = out.getvalue()
+    heads = [json.loads(f.read_text().splitlines()[0])
+             for f in (tmp / "swap" / "W").rglob("*.jsonl")]
+    arms = (tmp / "swap" / "W" / "arms.md").read_text(encoding="utf-8")
+    check("…and every prefix's words in its three arms side by side, to read before the "
+          "results", "## A.full.DRE-MY.ms.r0" in arms and "  - orig: " in arms
+          and "  - swap: [English] " in arms and "  - back: [Bahasa Malaysia] " in arms,
+          arms[:600])
+    check("the run writes each continuation's trace with the arm in its header and the task's "
+          "own id, under the source's tool exposure",
+          len(heads) == 6 * 3 * 2 and all(h["task_id"] in tasks and h["swap"]["arm"]
+                                           in ("orig", "swap", "back") for h in heads)
+          and {h["exposure"] for h in heads if h["swap"]["pid"].startswith("C.")}
+          == {"search-300"}, str(heads[0])[:300])
+    check("the report: by arm and direction, the recording reproduced, and English against "
+          "the other language paired by prefix, each direction on its own",
+          "36 continuations of m from 6 prefixes" in text
+          and "all prefixes: +1.000; 6 prefixes higher, 0 lower, sign test p=0.031  ->  "
+              "LANGUAGE: English higher" in text
+          and "recorded in English or Singlish: fewer than 5 prefixes" in text
+          and "the orig arm, by the majority of its runs, agrees with it on 4 of 6" in text
+          and "under 75%" in text and "THE TRANSLATOR" in text, text)
+
+    keys = {k: os.environ.pop(k) for k in list(os.environ)
+            if k.endswith("_API_KEY") or k.startswith("PASARBENCH_")}
+    try:
+        os.environ["DEEPSEEK_API_KEY"] = "sk-agent"
+        a2 = argparse.Namespace(base_url="https://api.deepseek.com/v1",
+                                translator_url="https://dashscope-intl.aliyuncs.com/"
+                                               "compatible-mode/v1")
+        try:
+            ls._keys(a2)
+            refused = False
+        except SystemExit as e:
+            refused = "not sent to another provider" in str(e)
+        os.environ["DASHSCOPE_API_KEY"] = "sk-translator"
+        check("each provider gets its own key: the agent's is never sent to the translator's",
+              refused and ls._keys(a2) == ("sk-agent", "sk-translator"))
+    finally:
+        for k in ("DEEPSEEK_API_KEY", "DASHSCOPE_API_KEY"):
+            os.environ.pop(k, None)
+        os.environ.update(keys)
 
 
 def test_export_hf():
@@ -1841,6 +2105,8 @@ def main() -> int:
     test_closing_readers()
     test_answers_and_customers()
     test_language_lead()
+    test_closing_room_compared()
+    test_language_swap()
     test_photo_claims_compared()
     test_read_failures()
     test_export_hf()
