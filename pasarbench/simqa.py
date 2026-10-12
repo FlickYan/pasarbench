@@ -161,6 +161,43 @@ def photo_claim(task, customer_turns: list[str]) -> int | None:
     return next((i for i, t in enumerate(customer_turns) if claims_photos(t or "")), None)
 
 
+# The hard edition's changed request (generate.EDITION3_TRAPS): her persona
+# changes her mind -- keep the order, send it to her new address -- in the
+# message that gives her phone digits, so the change reaches the agent before
+# any write can be made (P1.1). Where she makes it later, or not at all, an
+# agent that cancelled did what she had asked, and the case measured her, not
+# it. Words that say she changed it, in the eight languages; like the photo
+# patterns, a reader confirms what they find.
+CHANGED_REQUEST = "changed_request_cancel_to_address"
+_CHANGE = re.compile(
+    r"new address|keep (?:it|the)|\binstead\b|changed? my mind"
+    r"|(?:don'?t|do not|not|no need(?: to)?) (?:want to |need to )?cancel"
+    r"|alamat baru|tak (?:jadi|payah|perlu) batal|jangan (?:di)?batal|(?:ubah|tukar) fikiran"
+    r"|(?:tidak|nggak|gak|ga|enggak) jadi|(?:berubah|ganti) pikiran"
+    r"|ที่อยู่ใหม่|ไม่(?:ต้อง)?ยกเลิก|เปลี่ยนใจ"
+    r"|địa chỉ mới|không (?:cần )?hủy|đừng hủy|đổi ý"
+    r"|新地址|(?:不|不要|别|不用)(?:取消|cancel)|改(?:变)?主意", re.I)
+
+
+def changes_request(text: str) -> bool:
+    """A customer turn that says she no longer wants the cancellation."""
+    return bool(_CHANGE.search(text or ""))
+
+
+def change_with_digits(task, customer_turns: list[str]) -> tuple[int | None, bool]:
+    """For the changed request: the first of her turns that gives her phone
+    digits (0 = the first after the opening), and whether it also says she
+    changed her mind, as her persona has her do. (None, False) if she never
+    gives them, and for every other task."""
+    digits = str(getattr(task, "hidden_facts", {}).get("phone_last4") or "")
+    if getattr(task, "trap", "") != CHANGED_REQUEST or not digits:
+        return None, False
+    for i, text in enumerate(customer_turns):
+        if digits in (text or ""):
+            return i, changes_request(text)
+    return None, False
+
+
 @dataclass
 class LeakReport:
     task_id: str
