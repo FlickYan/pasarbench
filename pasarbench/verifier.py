@@ -22,6 +22,30 @@ from typing import Any
 from .db import Database
 
 
+class Contains:
+    """A check value that any string containing `part` matches.
+
+    For a value the agent writes in its own words, where a check can only ask
+    that the part which decides it is there: a new delivery address, which an
+    agent may reformat or translate, and whose postcode it may not drop (the
+    hard edition's changed request). It works through ==, so DBAssert and
+    ActionSpec match it as they match any value: comparing a str with it, str
+    answers NotImplemented and Python asks this class instead."""
+
+    def __init__(self, part: str):
+        self.part = part
+
+    def __eq__(self, other: object) -> bool:
+        if isinstance(other, Contains):
+            return self.part == other.part
+        return isinstance(other, str) and self.part in other
+
+    __hash__ = None          # equal to many strings: never a key
+
+    def __repr__(self) -> str:
+        return f"Contains({self.part!r})"
+
+
 @dataclass
 class DBAssert:
     """One predicate over final DB state."""
