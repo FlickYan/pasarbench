@@ -628,6 +628,111 @@ def test_grpo_section():
           "✗ **`P2-grpo-i1-e2`: 123/124" in md and "LEAKED" in md, md[md.find("Checks"):])
 
 
+def test_edition3_section():
+    """Section 6's hard edition on round 2's models, read as RUNBOOK phase 4
+    fixed before the run: room first (nothing more read at 0.95 or above),
+    then RFT against the base model and GRPO against RFT, paired by case; the
+    case table; the changed request's customer and the voucher choice beside
+    them; and one customer, temperature 0 and every case answered by the
+    adapter its split gives it."""
+    print("\n=== section 6: the hard edition on round 2's models ===")
+    mr = _report()
+    from pasarbench.generate import generate
+    from pasarbench.rl.split import make_folds, other_fold
+    from pasarbench.simqa import CHANGED_REQUEST
+    from pasarbench.tools import CHECKS
+    cases = list(generate(edition=3)[0])
+    tmp = Path(tempfile.mkdtemp())
+    (tmp / "data" / "splits").mkdir(parents=True)
+    f3 = make_folds(cases)
+    (tmp / "data" / "splits" / "folds-e3.json").write_text(json.dumps(f3))
+    v3 = "llm-user/v3:openai-compat:RedHatAI/gemma-4-31B-it-FP8-Dynamic"
+
+    def run(name, model_of, passes, fold_models=None):
+        d = tmp / "traces" / name / "full"
+        d.mkdir(parents=True, exist_ok=True)
+        for i, t in enumerate(cases):
+            for k in range(2):
+                head = {"type": "header", "task_id": t.task_id, "language": t.language,
+                        "trap": t.trap, "requested_model": model_of(t), "simulator": v3,
+                        "agent_temperature": 0.0, "tool_checks": CHECKS}
+                digits = t.hidden_facts.get("phone_last4", "0000")
+                said = ([{"type": "event", "kind": "user_turn",
+                          "text": f"{digits}. Actually don't cancel it, send it to my new "
+                                  f"address instead."}] if t.trap == CHANGED_REQUEST else [])
+                foot = {"type": "footer", "passed": passes(i, k), "stop_reason": "done",
+                        "budget": {"tokens": 1000, "steps": 5}}
+                (d / f"{t.task_id}__r{k}.jsonl").write_text(
+                    "\n".join(json.dumps(r) for r in (head, *said, foot)) + "\n")
+        if fold_models:
+            (d.parent / "summary.json").write_text(json.dumps(
+                [{"setup": {"fold_models": ",".join(f"{f}={m}" for f, m in
+                                                    fold_models.items())}}]))
+
+    def section():
+        cwd = os.getcwd()
+        try:
+            os.chdir(tmp)
+            return mr.section_edition3(Path("traces"))
+        finally:
+            os.chdir(cwd)
+
+    md = section()
+    check("before the hard edition has run on round 2's models: what is missing and the "
+          "command", "**NOT MEASURED**" in md and "gpu_pipeline.sh edition3" in md, md)
+    run("P2-base-e3", lambda t: "Qwen/Qwen3.8-27B", lambda i, k: True)
+    md = section()
+    check("room first: a base model at 0.95 or above, and nothing more is read",
+          "the base model passes 1.000, at or above 0.95" in md
+          and "nothing more is read" in md and "RFT on combined cases" not in md, md)
+
+    import shutil
+    shutil.rmtree(tmp / "traces" / "P2-base-e3")
+    run("P2-base-e3", lambda t: "Qwen/Qwen3.8-27B", lambda i, k: i % 4 != 0)
+    rft = {f: f"Qwen/Qwen3.8-27B:pasar-rft2-{f}" for f in "AB"}
+    grpo = {f: f"Qwen/Qwen3.8-27B:pasar-grpo2-i1-{f}" for f in "AB"}
+    routed = lambda models: (lambda t: models[other_fold(f3["task_fold"][t.task_id])])  # noqa: E731
+    run("P2-rft-e3", routed(rft), lambda i, k: True, rft)
+    run("P2-grpo-i1-e3", routed(grpo), lambda i, k: i % 9 != 1, grpo)
+    md = section()
+    check("…then RFT against the base model and GRPO against RFT, paired by case, in the "
+          "words fixed before the run, GRPO's beside its own result",
+          "- **Room:** the base model passes 0.750, below 0.95" in md
+          and "RFT against the base model, paired by case: **RFT better** — +0.250; 9 tasks "
+              "better, 0 worse, p=0.004" in md
+          and "beside GRPO's own result on the 62 newer tasks, never instead of it: "
+              "**INCONCLUSIVE**" in md
+          and "| GRPO, 1 iteration | `P2-grpo-i1-e3` | 36 |" in md, md[:2500])
+    check("…each case's passes by model, and the customer and the voucher choice said even "
+          "when there is nothing to set aside",
+          "| case | base | RFT | GRPO, 1 iteration |" in md
+          and "| `changed_request_cancel_to_address` |" in md
+          and "her phone digits came with her change of mind" in md
+          and "she never declined it" in md, md[md.find("| case"):][:1500])
+    check("…and the checks: one customer, temperature 0, every case answered by the adapter "
+          "its split gives it",
+          "✓ one customer in every run" in md and "✓ agent temperature 0 in every run" in md
+          and "✓ `P2-rft-e3`: 72/72 episodes" in md and "✓ `P2-grpo-i1-e3`: 72/72" in md,
+          md[md.find("Checks"):])
+    # Her digits without the change: hers, set aside and counted.
+    ch = next(t for t in cases if t.trap == CHANGED_REQUEST)
+    f = tmp / "traces" / "P2-rft-e3" / "full" / f"{ch.task_id}__r0.jsonl"
+    h, _, foot = [json.loads(l) for l in f.read_text().splitlines()]
+    f.write_text("\n".join(json.dumps(r) for r in (
+        h, {"type": "event", "kind": "user_turn", "text": ch.hidden_facts["phone_last4"]},
+        {**foot, "passed": False})) + "\n")
+    one = tmp / "traces" / "P2-grpo-i1-e3" / "full" / f"{cases[0].task_id}__r0.jsonl"
+    h1, *rest = [json.loads(l) for l in one.read_text().splitlines()]
+    one.write_text("\n".join(json.dumps(r) for r in (
+        {**h1, "requested_model": grpo[f3["task_fold"][cases[0].task_id]]}, *rest)) + "\n")
+    md = section()
+    check("a changed request whose digits came without the change is counted as hers, and a "
+          "case answered by the adapter of its own half is called a leak",
+          "without the change of mind her persona puts in that message in 1 of " in md
+          and "RFT episodes (1 of them failed)" in md
+          and "✗ **`P2-grpo-i1-e3`: 71/72" in md and "LEAKED" in md, md[-1500:])
+
+
 def test_both_scorings():
     """#30: the checker the runs were scored with demanded one lookup tool on
     two traps. The report builds on today's checks, shows the recorded
@@ -949,6 +1054,7 @@ def main() -> int:
     test_post_training()
     test_planted_mistakes_section()
     test_grpo_section()
+    test_edition3_section()
     test_both_scorings()
     test_ablation_sections_under_both_checkers()
     test_judges_against_todays_verifier()
