@@ -535,7 +535,7 @@ doing it twice.
 
 ### What failed
 
-`docs/WHAT_FAILED.md` has 46 entries. Most were found by running experiments
+`docs/WHAT_FAILED.md` has 47 entries. Most were found by running experiments
 and refusing a number that couldn't be right. Four more:
 
 **The ceiling was below the floor.** The oracle arm — by design the best case —
@@ -601,7 +601,7 @@ iteration, judged on tasks whose room was partly the customer's choice. Serving
 cost is built but not measured.
 <!-- RESULTS.md §3 paired table (pairs 13–16); audit_tool_arms.py §3 header; traces/J-preload OOWDE-VN.vi__r2: "Trường hợp của bạn đã được chuyển lên bộ phận xử lý khiếu nại", escalate_to_human never searched for, never called; traces/L2-claims OOWOV-VN__r1, DRE-PH__r1, HPRR-PH__r2 (RUNBOOK 1i, v25) -->
 
-The code, the trace generators, and all 46 failures are in the repo.
+The code, the trace generators, and all 47 failures are in the repo.
 
 ---
 
@@ -895,26 +895,27 @@ of the newer tasks — and was hard where it was built to be: two orders in one
 chat, where the failing agents asked for photos of cushion covers worth about
 SGD 58 as if they were worth over SGD 200, outside a return window most of them
 told the customer was still open, and almost always without the one call that
-would have told them both. In Singapore, where the price is in SGD, no model failed it. Then run
-models from several labs on it, against one customer — a customer who leaves
-once she has promised what she can't do in the conversation (WHAT_FAILED #43),
-checked on round 2's machine: under her no claim of photos reached the agent,
-where the old customer's did in 31 of 70 conversations. GRPO ran one iteration
-from the second fine-tune: inconclusive, and the room it was judged in was
-partly the voucher trap's customer (RUNBOOK phase 4, GRPO; WHAT_FAILED #46); on
-the hard edition, inconclusive again. Measured on the tasks it trained on, the
-one iteration showed no gain there either (0.912 → 0.920, p = 0.71): not an
-update that learned its tasks and didn't carry them over, but one too small to
-move anything, so the next needs more signal before another held-out test. Along
-the way, each built and waiting for its run: the run the language finding needs
-— hold a conversation fixed at the moment the agent reads the refund and change
-only its language (v49, RUNBOOK 1t: 96 recorded conversations rebuilt exactly,
-each run as recorded, translated, and translated back); room for the closing
-phase in the token budget (27 of 456 cut short in the last run; v49,
-`--closing-room`, RUNBOOK 1q); and a model that reads what the customer was told
-in place of the guardrail's phrase list, with the check against the tool log
-kept mechanical (v50, RUNBOOK 1u: calibrated on recorded replies before it holds
-back a live one). Then serving cost.
+would have told them both. In Singapore, where the price is in SGD, no model
+failed it. Then run models from several labs on it, one command each
+(`scripts/add_model.py`, each key sent to its own provider only), against one
+customer — a customer who leaves once she has promised what she can't do in the
+conversation (WHAT_FAILED #43), checked on round 2's machine: under her no claim
+of photos reached the agent, where the old customer's did in 31 of 70
+conversations. GRPO ran one iteration from the second fine-tune: inconclusive,
+and the room it was judged in was partly the voucher trap's customer (RUNBOOK
+phase 4, GRPO; WHAT_FAILED #46); on the hard edition, inconclusive again.
+Measured on the tasks it trained on, the one iteration showed no gain there
+either (0.912 → 0.920, p = 0.71): not an update that learned its tasks and
+didn't carry them over, but one too small to move anything, so the next needs
+more signal before another held-out test. Along the way, each built and waiting
+for its run: the run the language finding needs — hold a conversation fixed at
+the moment the agent reads the refund and change only its language (v49, RUNBOOK
+1t: 96 recorded conversations rebuilt exactly, each run as recorded, translated,
+and translated back); room for the closing phase in the token budget (27 of 456
+cut short in the last run; v49, `--closing-room`, RUNBOOK 1q); and a model that
+reads what the customer was told in place of the guardrail's phrase list, with
+the check against the tool log kept mechanical (v50, RUNBOOK 1u: calibrated on
+recorded replies before it holds back a live one). Then serving cost.
 
 ### One thing not to do
 
