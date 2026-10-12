@@ -63,11 +63,14 @@ def run_episode(
     run_index: int | None = None,
     guardrail: str = "off",
     closing: str = "off",
+    closing_room: bool = False,
 ) -> EpisodeResult:
     if guardrail not in claim_guard.MODES:
         raise ValueError(f"guardrail must be one of {claim_guard.MODES}, not {guardrail!r}")
     if closing not in closing_check.MODES:
         raise ValueError(f"closing must be one of {closing_check.MODES}, not {closing!r}")
+    if closing_room and closing == "off":
+        raise ValueError("closing_room gives the closing phase room: it needs a closing mode")
     simulator = simulator or SilentUser()
     context = context or FullContext()
     budget = budget or Budget()
@@ -129,6 +132,9 @@ def run_episode(
         # What the guard compares (closing.GUARD_VERSION): a run under one is
         # not another's. Absent from runs before v41, which compared version 1.
         **({"closing_guard": closing_check.GUARD_VERSION} if closing == "guard" else {}),
+        # The closing phase bounded by its own steps, not what the conversation
+        # left of the episode's budget (v49). Only when on, as above.
+        **({"closing_room": True} if closing_room else {}),
         # What the tools checked and did (tools.CHECKS): their arguments since
         # v27, the payment a cancellation settles since v31. A replay runs the
         # calls under the same version; a header without this ran before v27,
@@ -147,6 +153,8 @@ def run_episode(
         hit = tracker.exceeded()
         if hit is StopReason.MAX_TURNS and closed_at is not None:
             hit = None          # no customer is left to take a turn
+        if closing_room and closed_at is not None and hit in closing_check.ROOM:
+            hit = None          # the phase's own bound is its steps (closing.MAX_STEPS)
         if hit is not None:
             if closed_at is not None:
                 # The conversation had already ended; only its closing phase
@@ -223,7 +231,8 @@ def run_episode(
                 # message says "unknown", not "hidden", so it leaks nothing.
                 out = {"ok": False, "error": f"unknown tool {tc.name!r}"}
                 trace.event("hidden_tool_call", tool=tc.name, step=tracker.steps)
-            elif tracker.tool_calls >= budget.max_tool_calls:
+            elif (tracker.tool_calls >= budget.max_tool_calls
+                  and not (closing_room and closed_at is not None)):
                 # Still answer the call. An orphaned tool_call breaks the next request.
                 out = {"ok": False, "error": "tool call budget exhausted for this episode"}
             elif (closing == "guard" and closed_at is not None
