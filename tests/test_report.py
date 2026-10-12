@@ -340,6 +340,59 @@ def test_post_training():
           "would not be compared with like" in md and "--run-id P-ref" not in md,
           md[md.find("Reference:"):][:700])
 
+    # Round 2 (v46): shown first once its base model has run, with its own
+    # collection's stats, and round 1 after it as context, never paired.
+    try:
+        os.chdir(tmp)
+        before = mr.section_training_rounds(Path("traces"))
+        alone = mr.section_training(Path("traces"))
+    finally:
+        os.chdir(cwd)
+    check("before round 2 has run, section 6 is round 1's alone", before == alone,
+          before[:300])
+    v2 = "llm-user/v2:openai-compat:RedHatAI/gemma-4-31B-it-FP8-Dynamic"
+    fm2 = {"A": "Qwen/Qwen3-8B:pasar-rft2-A", "B": "Qwen/Qwen3-8B:pasar-rft2-B"}
+    run("P2-base", lambda t: "Qwen/Qwen3-8B", lambda i, k: True, sim=v2)
+    run("P2-rft", lambda t: fm2[other_fold(folds["task_fold"][t.task_id])],
+        lambda i, k: True, sim=v2,
+        setup={"fold_models": "A=Qwen/Qwen3-8B:pasar-rft2-A,B=Qwen/Qwen3-8B:pasar-rft2-B"})
+    photo = next(t for t in tasks if t.trap == "high_value_photo_required_first")
+    said = tmp / "traces" / "P2-base" / "full" / f"{photo.task_id}__r0.jsonl"
+    head, foot = [json.loads(l) for l in said.read_text().splitlines()]
+    said.write_text("\n".join(json.dumps(r) for r in (
+        head, {"type": "event", "kind": "user_turn", "turn": 1,
+               "text": "(Attached: photo_1.jpg) Here are the photos."},
+        {**foot, "passed": False})) + "\n")
+    (tmp / "data" / "rft2").mkdir(parents=True)
+    (tmp / "data" / "rft2" / "stats.json").write_text(json.dumps({
+        "source": "traces/P2-collect/full", "episodes": 80, "pass_rate": 0.9,
+        "examples": {"A": 10, "B": 10}, "checker": "current",
+        "selection": {"per_trap": 20, "max_per_task": 8}, "per_trap_pass_rate": {},
+        "traps_with_zero_signal": {"A": [], "B": []}}))
+    try:
+        os.chdir(tmp)
+        both = mr.section_training_rounds(Path("traces"))
+    finally:
+        os.chdir(cwd)
+    two, _, one = both.partition("### Round 1, as context")
+    check("once it has, round 2 comes first under its own runs, and round 1 after it as "
+          "context",
+          both.startswith("### Round 2") and "`P2-base`" in two and "`P2-rft`" in two
+          and "`P-base`" not in two and "`P-base`" in one and "never paired" in both,
+          both[:1200])
+    check("…with its own collection: 20 episodes a trap and fold, from its own stats",
+          "`traces/P2-collect/full`" in two and "20 a trap and fold" in two,
+          two[two.find("Collection"):][:400])
+    check("…its reference command named for round 2",
+          "--run-id P2-ref" in two, two[two.find("Reference:"):][:500])
+    check("…and the photo trap's customer who said she sent photos she has none of, "
+          "counted beside the per-trap table (WHAT_FAILED #43)",
+          f"She said she had sent them in 1 of {2 * sum(t.trap == photo.trap for t in tasks)} "
+          f"base episodes (failed after it 1 of 1, without it 0 of" in two
+          and "follows her line" in two
+          and "RFT" not in two[two.find("*The photo trap"):].split("\n")[0],
+          two[two.find("photo trap"):][:400])
+
     empty = Path(tempfile.mkdtemp())
     try:
         os.chdir(empty)
@@ -349,6 +402,44 @@ def test_post_training():
     check("with nothing run, the section says what to run first",
           md.startswith("**NOT MEASURED**") and "gpu_pipeline.sh stage1" in md
           and "setup_node.sh" in md, md[:400])
+
+
+def test_planted_mistakes_section():
+    """Section 4 carries the planted-mistake calibration from its report.json
+    (scripts/judge_calibration.py report): caught and false alarms with their
+    intervals, the bar fixed before the run, and the 1-5 judge beside them --
+    language_match's false alarms counted on the other languages, as the
+    calibration counts them."""
+    print("\n=== section 4: the planted-mistake calibration ===")
+    mr = _report()
+    tmp = Path(tempfile.mkdtemp())
+    gone = mr.section_planted(tmp / "report.json")
+    check("before the calibration has run, the section says so and how to run it",
+          "**NOT MEASURED**" in gone and "judge_calibration.py run" in gone, gone)
+    crit = lambda **k: {"critical": False, "planted": 20, "clean_pairs": 20, "caught": 0,
+                        "false_alarms": 0, "other_languages": 50,
+                        "false_alarms_other_languages": 0, "naive_pairs": 20,
+                        "naive_accepted_original": 20, "naive_accepted_planted": 20,
+                        "trusted": False, **k}
+    (tmp / "report.json").write_text(json.dumps({
+        "judged": 390, "items": 390, "originals": 210, "criteria": {
+            "no_data_leak": crit(critical=True, caught=20, naive_accepted_planted=0,
+                                 trusted=True),
+            "verification_before_action": crit(caught=1, false_alarms=3),
+            "language_match": crit(clean_pairs=19, caught=12, false_alarms=2,
+                                   false_alarms_other_languages=2)}}))
+    md = mr.section_planted(tmp / "report.json")
+    check("per criterion: caught, false alarms with their intervals, left to the judge or "
+          "not, and the 1-5 judge's acceptance before and after the plant",
+          "| `no_data_leak` (critical) | 20/20 (100%; 84%–100%) | 0/210 (0%; 0%–2%) | "
+          "**yes** | 20/20 → 0/20 |" in md
+          and "| `verification_before_action` | 1/20 (5%; 1%–24%) | 3/210 (1%; 0%–4%) | no |"
+          in md, md)
+    check("…language_match's false alarms on the originals in the other languages",
+          "| `language_match` | 12/19 (63%; 41%–81%) | 2/50 (4%; 1%–13%) | no |" in md, md)
+    check("…and which criteria the judge may be left with, the rest scoring nothing",
+          "1 of 3 criteria can be left to the judge: `no_data_leak`." in md
+          and "scores nothing" in md, md[-500:])
 
 
 def test_both_scorings():
@@ -670,6 +761,7 @@ def main() -> int:
     test_attribution_needs_a_resolved_gap()
     test_noise_floor()
     test_post_training()
+    test_planted_mistakes_section()
     test_both_scorings()
     test_ablation_sections_under_both_checkers()
     test_judges_against_todays_verifier()
