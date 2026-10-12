@@ -246,6 +246,26 @@ As a Modal job: `PASAR_ROUND=2 modal run --detach scripts/modal_pipeline.py --st
 customer3`, then `--stage pull`. About half an hour of one B200 (~$5): 280
 episodes at temperature 0, with the server start.
 
+## The hard edition — after the customer check (v48, optional, ~1.5 hours)
+
+The hard edition's 36 combined cases on round 2's models: the base model, the
+RFT adapters and GRPO's (RUNBOOK phase 4, the hard edition; 1s says what the
+cases are). Read `logs/r2-customer3.txt` first: the stage runs customer 3, and
+refuses to until her check has run. If the check says to keep customer 2, set
+`PASAR_E3_CUSTOMER=2` before the stage — in the notebook,
+`os.environ["PASAR_E3_CUSTOMER"] = "2"`.
+
+```python
+pn.run("edition3", round=2)                       # or pn.launch("edition3", round=2)
+pn.read("logs/r2-edition3.txt", head=120)
+pn.pack()
+```
+
+As a Modal job: `PASAR_ROUND=2 modal run --detach scripts/modal_pipeline.py --stage
+edition3`, then `--stage pull`. About an hour and a half of one B200 (~$15): 540
+episodes at temperature 0 and three server starts. Run it again after a failure:
+finished runs are not served again.
+
 ---
 
 ## Step 0 — on your laptop, before anything else
