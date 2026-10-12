@@ -1751,6 +1751,71 @@ def test_photo_claims_compared():
           and "customers told they have no photos" in out.getvalue(), out.getvalue()[-600:])
 
 
+def test_read_failures():
+    """The reading fixed before round 2 and GRPO: every episode a run fails on
+    a task its control always passed, read for another trap's answer (#31,
+    #44). read_failures.py sets out what that needs -- per trap, the writes no
+    control episode on those tasks made; per failure, the writes, the failure
+    lines and the conversation -- and flags a customer who claimed photos
+    (#43)."""
+    print("\n=== read_failures.py sets out the failures to read ===")
+    import contextlib
+    import io
+    import tempfile
+    from pathlib import Path
+
+    from pasarbench.run import SOLUTIONS
+    verify, check_win, voucher = SOLUTIONS["T05"]
+    escalate = ("escalate_to_human", {"order_id": "O1004", "category": "out_of_window_dispute",
+                                      "reason": "customer wants a full refund"})
+    offer = "I can offer a goodwill voucher; or I can pass this to a human agent."
+    tmp = Path(tempfile.mkdtemp())
+    control = _language_cell(tmp, "B", "T05", [[verify, check_win, offer, voucher, "Done."]] * 2,
+                             replies=("Yes please.", "Thanks."))
+    treated = _language_cell(tmp, "F", "T05", [[verify, check_win, offer, voucher, "Done."],
+                                               [verify, check_win, offer, escalate, "Escalated."]],
+                             replies=("A human, please.", "Thanks."))
+    look = ("get_order", {"order_id": "O1005"})
+    ask = "Please send photos of the torn strap first; I cannot open the return without them."
+    opened = ("initiate_return", {"order_id": "O1005", "order_item_id": "OI5",
+                                  "reason": "torn strap", "photo_evidence_provided": True})
+    _language_cell(tmp, "B", "T07", [[look, ask]] * 2,
+                   replies=("I can't send photos now, I'll send them tonight.",))
+    _language_cell(tmp, "F", "T07", [[look, ask, opened, "Your return is open."], [look, ask]],
+                   replies=("(Attached: photo_1.jpg) Here are the photos.",))
+    rf = _load_script("read_failures")
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out):
+        rf.main([str(control), str(treated), "--width", "200"])
+    text = out.getvalue()
+    per = text[text.find("per trap"):text.find("=" * 20)]
+    check("it finds the two failures on tasks the control always passed, and no pass",
+          "F/full: 2 failure(s) on a task the control passed every time in B/full" in text
+          and text.count("control 2/2") == 2 and "T05__r0  [" not in text, text[:900])
+    check("…per trap, the write the control never made: an escalation, by its category, "
+          "on the voucher trap",
+          "escalate_to_human[out_of_window_dispute] 1" in per
+          and "out_of_window_offer_voucher" in per, per)
+    check("…each failure's writes with what they were for, its failure lines, and the "
+          "conversation",
+          "writes: escalate_to_human(category=out_of_window_dispute, order_id=O1004, reason=customer "
+          "wants a full refund)" in text
+          and "failed: " in text and "C: A human, please." in text
+          and "A: I can offer a goodwill voucher" in text, text[-2500:])
+    check("…and a customer who said she sent the photos she does not have is flagged, "
+          "with what that makes of the verdict",
+          "T07__r0" in text and "CUSTOMER CLAIMED PHOTOS" in text
+          and "1 of them after the customer said she sent photos" in text, text)
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out):
+        rf.main([str(control), str(treated), "--trap", "high_value_photo_required_first",
+                 "--no-conversation"])
+    one = out.getvalue()
+    check("--trap reads one trap; --no-conversation keeps the writes and failure lines",
+          "1 failure(s)" in one and "T05__" not in one and "C: " not in one
+          and "writes: initiate_return(" in one, one)
+
+
 def main() -> int:
     test_distractors()
     test_arms_are_comparable()
@@ -1777,6 +1842,7 @@ def main() -> int:
     test_answers_and_customers()
     test_language_lead()
     test_photo_claims_compared()
+    test_read_failures()
     test_export_hf()
     print(f"\n{len(PASS)} passed, {len(FAIL)} failed")
     for f in FAIL:
