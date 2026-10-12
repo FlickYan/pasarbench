@@ -61,7 +61,10 @@ cancellation did to the payment and the refunds the tools refused as already
 settled (#37). Two cells with different customers, or different tool
 versions, are flagged: a difference between them is partly the setup's. So is
 an episode a server or API error ended: it counts as a failure the agent may
-never have made, until the sweep re-runs it with --resume.
+never have made, until the sweep re-runs it with --resume. And on the photo
+trap, whose customer is told she has no photos, it counts the episodes in
+which she says she sent some, and the failures after and without that line:
+in round 2 every failure on the trap came after it (WHAT_FAILED #43).
 """
 
 from __future__ import annotations
@@ -172,6 +175,44 @@ def _endings(cell: Path, eps: list[dict], every: bool = False
         reply = " ".join(said[-1].split())[-200:] if said else ""
         out.append((e["transcript_id"], e["trap"], bool(e["passed"]), reply, words))
     return out
+
+
+def _photo_claims(cell: Path, eps: list[dict], tasks: dict) -> tuple[int, int, int, int]:
+    """(episodes whose customer is told she has no photos, those in which she
+    says she sent some, failures after she said it, failures without). Customer
+    v2 cannot leave until the agent has done what she needs (#38); on the photo
+    trap that waits on the photos, and she sends them -- after which the
+    trap's verdict follows her line, not the agent's policy (WHAT_FAILED #43)."""
+    from pasarbench.simqa import forbids_photos, photo_claim
+    n = said = after = without = 0
+    for e in eps:
+        task = tasks.get(e["task_id"])
+        if task is None or not forbids_photos(task):
+            continue
+        recs = [json.loads(l) for l in (cell / f"{e['transcript_id']}.jsonl").read_text(
+            encoding="utf-8").splitlines() if l.strip()]
+        turns = [r.get("text") or "" for r in recs
+                 if r.get("type") == "event" and r.get("kind") == "user_turn"]
+        hit = photo_claim(task, turns) is not None
+        n += 1
+        said += hit
+        if not e["passed"]:
+            after += hit
+            without += not hit
+    return n, said, after, without
+
+
+def _print_photo_claims(rows: list[tuple[int, int, int, int]]) -> None:
+    if not any(r[0] for r in rows):
+        return
+    print("\ncustomers told they have no photos who said they sent some (WHAT_FAILED #43):")
+    print(f"  {'episodes she said it in':28s} " + " ".join(f"{f'{s}/{n}':>18s}"
+                                                         for n, s, _, _ in rows))
+    print(f"  {'failures after it':28s} " + " ".join(f"{a:>18d}" for _, _, a, _ in rows))
+    print(f"  {'failures without it':28s} " + " ".join(f"{w:>18d}" for _, _, _, w in rows))
+    if any(r[1] for r in rows):
+        print("  !! where she says it, the photo trap's verdict follows her line, not the "
+              "agent's policy: read that trap's row below as hers as much as the agent's")
 
 
 def _print_endings(name: str, rows: list[tuple[str, str, bool, str, str]],
@@ -603,6 +644,7 @@ def main(argv: list[str] | None = None) -> int:
     for name, cell, eps in zip(names, cells, (ea, eb)):
         _print_endings(name, _endings(cell, eps, every=a.endings), every=a.endings)
         _print_settlements(name, *_settlements(cell, eps))
+    _print_photo_claims([_photo_claims(c, eps, tasks) for c, eps in zip(cells, (ea, eb))])
 
     def per_trap(eps):
         d: dict[str, list[bool]] = defaultdict(list)
