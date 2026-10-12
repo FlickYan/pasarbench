@@ -1,6 +1,6 @@
 # What failed
 
-Forty-seven real defects found while building this. The first fifteen are in
+Forty-nine real defects found while building this. The first fifteen are in
 the order of how much damage they would have done; the rest are in the order
 they were found. Every one is reproducible from the git history.
 
@@ -1874,6 +1874,83 @@ before any run, and names a key set under a name nothing reads.
 **Lesson.** A secret is addressed by where it goes, not by the order it was
 found in. A fallback list is safe only while there is one destination per
 entry; check it again the day a second one appears.
+
+## 48. The profile's phone never ended in the digits that verify her
+
+**What happened.** On the hard edition's 1s runs, Grok 4.3 failed one of the
+two-orders cases this way: it read the account's profile, told the customer the
+phone on file "ends in 5000", and when she gave 4661 refused to verify her and
+escalated both orders as `identity_unverified`. 4661 is right —
+`verify_identity` accepts it, and every other agent verified her with it. By
+the profile Grok was right too: P1.1 verifies "the last 4 digits of the phone
+number on the account", and the account's phone was +66862345000. Since #9 gave
+each generated customer digits of her own, `verified_phone_last4` has been
+hashed per customer while the `phone` beside it kept the market's default,
+ending 4000, 5000 or 6000. In none of the 297 generated tasks — the suite's 199,
+the second edition's 62, the hard edition's 36 — does the phone on the profile
+end in the digits that verify her. In the sixteen hand-built ones it always
+does.
+
+**How it was found.** Reading Grok's failures. Grok wrote the account's phone
+digits to the customer in 41 of its 225 conversations — itself a lapse, the
+answer to the question it asks — so it was the agent that met the
+contradiction, and this was the conversation where it compared instead of
+calling the tool.
+
+**Why nothing caught it.** The checks ask whether verification was called with
+her digits; the reference solutions call it with the hidden ones and never look
+at the profile. Nothing compares what one tool shows with what another accepts,
+and an agent that verifies through the tool, as nearly every one does, never
+sees the two disagree. #9's fix changed one field and left its twin.
+
+**What it moved.** Little, by the record: in 20,192 recorded conversations on
+generated tasks, agents wrote the profile's digits in 52, and three of the
+failures among them turn on it — Grok's on 1s; one of `G-gated`'s, where the
+agent told her the phone ends in 5000 and never tried her 8814; one of round 2's
+GRPO runs, which verified with the profile's digits instead of asking for hers
+and was refused. It costs only an agent that verifies by the profile, and that is the
+agent it would have taught to stop.
+
+**Fix.** Not yet to the worlds: the editions are pinned by digest as every
+recorded run had them, and a profile whose phone ends in her digits is another
+world. The next edition carries one, with a guarantee every generated task must
+pass — the phone on the profile ends in the digits that verify her — and the
+reading of 1s counts Grok's failure as the task's (RUNBOOK 1s).
+
+**Lesson.** When a fix changes a fact, find every place the world states it.
+A tool that shows a value and a tool that checks it are two statements of one
+fact, and only a test that reads both will see them disagree.
+
+## 49. The voucher choice's reader took a refused voucher for one she declined
+
+**What happened.** The reading of 1s sets aside, on the two orders, an
+escalation after she declined the voucher — P6.3 and P10 ask for it, and the
+check fails it (#46). The reader flagged two of Grok's conversations. Read, she
+had not declined it: "I'll take the goodwill voucher", and Grok issued it at VND
+300,000, then 400,000, and in the other conversation at SGD 150 and IDR 230,000 —
+over the SGD 15 cap each time, refused by the tool. Then she asked for the human
+Grok offered in its place. The reader looked for the voucher offered, a turn of
+hers, the dispute's escalation and no voucher issued — and a refused call is not
+an issued one.
+
+**Why.** `declined_voucher` skipped every call the tool refused, to ignore a
+refund tried and refused beside the escalation. That made a voucher tried and
+refused the same as none tried, and a voucher tried is the one thing she cannot
+have declined.
+
+**What it moved.** Nothing recorded before 1s: of 59 conversations flagged in
+the recorded runs, the 57 outside 1s had no voucher call at all. On 1s, Grok's
+two-orders failures would have counted two fewer against it, beside a result
+that was INCONCLUSIVE either way — and they were the agent's, wrong amounts in
+the customer's currency.
+
+**Fix.** v60: a voucher the agent tried, refused or not, means she took it
+(`simqa.declined_voucher`), with the road Grok took as a test; RESULTS.md's
+section 8 and every reading that counts the choice use it.
+
+**Lesson.** A filter written to ignore one kind of failed call ignores them all.
+Name which failed calls a reading may skip, and test it with the one it must
+not.
 
 ---
 
