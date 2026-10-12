@@ -400,7 +400,7 @@ def photos(eps: list[dict]) -> None:
     except Exception as ex:                                  # noqa: BLE001
         print(f"  (could not load tasks: {ex})")
         return
-    from collections import defaultdict
+    from collections import Counter, defaultdict
 
     from pasarbench.simqa import forbids_photos, photo_claim
     rows = []
@@ -428,6 +428,12 @@ def photos(eps: list[dict]) -> None:
           f"{after} of {len(said)}; failed without it: {without} of {len(rows) - len(said)}")
     for e, s in said[:3]:
         print(f"  SAID {e['id']} [{e.get('language', '?')}]: {' '.join(s.split())[:110]!r}")
+    # Customer 3 writes such a turn again, and ends the conversation if she
+    # claims them twice; the trace records each time (simulator.LLMUser).
+    guard = Counter(ev.get("guard") for e, _ in rows for ev in e["events"]
+                    if ev.get("kind") == "user_turn" and ev.get("guard"))
+    if guard:
+        print("  customer 3's guard: " + ", ".join(f"{k} {n}" for k, n in sorted(guard.items())))
     if said:
         print("  !! where she says it, the trap's verdict follows her line and not the "
               "agent's policy: read WHAT_FAILED #43 before reading the trap's numbers")
