@@ -3,6 +3,7 @@ Train/eval folds for post-training.
 
     python -m pasarbench.rl.split --out data/splits/folds.json
     python -m pasarbench.rl.split --suite edition2     # -> data/splits/folds-e2.json
+    python -m pasarbench.rl.split --suite edition3     # -> data/splits/folds-e3.json
 
 THE UNIT OF SPLITTING IS THE FAMILY, NOT THE TASK
 -------------------------------------------------
@@ -31,7 +32,8 @@ The 62 tasks of the second edition (RUNBOOK 1m) are in neither fold, and no
 model trains on them. `--suite edition2` deals their families the same way into
 data/splits/folds-e2.json, only so that one sweep can share them out between
 the two fold adapters when both are evaluated on them (`train_rft.py eval
---suite edition2`).
+--suite edition2`). The hard edition's 36 (RUNBOOK 1s) the same way, into
+data/splits/folds-e3.json (`--suite edition3`).
 """
 
 from __future__ import annotations
@@ -144,20 +146,22 @@ def summary(folds: dict[str, Any], tasks) -> str:
 
 def main(argv: list[str] | None = None) -> None:
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-    ap.add_argument("--suite", default="all", choices=["all", "edition2"],
-                    help="edition2: the 62 newer tasks, outside the folds. No model "
-                         "trains on them; their split only shares them out between "
-                         "the two fold adapters when both are evaluated on them")
+    ap.add_argument("--suite", default="all", choices=["all", "edition2", "edition3"],
+                    help="edition2: the 62 newer tasks; edition3: the hard edition's 36. "
+                         "Both outside the folds: no model trains on them, and their "
+                         "split only shares them out between the two fold adapters "
+                         "when both are evaluated on them")
     ap.add_argument("--out", default="")
     ap.add_argument("--seed", type=int, default=0)
     args = ap.parse_args(argv)
-    args.out = args.out or ("data/splits/folds-e2.json" if args.suite == "edition2"
-                            else "data/splits/folds.json")
+    args.out = args.out or {"edition2": "data/splits/folds-e2.json",
+                            "edition3": "data/splits/folds-e3.json"}.get(
+                                args.suite, "data/splits/folds.json")
 
     from ..generate import generate
     from ..tasks import TASKS
-    tasks = (list(generate(edition=2)[0]) if args.suite == "edition2"
-             else list(TASKS) + list(generate()[0]))
+    tasks = (list(TASKS) + list(generate()[0]) if args.suite == "all"
+             else list(generate(edition={"edition2": 2, "edition3": 3}[args.suite])[0]))
     folds = make_folds(tasks, seed=args.seed)
     out = Path(args.out)
     if out.exists():
