@@ -109,7 +109,7 @@ Unpaired rates over whatever tasks each language drew in this run: a gap here mi
 ## 3. Multilingual diagnosis
 
 *Source: `traces/C-clean/full` — 1075 episodes, pinned with `--multilingual-run`.*  
-*Also qualifying: `B-multilingual/full` (930), `D-nozh/full` (930), `F-clean-sim/full` (1075), `G-gated/full` (1075), `H-context/full` (96), `P-base/full` (1075), `P-ref/full` (1075), `P-rft/full` (1075), `P-smoke/full` (16), `P2-base-e2/full` (310), `P2-base/full` (1075), `P2-grpo-i1-e2/full` (310), `P2-grpo-i1/full` (1075), `P2-ref/full` (1075), `P2-rft-e2/full` (310), `P2-rft/full` (1075).*
+*Also qualifying: `B-multilingual/full` (930), `D-nozh/full` (930), `F-clean-sim/full` (1075), `G-gated/full` (1075), `H-context/full` (96), `P-base/full` (1075), `P-ref/full` (1075), `P-rft/full` (1075), `P-smoke/full` (16), `P2-base-e2/full` (310), `P2-base-e3/full` (180), `P2-base/full` (1075), `P2-c2-check/full` (140), `P2-c3-check/full` (140), `P2-grpo-i1-e2/full` (310), `P2-grpo-i1-e3/full` (180), `P2-grpo-i1/full` (1075), `P2-ref/full` (1075), `P2-rft-e2/full` (310), `P2-rft-e3/full` (180), `P2-rft/full` (1075).*
 
 ## Multilingual diagnosis
 
@@ -375,8 +375,12 @@ Traps that moved: `perishable_refund_without_return` 1.00 → 0.93, `cod_cannot_
 |---|---|---|---|---|---|---|---|
 | 1 | A | `pasar-rft2-A` | 240 on 30 tasks | 91% | — | 50% | 912 |
 | 1 | B | `pasar-rft2-B` | 248 on 31 tasks | 93% | — | 61% | 745 |
+| 2 (measured) | A | `pasar-grpo2-i1-A` | 240 on 30 tasks | 93% | 0 | 63% | 0 |
+| 2 (measured) | B | `pasar-grpo2-i1-B` | 248 on 31 tasks | 92% | 2 | 52% | 0 |
 
-— built before the build counted the voucher she declined (v52).
+"She declined the voucher": rollouts the checks failed where P6.3 and P10 ask for the escalation (WHAT_FAILED #46), counted whichever way the reward read them; — built before the build counted the voucher she declined (v52).
+
+Point 2 is GRPO's last adapters on the same tasks, measured and not trained on (`grpo-measure`); `logs/r2-grpo-measure-i2.txt` pairs it with point 1 task by task, as its reading was fixed before it ran (RUNBOOK phase 4, GRPO, the learning curve's second point). The pairing counts every rollout as the checks score it; the rates here leave out the few the harness stopped.
 
 Checks:
 
@@ -493,11 +497,16 @@ Each episode's recorded tool calls are replayed against the world it ran in, and
 | `P-smoke/full` | 16 | 1.000 → 1.000 | 1.000 → 1.000 | 0 | 0 | 0 |
 | `P2-base/full` | 1075 | 0.962 → 0.962 | 0.916 → 0.916 | 0 | 0 | 0 |
 | `P2-base-e2/full` | 310 | 0.923 → 0.923 | 0.871 → 0.871 | 0 | 0 | 0 |
+| `P2-base-e3/full` | 180 | 0.861 → 0.861 | 0.806 → 0.806 | 0 | 0 | 0 |
+| `P2-c2-check/full` | 140 | 0.736 → 0.736 | 0.500 → 0.500 | 0 | 0 | 0 |
+| `P2-c3-check/full` | 140 | 0.950 → 0.950 | 0.929 → 0.929 | 0 | 0 | 0 |
 | `P2-grpo-i1/full` | 1075 | 0.951 → 0.951 | 0.898 → 0.898 | 0 | 0 | 0 |
 | `P2-grpo-i1-e2/full` | 310 | 0.945 → 0.945 | 0.903 → 0.903 | 0 | 0 | 0 |
+| `P2-grpo-i1-e3/full` | 180 | 0.889 → 0.889 | 0.833 → 0.833 | 0 | 0 | 0 |
 | `P2-ref/full` | 1075 | 0.906 → 0.906 | 0.833 → 0.833 | 0 | 0 | 0 |
 | `P2-rft/full` | 1075 | 0.954 → 0.954 | 0.907 → 0.907 | 0 | 0 | 0 |
 | `P2-rft-e2/full` | 310 | 0.919 → 0.919 | 0.871 → 0.871 | 0 | 0 | 0 |
+| `P2-rft-e3/full` | 180 | 0.939 → 0.939 | 0.833 → 0.833 | 0 | 0 | 0 |
 | `Q-check/full+search-300` | 186 | 0.935 → 0.935 | 0.855 → 0.855 | 0 | 0 | 0 |
 | `Q-off/full+search-300` | 186 | 0.833 → 0.833 | 0.710 → 0.710 | 0 | 0 | 0 |
 | `R-check/full+search-300` | 186 | 0.973 → 0.973 | 0.935 → 0.935 | 0 | 0 | 0 |
