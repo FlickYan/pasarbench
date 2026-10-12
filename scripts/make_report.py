@@ -625,6 +625,59 @@ def _sample_verdict(rec: dict) -> bool | None:
     return rec.get("passed")
 
 
+def section_planted(path: Path = Path("data/judge_cal/report.json")) -> str:
+    """The planted-mistake calibration (RUNBOOK, planted mistakes): one mistake
+    planted per copy of a transcript the verifier passed, so the answers are
+    known. Per criterion, how often the rubric judge caught the plant and how
+    often it flagged the clean originals, against the bar fixed before the run;
+    and how often the 1-5 judge still accepted a planted copy."""
+    import math
+    s = _load_json(path)
+    head = "\n\n### Planted mistakes\n\n"
+    if not s or "criteria" not in s:
+        return head + _missing(
+            "the planted-mistake calibration has not been run",
+            "python scripts/judge_calibration.py build \"traces/N-off/full+search-300\" "
+            "\"traces/M-off/full+search-300\"\n"
+            "python scripts/judge_calibration.py run --workers 12   # the judge's API key\n"
+            "python scripts/judge_calibration.py report")
+
+    def rate(k: int, n: int) -> str:
+        if not n:
+            return "—"
+        z, p = 1.96, k / n
+        d = 1 + z * z / n
+        mid, half = (p + z * z / (2 * n)) / d, z * math.sqrt(p * (1 - p) / n
+                                                            + z * z / (4 * n * n)) / d
+        return f"{k}/{n} ({p:.0%}; {max(0, mid - half):.0%}–{min(1, mid + half):.0%})"
+    out = [head + f"*{s['judged']} of {s['items']} items judged, {s['originals']} clean "
+           f"originals. Caught: the plant flagged, among the pairs whose original was not. "
+           f"False alarms: the originals flagged (`language_match`: those in the other "
+           f"languages). A criterion is left to the judge at caught ≥ 80% and false alarms "
+           f"≤ 10%, the bar fixed before the run.*\n",
+           "| criterion | caught | false alarms | left to the judge | 1–5 judge accepts "
+           "original → planted |", "|---|---|---|---|---|"]
+    kept = []
+    for key, r in s["criteria"].items():
+        k, n = ((r["false_alarms_other_languages"], r["other_languages"])
+                if key == "language_match" else (r["false_alarms"], s["originals"]))
+        naive = (f"{r['naive_accepted_original']}/{r['naive_pairs']} → "
+                 f"{r['naive_accepted_planted']}/{r['naive_pairs']}" if r.get("naive_pairs")
+                 else "—")
+        out.append(f"| `{key}`{' (critical)' if r.get('critical') else ''} | "
+                   f"{rate(r['caught'], r['clean_pairs'])} | {rate(k, n)} | "
+                   f"{'**yes**' if r.get('trusted') else 'no'} | {naive} |")
+        if r.get("trusted"):
+            kept.append(key)
+    out.append(f"\n{len(kept)} of {len(s['criteria'])} criteria can be left to the judge"
+               + (f": {', '.join('`' + k + '`' for k in kept)}." if kept else ".")
+               + " Every other one is reported with its numbers and scores nothing. The "
+               "originals it flagged are listed in `data/judge_cal/report.txt`: each is a "
+               "false alarm or a violation the database cannot see, and they are read "
+               "(RUNBOOK, planted mistakes).")
+    return "\n".join(out)
+
+
 def section_judge() -> str:
     from pasarbench.judge.agreement import ceiling_report, per_criterion
     from pasarbench.judge.rubric import CRITERIA
@@ -1019,14 +1072,51 @@ def _passk(eps: list[dict], key: str = "passed") -> tuple[float, float, int]:
             sum(all(v) for v in by.values()) / len(by), k)
 
 
+def _photo_claims(cells: dict[str, Path], eps: dict[str, list[dict]]) -> str:
+    """Each run's episodes on the photo trap in which the customer, told she
+    has no photos, says she sent some, and the failures after and without that
+    line -- "" when she never did. Customer v2 does (WHAT_FAILED #43)."""
+    from pasarbench.rescore import all_tasks
+    from pasarbench.simqa import forbids_photos, photo_claim
+    tasks = all_tasks()
+    parts = []
+    for role in ("base", "rft", "reference"):
+        n = said = after = without = 0
+        for e in eps.get(role, []):
+            task = tasks.get(e["task_id"])
+            if task is None or not forbids_photos(task):
+                continue
+            path = cells[role] / f"{e['transcript_id']}.jsonl"
+            try:
+                recs = [json.loads(l) for l in path.read_text(encoding="utf-8").splitlines()
+                        if l.strip()]
+            except (OSError, ValueError):
+                continue
+            turns = [r.get("text") or "" for r in recs
+                     if r.get("type") == "event" and r.get("kind") == "user_turn"]
+            hit = photo_claim(task, turns) is not None
+            n += 1
+            said += hit
+            if not e["passed"]:
+                after += hit
+                without += not hit
+        if said:
+            name = {"rft": "RFT"}.get(role, role)
+            parts.append(f"{said} of {n} {name} episodes (failed after it {after} of "
+                         f"{said}, without it {without} of {n - said})")
+    return "; ".join(parts)
+
+
 def section_training(traces: Path = Path("traces"),
-                     spec: str = "base=P-base,rft=P-rft,reference=P-ref") -> str:
+                     spec: str = "base=P-base,rft=P-rft,reference=P-ref",
+                     stats_path: Path = Path("data/rft/stats.json")) -> str:
     """Base, the fold-swapped fine-tunes and the API reference, one table.
 
     Everything a reader needs to trust the RFT row is checked here rather than
     asserted in prose: the same customer and temperature in every run, the
     tasks unchanged since the split, and every held-out episode answered by
-    the model that did not train on its fold."""
+    the model that did not train on its fold. One round's runs and its
+    collection's stats (round 2: P2-*, data/rft2/stats.json)."""
     from pasarbench.diagnose import load_episodes, paired_episodes
     from pasarbench.rl.split import other_fold
 
@@ -1145,7 +1235,8 @@ def section_training(traces: Path = Path("traces"),
                        f"compared with like. Run stage 1 again first (docs/GPU_GUIDE.md).")
         else:
             cmd = (REFERENCE_CMD.replace("{customer}", str(customer))
-                   .replace("{k}", str(_passk(eps["base"])[2])))
+                   .replace("{k}", str(_passk(eps["base"])[2]))
+                   .replace("--run-id P-ref", f"--run-id {runs.get('reference', 'P-ref')}"))
             out.append(f"\nReference: {MISSING}, same customer, through the API:\n\n"
                        f"```bash\n{cmd}\n```")
 
@@ -1209,8 +1300,13 @@ def section_training(traces: Path = Path("traces"),
         out.append("\n*Per-trap moves are leads to read in the traces, not results: "
                    "each trap is ~13 tasks, and only the paired test above says "
                    "whether anything moved at all.*")
+        photo = _photo_claims(cells, eps)
+        if photo:
+            out.append(f"\n*The photo trap's customer is told she has no photos. She said she "
+                       f"had sent them in {photo}. Where she said it, the trap's verdict "
+                       f"follows her line, not the agent's policy (WHAT_FAILED #43).*")
 
-    stats = _load_json(Path("data/rft/stats.json"))
+    stats = _load_json(stats_path)
     if stats and "per_trap_pass_rate" in stats:
         dead = stats.get("traps_with_zero_signal") or {}
         # Which checker picked the training episodes. Before v19 it was the
@@ -1221,16 +1317,36 @@ def section_training(traces: Path = Path("traces"),
             stats.get("checker"), "the verdicts the episodes recorded, under the "
             "checker of the day (this stats.json predates `--checker`: before v19, "
             "WHAT_FAILED #30)")
+        per_trap = (stats.get("selection") or {}).get("per_trap")
         out.append(f"\nCollection (`{stats.get('source')}`): {stats['episodes']} "
                    f"episodes at temperature 1.0, pass rate {stats['pass_rate']:.3f}; "
                    f"examples per fold {stats['examples']}. Passing episodes were "
-                   f"picked by {how}.")
+                   f"picked by {how}"
+                   + (f", {per_trap} a trap and fold (WHAT_FAILED #31)." if per_trap else
+                      ", at most three a task."))
         for fold, traps in dead.items():
             if traps:
                 out.append(f"- fold {fold} never solved {len(traps)} trap(s), so "
                            f"rft-{fold} had nothing to learn for: "
                            f"{', '.join('`' + t + '`' for t in traps)}")
     return "\n".join(out)
+
+
+def section_training_rounds(traces: Path = Path("traces"),
+                            spec1: str = "base=P-base,rft=P-rft,reference=P-ref",
+                            spec2: str = "base=P2-base,rft=P2-rft,reference=P2-ref") -> str:
+    """Round 2 first once its base model has run, round 1 after it as context:
+    round 1 had another simulated customer and older tools, so the two are
+    never paired (RUNBOOK phase 4, round 2)."""
+    runs2 = dict(kv.split("=", 1) for kv in spec2.split(",") if "=" in kv)
+    base2 = traces / runs2.get("base", "P2-base") / "full"
+    one = section_training(traces, spec1, Path("data/rft/stats.json"))
+    if not base2.is_dir() or not any(base2.glob("*.jsonl")):
+        return one
+    two = section_training(traces, spec2, Path("data/rft2/stats.json"))
+    return ("### Round 2: training data balanced by trap, today's customer and tools\n\n"
+            + two + "\n\n### Round 1, as context\n\n*Another simulated customer and older "
+            "tools than round 2's: its numbers are never paired against round 2's.*\n\n" + one)
 
 
 def section_rescoring(traces: Path = Path("traces")) -> str:
@@ -1374,6 +1490,9 @@ def main() -> None:
                          "Several, comma-separated, adds a replication table")
     ap.add_argument("--post-training", default="base=P-base,rft=P-rft,reference=P-ref",
                     help="runs for section 6: base, fold-swapped RFT, API reference")
+    ap.add_argument("--post-training-2", default="base=P2-base,rft=P2-rft,reference=P2-ref",
+                    help="round 2's runs for section 6, shown first once its base run "
+                         "exists, with round 1 after it as context")
     ap.add_argument("--checker", choices=["current", "recorded"], default="current",
                     help="current: every verdict re-scored by today's checks from the "
                          "recorded tool calls (default); recorded: as each run scored "
@@ -1403,10 +1522,12 @@ def main() -> None:
         "multilingual": ("3. Multilingual diagnosis",
                          section_multilingual(runs, judge, args.multilingual_run)),
         "judge": ("4. Judge calibration",
-                  section_judge() + section_judge_vs_verifier(Path(args.traces))),
+                  section_judge() + section_planted()
+                  + section_judge_vs_verifier(Path(args.traces))),
         "serving": ("5. Serving and cost", section_serving()),
         "training": ("6. Post-training",
-                     section_training(Path(args.traces), args.post_training)),
+                     section_training_rounds(Path(args.traces), args.post_training,
+                                             args.post_training_2)),
         "rescoring": ("7. Re-scoring", section_rescoring(Path(args.traces))),
     }
     body = TEMPLATE.format(missing=MISSING, suite=section_suite(), scoring=scoring,
