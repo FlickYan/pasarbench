@@ -202,6 +202,14 @@ class StepRecord:
     # True for a step after the customer left (the closing check): its calls
     # are real, its text is a case note no customer saw.
     closing: bool = False
+    # With the reader guardrail (v50): what the reader made of this reply,
+    # [[tool, quote], ...], held back or not.
+    claims_read: list[list[str]] | None = None
+    # ...and what went wrong with its answer, if anything: {"unreadable": true}
+    # for an answer that was not the JSON asked for (nothing held back), or
+    # {"dropped": n} for claims whose quote was not in the reply (those hold
+    # nothing back).
+    reader_issue: dict[str, Any] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         d = asdict(self)
@@ -209,6 +217,10 @@ class StepRecord:
             del d["guardrail"]       # traces without the guardrail stay as they were
         if not d["closing"]:
             del d["closing"]         # ...and without the closing check
+        if d["claims_read"] is None:
+            del d["claims_read"]     # ...and without a reader
+        if d["reader_issue"] is None:
+            del d["reader_issue"]
         return d
 
 
