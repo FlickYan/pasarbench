@@ -2224,8 +2224,10 @@ def test_language_swap():
     check("…and, told its language, a piece must be in it: Chinese in Chinese characters, "
           "Thai in Thai, Vietnamese in its own letters, and in every language not the "
           "English's words -- Chinese (Malaysia)'s P1 came back in Malay, every code and "
-          "number in place (WHAT_FAILED #51); the prompt names Chinese in its own script, and "
-          "asks for every sentence in the language",
+          "number in place (WHAT_FAILED #51); the prompt names Chinese in its own script, asks "
+          "for every sentence in the language, and for bold on the English's bold alone -- not, "
+          "as v65's did, a capital's stress in bold, which had the translator bold every "
+          "prohibition",
           policy_missing(pieces[1], zh_p1, "zh-MY") == []
           and policy_missing(pieces[1], ms_p1, "ms") == []
           and policy_missing(pieces[1], as_kata(pieces[1], POLICY_LANGUAGES["th"]), "th") == []
@@ -2240,7 +2242,8 @@ def test_language_swap():
           and policy_missing(pieces[1], ms_p1) == []
           and all("简体中文" in POLICY_LANGUAGES[z] for z in ("zh-MY", "zh-SG"))
           and "none in another language" in TRANSLATE_POLICY
-          and "in bold if it has none" in TRANSLATE_POLICY)
+          and "on the words the English sets in bold, and on no others" in TRANSLATE_POLICY
+          and "capitals" not in TRANSLATE_POLICY)
     loser = PolicyTranslator()
     loser.lose = "`identity_unverified`"
     _, lost = translate_policy(policy_text(), "ms", Translator(loser).policy)
