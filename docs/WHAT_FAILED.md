@@ -1,6 +1,6 @@
 # What failed
 
-Fifty real defects found while building this. The first fifteen are in
+Fifty-one real defects found while building this. The first fifteen are in
 the order of how much damage they would have done; the rest are in the order
 they were found. Every one is reproducible from the git history.
 
@@ -2005,6 +2005,76 @@ format on the first real run. Test it on replies as the customer sees them —
 markdown, a small model's Thai — before the reading that depends on it is
 fixed; and keep the raw answers, which is what let this be read without asking
 the model again.
+
+---
+
+## 51. The policy's translation was checked for what it kept, never for its language
+
+**What happened.** RUNBOOK 1v puts the policy into the conversation's language,
+and before any continuation runs it checks every translated piece for what a
+rule cannot lose: its codes, section numbers and numbers, its headings, list
+items and bold. Run on 2026-10-13, the check named four pieces — Thai's P5 and
+Singapore Chinese's P2, with the tools named and without — each with one bold
+more than the English. Read, they had lost nothing: the English stresses "the
+stored integer IS the amount" and "cancellation is NOT possible" in capitals,
+and there Thai and Chinese, which have none, stressed the same words in bold.
+P10, as the text without the tools named has it, said what the English says in
+all six languages. Reading the rest for its language found what the check had
+passed: Malaysian Chinese's P1, in the text without the tools named, was in
+Malay — every code, section number and number in place, so nothing the check
+looked at was missing. That text is what
+`search_policy` returns in the policy arm, and the system prompt of 5 of the 16
+Malaysian Chinese prefixes.
+
+1t's conversations had never been read for their language either. Read now,
+from the cache, 6 of the 374 messages translated for its arms are not in their
+arm's language, in 4 of its 96 prefixes. Three are Singapore's, where the
+conversations are asked for Chinese heavily mixed with English: an agent's
+reply left wholly in English in the Chinese arm, or Singlish translated back
+into English that stayed in mixed Chinese. One is a Malaysian Chinese reply put
+into Malay. In 1w's prefixes: 9 of DeepSeek-V4.1-Flash's 36, 1 of GLM's, none
+of MiMo's.
+
+**Why.** The check was written against loss — a rule left out, a 5 made 15 —
+and took for granted that a translation is in the language asked for. Its
+tests could not have said otherwise: their stand-in translator wrote every
+language in the same Latin "kata", so a check of the script would have failed
+them all. Its bold was counted exactly, for an English whose only stress was
+bold; the policy also stresses four words in capitals (ANY, NOT, BEFORE, IS),
+which a script without capitals can only stress some other way. And "Simplified
+Chinese, as written in Malaysia" left the translator room for Malaysia's other
+language — as "Chinese (Malaysia, simplified; Malaysian Mandarin register)" had
+in 1t's conversations.
+
+**What it moved.** Nothing ran on the first translation: the check stopped the
+run, as 1v's reading has it, and the reading found the rest before anything
+else could. 1t's result stands, and can only have been narrowed: a message left
+in the other arm's language makes the two arms more alike, and a Chinese reply
+put into Malay is still not English. In 1w, MiMo's and GLM's readings are
+untouched; DeepSeek-V4.1-Flash's NO ROOM, at 90.7%, is two runs above its line,
+and either way it shows no effect.
+
+**Fix.** v65: told its language, the check asks each piece to be in it —
+Chinese in Chinese characters and Thai in Thai for at least half of the letters
+left once codes, section numbers and words in capitals are out, Vietnamese with
+its own letters, and in every language no more than half of its words the
+English's own — and allows one bold more for each word the English writes in
+capitals that the translation does not keep in capitals. On the first
+translation it names the Malay P1 and nothing else; on English handed back
+unchanged, every piece in every language. The prompt is reworded, as 1v's
+reading says a failed piece is: every sentence in the language asked, Chinese
+named in its own script (简体中文), a word stressed in capitals kept stressed.
+The prompt is part of the cache's key, so the whole policy is translated again,
+and P10 is read again before the run — as both texts have it now: `P10.md` had
+shown only the one without the tools named, which 31 of the 96 prompts carry.
+The tests' translator writes each language in its own script. Malay written for
+Indonesian no letter can tell; that is read.
+
+**Lesson.** A check of a translation that never asks what language it is in
+will pass one into the wrong language, and a stand-in translator that writes
+every language in the same letters is why its tests could not see it. Read a
+translated text for its language before reading it for its meaning: it takes a
+glance, and here it found what every check had passed.
 
 ---
 
