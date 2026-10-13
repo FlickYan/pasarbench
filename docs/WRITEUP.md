@@ -550,7 +550,7 @@ doing it twice.
 
 ### What failed
 
-`docs/WHAT_FAILED.md` has 50 entries. Most were found by running experiments
+`docs/WHAT_FAILED.md` has 51 entries. Most were found by running experiments
 and refusing a number that couldn't be right. Four more:
 
 **The ceiling was below the floor.** The oracle arm — by design the best case —
@@ -616,7 +616,7 @@ iteration, judged on tasks whose room was partly the customer's choice. Serving
 cost is built but not measured.
 <!-- RESULTS.md §3 paired table (pairs 13–16); audit_tool_arms.py §3 header; traces/J-preload OOWDE-VN.vi__r2: "Trường hợp của bạn đã được chuyển lên bộ phận xử lý khiếu nại", escalate_to_human never searched for, never called; traces/L2-claims OOWOV-VN__r1, DRE-PH__r1, HPRR-PH__r2 (RUNBOOK 1i, v25) -->
 
-The code, the trace generators, and all 50 failures are in the repo.
+The code, the trace generators, and all 51 failures are in the repo.
 
 ---
 
@@ -682,7 +682,7 @@ One line each, a number, and the mechanism. Pick three.
 > escalation the policy asks for and the check failed, and read as the policy
 > reads them the gain was zero.
 
-> **Documented 50 defects**, most caught by refusing implausible results —
+> **Documented 51 defects**, most caught by refusing implausible results —
 > including a "ceiling" arm that scored below baseline, a judge evaluated
 > without the evidence it was judging, a fine-tune rewarded for a checker's
 > quirk, a guardrail graded by its own detector, a tool that took what its
@@ -956,7 +956,9 @@ refund already paid in nearly every run, in every language, and the third,
 GLM, decides it differently from one run to the next, so holding the
 conversation fixed did not hold its decision fixed (RUNBOOK 1w; Grok, which
 escalated in none of its conversations, was left out). Next: the same
-conversations under a policy in her language (RUNBOOK 1v). Then serving cost.
+conversations under a policy in her language (RUNBOOK 1v), whose translation,
+read before the run, had a section in Malay that its check had passed
+(WHAT_FAILED #51). Then serving cost.
 <!-- RUNBOOK 1q, U-room, run on 2026-10-13: closing phases cut 0 of 469 (U-guard 27 of 456); of U-guard's 27, 25 ran, none wrote; rescues 3 (CCRTOM-MY.ms__r1, T14__r1, T14__r2), none a phase U-guard had cut; passed->failed 0, forbidden 0, refusals 4 each the same call again, another amount 1 (CCRTOM-ID.id__r1 IDR 37,000 after 700,000); pass^1 0.970 vs 0.973, 4 better 5 worse p=1.0. RUNBOOK 1u, C.txt: 626 replies, 261 kept, 47 dropped (15.3%) under quote check 1; refund already paid 4 alarms of 167, all the refund paid before, all outside English; English both 132, list only 4 (offers), reader only 0; outside English 25 alarms: 19 English sentences the list holds too, 1 Indonesian claim, 5 false alarms; under quote check 2, 2 dropped (0.6%) and 5 refund alarms -->
 
 ### One thing not to do
