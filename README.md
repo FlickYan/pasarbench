@@ -123,7 +123,14 @@ re-scored by replaying their tool calls (`scripts/rescore.py`).
   to 0 of 13 against a same-day control; all four replies it held back were
   real, and each ended in the call and a passed case. Read by hand, softer
   wording still got through about as often with it as without — "your case has
-  been flagged", a promise never kept ([RUNBOOK 1i](docs/RUNBOOK.md)).
+  been flagged", a promise never kept ([RUNBOOK 1i](docs/RUNBOOK.md)). A model
+  that reads claims in any language, calibrated on 626 recorded replies to take
+  the phrase list's place, is not used: in English it held back every claim the
+  list did and nothing more, but outside English it took the refund paid before
+  the conversation for one the agent had made, four times in four languages —
+  held back there, a reply sends the agent to pay it again
+  ([RUNBOOK 1u](docs/RUNBOOK.md); its quote check failed too, on markdown,
+  [WHAT_FAILED #50](docs/WHAT_FAILED.md)).
 - **A second look after the customer left rescued what the agent let go — and
   refusing a repeat took away its cost.** When the customer ended the
   conversation, the agent got one note she never saw: check the case against the
@@ -160,7 +167,9 @@ re-scored by replaying their tool calls (`scripts/rescore.py`).
   With a payment's amount in what it compares (v41) it was safe there too: no
   case broken, the two refusals the same call again, and the shipping credit it
   had refused went through after the customer left — the guarded check can be on
-  for the whole suite ([RUNBOOK 1q](docs/RUNBOOK.md)).
+  for the whole suite ([RUNBOOK 1q](docs/RUNBOOK.md)). The episode's token
+  budget had cut 27 of its phases short; given room of its own, no phase was
+  cut, and no rescue turned up that the budget had hidden.
 - **The checks were blind where that second look walked.** Cancelling a card
   order, the agent told the customer her money would go back — 42 times in 42 in
   the last control, in every language — and nothing in the world did it: no
@@ -197,6 +206,20 @@ re-scored by replaying their tool calls (`scripts/rescore.py`).
   before anyone looked as on new tasks. It decides when it reads the refund; on
   the policy's three other escalations the languages are level, and Qwen3.8-27B
   shows no gap ([RUNBOOK 1j, 1r](docs/RUNBOOK.md)).
+- **And the language itself moves that decision.** Held fixed where the agent
+  reads the refund — her turns and its replies translated, the refund, tools and
+  world unchanged — the same conversation got the escalation more often in
+  English: 47 conversations more often, 16 less (p = 0.0001), and the same way
+  in both directions, under a rule written before the run. Moved into English, a
+  conversation's escalations went from 16% of runs to 35%; moved out of it, from
+  50% to 31%; translated there and back, no significant change. By language,
+  read and not tested, it is Malay, Chinese and Vietnamese, with Thai and
+  Indonesian level; and it is a little over half of the gap between these
+  recordings — the rest stays with the conversation, her words and the agent's
+  earlier replies ([RUNBOOK 1t](docs/RUNBOOK.md)). Whether other agents show it
+  could not be tested: DeepSeek-V4.1-Flash and MiMo make the escalation in over
+  90% of runs in every language, and GLM's decision there changes from one run
+  to the next ([RUNBOOK 1w](docs/RUNBOOK.md)).
 
 ---
 
@@ -206,13 +229,15 @@ re-scored by replaying their tool calls (`scripts/rescore.py`).
 |---|---|
 | Environment: 277 tasks, 16 traps, 6 markets, 8 languages, checks on database state | done |
 | Harness: context strategies, tool exposure, simulated customer, replay, claim guardrail, closing check and its guard | done |
-| API experiments, RUNBOOK 1a–1r: 34 runs, 14,542 episodes | done |
+| API experiments, RUNBOOK 1a–1u: 43 runs of API agents, 15,050 episodes in `traces/`; 864 continuations of recorded conversations (1t) | done |
 | The recorded traces as a Hugging Face dataset (`scripts/export_hf.py`) | published on the Hub |
 | Judge calibration | labels nearly all "satisfied" (WHAT_FAILED #24); planted mistakes run: 4 of 9 criteria can be left to the judge, identity verification caught 1 in 20 |
 | Post-training round 1: RFT on Qwen3.8-27B | done: no gain once the checker was fixed |
 | Post-training round 2: a fine-tune balanced by trap; GRPO | round 2 done: no aggregate change, the leak moved (WHAT_FAILED #44); GRPO, one iteration: INCONCLUSIVE on the 62 newer tasks (+0.026, p = 0.55) and on the held-out fold, and +0.000 once the voucher trap's escalations after a declined voucher are read as the policy reads them (#46); on its own 61 training tasks, measured afterwards: NOT SHOWN (0.912 → 0.920, p = 0.71) |
-| The language swap: a recorded conversation held fixed where the agent reads the refund, only its language changed (RUNBOOK 1t) | built (v49): 96 conversations rebuilt and checked against their recordings; not yet run |
-| A model that reads the claims in any language, in place of the English list (RUNBOOK 1u) | built (v50): its calibration set drawn, 619 recorded replies; not yet read |
+| The language swap: a recorded conversation held fixed where the agent reads the refund, only its language changed (RUNBOOK 1t) | run (2026-10-13): LANGUAGE — English higher, +0.191, 47 conversations against 16, p = 0.0001, the same sign each way; the translator alone INCONCLUSIVE |
+| A model that reads the claims in any language, in place of the English list (RUNBOOK 1u) | calibrated (2026-10-13) on 626 recorded replies: not used — it took the refund paid before for a payment, 4 times, all outside English; the list stays and the live run is not run. Its quote check counted markdown as invention (WHAT_FAILED #50, fixed in v61) |
+| A policy in her language: the same 96 conversations, the policy translated into the conversation's language (RUNBOOK 1v) | built (v62): the policy translated by the conversations' translator and every piece checked for its codes and numbers before any continuation runs; not yet run |
+| The swap on three other agents, each from its own recorded conversations (RUNBOOK 1w) | run (2026-10-13): not seen beyond DeepSeek-V4-Pro, and not testable here — DeepSeek-V4.1-Flash and MiMo escalate in over 90% of runs in every language (NO ROOM), GLM's decision splits from run to run (its reproduction 23 of 35: not read); Grok left out before the run |
 | A hard edition of combined cases; a multi-model baseline | hard edition built (v48): 36 cases outside the suite, `--suite edition3`, their reading fixed (RUNBOOK 1s; on round 2's models, phase 4); its customer, customer 3, checked (WHAT_FAILED #43); on round 2's models: room (base 0.861), RFT and GRPO INCONCLUSIVE, hard in one case; on five API models (2026-10-13): not harder than its parts for any, and it separates no two the parts do not (RESULTS §8) — one command adds a model (`scripts/add_model.py`, v55; `--check` for which keys and models work, v56) |
 | Serving cost | paused |
 
@@ -231,13 +256,13 @@ mistake):
 ```bash
 python -m pasarbench.run          # null agent → 0.0, reference agent → 1.0
 python -m tests.test_traps        # 10 naive solutions, all must be rejected
-python -m tests.test_harness      # 181 harness invariants, the claim guardrail and the model that can read for it in any language -- made one way, one cache, what it could not read on the step, and an episode ended as a server error when it cannot be reached (v50), the closing check -- 1j's note, the case record (RUNBOOK 1n) and the guard that does not run a repeat (1o), a phase with room of its own when asked (v49), which no reference solution trips and which since v41 reads a payment's amount (WHAT_FAILED #39) -- and every context strategy keeping either note, tools that refuse what their schemas don't allow and a cancellation that settles the payment once while old runs replay under the tools they ran with, a simulated customer told to wait for what she agreed to, and customer 3, who leaves after a promise she cannot keep and never sends photos she lacks (WHAT_FAILED #43), and every key sent to its own provider and no other, under any of the names it goes by (WHAT_FAILED #47), with one routing id a conversation to xAI, whose cache is per server, and to Z.ai messages as its schema documents them
+python -m tests.test_harness      # 184 harness invariants, the claim guardrail and the model that can read for it in any language -- made one way, one cache, its quotes found without the reply's markdown, an answer cached under the old check read again without a call, and the check in a run's header, which --resume compares (WHAT_FAILED #50), what it could not read on the step, and an episode ended as a server error when it cannot be reached (v50), the closing check -- 1j's note, the case record (RUNBOOK 1n) and the guard that does not run a repeat (1o), a phase with room of its own when asked (v49), which no reference solution trips and which since v41 reads a payment's amount (WHAT_FAILED #39) -- and every context strategy keeping either note, tools that refuse what their schemas don't allow and a cancellation that settles the payment once while old runs replay under the tools they ran with, a simulated customer told to wait for what she agreed to, and customer 3, who leaves after a promise she cannot keep and never sends photos she lacks (WHAT_FAILED #43), and every key sent to its own provider and no other, under any of the names it goes by (WHAT_FAILED #47), with one routing id a conversation to xAI, whose cache is per server, and to Z.ai messages as its schema documents them
 python -m tests.test_reward       # 30 reward + dataset invariants
 python -m tests.test_generated    # 196 checks over all 199 generated tasks, the 62 of the second edition (RUNBOOK 1m) and the hard edition's 36 (1s): dates in causal order, the same world in every process, reads of the task's own order, simulator QA -- the photos a customer told she has none says she sent, in eight languages (WHAT_FAILED #43) -- each hard case's wrong turns failing in every market, her change of mind read in eight languages and in the Malay round 2's customer wrote, each case against its part -- and read again as the policy reads a declined voucher (WHAT_FAILED #46) -- and the suite and the second edition pinned byte for byte
 python -m tests.test_rescore      # 29 re-scoring invariants: the pre-v19 world, replay by digest and by length, the same tool errors on every Python, nothing re-scored on a guess
 python -m tests.test_context      # 39 context-strategy + analysis invariants
 python -m tests.test_judge        # 102 judge + agreement-statistics invariants, judged against today's checks, and the planted-mistake calibration
-python -m tests.test_exposure     # 255 tool-scaling + diagnosis invariants, the tool-naming experiment and its confirmation tasks, the guardrail's report and dry run, the closing check's report, its costs, two closing notes compared by task and the record each episode was given, the closing guard's refusals and its dry run, one run's closing phase read on its own, each case before and after it and what each customer last said, a write a database check needs told from one no check sees, readers that skip its case note, how episodes ended and what cancellations settled, listed, cells compared across tool versions, customers, closing room or claim reader flagged, episodes a server error ended, the duplicate-refund trap by language, twin against twin, a recorded conversation held fixed where the agent reads the refund and only its language changed (RUNBOOK 1t), the claim reader calibrated on recorded replies and a live run read as it was read (1u), a customer's claimed photos counted in both cells, and the voucher she declined for a human, with the paired line read as P6.3 and P10 read it (WHAT_FAILED #46) and a refused voucher never read as one she declined (#49), every failure on a task the control always passed set out to be read, another lab's model added with one command, its key typed and sent to its own endpoint only, which keys and models work checked before it with no key written down, a missing key asked for and saved to .env under the name the runs read, .env read by name only, each run's own record of why it stopped, and the traces packed as a dataset with nothing in them that must stay on this machine
+python -m tests.test_exposure     # 273 tool-scaling + diagnosis invariants, the tool-naming experiment and its confirmation tasks, the guardrail's report and dry run, the closing check's report, its costs, two closing notes compared by task and the record each episode was given, the closing guard's refusals and its dry run, one run's closing phase read on its own, each case before and after it and what each customer last said, a write a database check needs told from one no check sees, readers that skip its case note, how episodes ended and what cancellations settled, listed, cells compared across tool versions, customers, closing room or claim reader flagged, episodes a server error ended, the duplicate-refund trap by language, twin against twin, a recorded conversation held fixed where the agent reads the refund and only its language changed (RUNBOOK 1t) -- and only its policy's (1v), every piece of the translated policy checked for its codes, numbers, rules and emphasis before a run starts, a prefix whose policy cannot be changed stopped before any spend, and search_policy answering in it, or any agent's own (1w), each test's verdict the way its sign test points, at the p its reading names, and an agent with no room said to have none -- the claim reader calibrated on recorded replies, under the quote check it names, with the list's alarms beside its own outside English and a reading made under the old check kept, and a live run read as it was read (1u), a customer's claimed photos counted in both cells, and the voucher she declined for a human, with the paired line read as P6.3 and P10 read it (WHAT_FAILED #46) and a refused voucher never read as one she declined (#49), every failure on a task the control always passed set out to be read, another lab's model added with one command, its key typed and sent to its own endpoint only, which keys and models work checked before it with no key written down, a missing key asked for and saved to .env under the name the runs read, .env read by name only, each run's own record of why it stopped, and the traces packed as a dataset with nothing in them that must stay on this machine
 python -m tests.test_serving      # 54 metrics (SGLang and vLLM), cost and quality-guard invariants
 python -m tests.test_report       # 94 report invariants: paired verdicts, ties, replication, calibration and its planted mistakes, noise floor, post-training with one customer and one tool version, round 2 first and round 1 as context, GRPO read as fixed before it ran and the voucher trap's escalations read as the policy reads them beside it, its learning curve's measured point, the hard edition on round 2's models read as fixed before it ran, the hard edition against its parts on several labs' models and which pairs only the cases separate (section 8), both scorings in every section, a figure that matches its numbers and drops a title they stop bearing out
 python -m tests.test_training     # 258 checks: split, customer family, collection and resume, examples (Qwen3 and Qwen3.8 formats) against an SGLang-like server, adapter routing, the LoRA probe, serve and Modal scripts, one-GPU memory plans, the notebook helper (progress in place, an interrupt-proof cleanup, a pack of only what is new since the last), the CUDA compiler, run settings, LoRA steps on Qwen3 and Qwen3.8's hybrid architecture, training data picked by today's checks, a push script that keeps runs and keys off GitHub, closing-check runs refused as training data, one simulated customer in every step, kept from stage 1 to stage 2, server errors reported, round 2's training data balanced by trap and its runs named apart from round 1's, GRPO's build, update and stage, its tasks without the photo trap, its reward's reading of the voucher she declined (WHAT_FAILED #46) and its learning curve measured on its own tasks (grpo-measure), the customer check, the hard edition's stage (195 without transformers/torch)
@@ -556,8 +581,9 @@ careful reader notices.
 - **The false-claim check reads English only**, and only the phrasings it was
   written for — the same kind of instrument as the leak detector, so its counts
   are a floor. A model that reads any language in its place, the check against
-  the tool log kept mechanical, is built (v50, RUNBOOK 1u) and is calibrated on
-  619 recorded replies before it holds back a live one.
+  the tool log kept mechanical, was calibrated on 626 recorded replies and is not
+  used (RUNBOOK 1u): in English it held back what the list did, and outside it
+  took the refund paid before the conversation for one the agent made.
 - **Thai and Vietnamese translations are drafted, not native-reviewed.** English,
   Singlish, Malay, Indonesian and both Chinese varieties were written directly;
   Singlish deliberately was not machine-translated, because the particles and
