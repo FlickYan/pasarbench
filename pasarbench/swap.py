@@ -204,23 +204,32 @@ TRANSLATE = (
 
 # The policy's language, named for a written policy -- not a chat's register:
 # Singapore's conversations are asked for code-mixed Chinese (LANGUAGE_NAMES),
-# its policy is not.
+# its policy is not. Chinese is named in its own script too: asked for
+# "Simplified Chinese, as written in Malaysia", the translator wrote one section
+# in Malay (WHAT_FAILED #51).
 POLICY_LANGUAGES = {
     "id": "Bahasa Indonesia",
     "ms": "Bahasa Malaysia",
     "th": "Thai",
     "vi": "Vietnamese",
-    "zh-MY": "Simplified Chinese, as written in Malaysia",
-    "zh-SG": "Simplified Chinese, as written in Singapore",
+    "zh-MY": "Simplified Chinese (简体中文) as written in Malaysia",
+    "zh-SG": "Simplified Chinese (简体中文) as written in Singapore",
 }
 
+# The second wording (v65). The first left a section of Chinese (Malaysia) in
+# Malay, and stressed in some scripts without capitals, and not in others, the
+# words the English writes in capitals (WHAT_FAILED #51); its translations stay
+# in the cache under it, and nothing ran on them.
 TRANSLATE_POLICY = (
     "You translate one section of the customer-service policy that an online "
     "marketplace's support agents must follow exactly. Translate it into {language}, in "
-    "the register of a written policy, adding nothing and leaving nothing out. Keep "
+    "the register of a written policy, adding nothing and leaving nothing out, and write "
+    "every sentence of it in {language}: none in English, none in another language. Keep "
     "exactly as written: the markdown (headings, bold, list markers), every section number "
     "such as P10 or P6.3, every text in backticks, and every number, amount, currency and "
-    "date. Reply with the translation only.")
+    "date. A word the English stresses by writing it in capitals, such as NOT, stays "
+    "stressed: in capitals if the language has them, in bold if it has none. Reply with "
+    "the translation only.")
 
 # The policy is translated in the pieces between its lines of ---: its title
 # and preamble, then one section each, P1 to P11.
@@ -230,6 +239,17 @@ _CODE = re.compile(r"`([^`\n]+)`")
 # write words against it with no space, which \b does not see as a boundary.
 _SECTION = re.compile(r"(?<![A-Za-z0-9])P\d+(?:\.\d+)?(?![0-9])")
 _DIGITS = re.compile(r"\d+")
+# A word in capitals outside backticks: a code the policy keeps (SGD, COD, SLA),
+# or a word the English stresses (NOT, ANY, BEFORE, IS).
+_CAPS = re.compile(r"(?<![A-Za-z0-9])[A-Z]{2,}(?![A-Za-z0-9])")
+_WORD = re.compile(r"[A-Za-z]{3,}")
+# The letters a language is written in, where letters can tell it: Chinese in
+# its characters, Thai in its script, Vietnamese in its own letters among the
+# Latin ones. Malay and Indonesian share theirs with each other.
+_SCRIPTS = {"zh-MY": ("Chinese characters", lambda c: "\u4e00" <= c <= "\u9fff", 0.5),
+            "zh-SG": ("Chinese characters", lambda c: "\u4e00" <= c <= "\u9fff", 0.5),
+            "th": ("Thai letters", lambda c: "\u0e00" <= c <= "\u0e7f", 0.5),
+            "vi": ("Vietnamese letters", lambda c: not c.isascii(), 0.05)}
 
 
 def _shape(text: str) -> dict[str, int]:
@@ -240,14 +260,18 @@ def _shape(text: str) -> dict[str, int]:
             "bold": text.count("**") // 2}
 
 
-def policy_missing(english: str, translated: str) -> list[str]:
+def policy_missing(english: str, translated: str, language: str | None = None) -> list[str]:
     """What a translated piece of the policy lost, if anything. Kept, each:
     a text in backticks (a status, a category, a tool's name); a section
     number; every number as often as the English has it -- as a number, so
     2026-11-01 written 2026年11月1日 keeps it, and "5 days" written "15" does
     not; and its headings, list items and bold, as many as the English has --
-    so a rule left out, or a "**not**", is missed. What it says is read, not
-    checked here: P10 above all (RUNBOOK 1v)."""
+    so a rule left out, or a "**not**", is missed. A script without capitals
+    stresses in bold what the English stresses in capitals, so the bold may
+    be one more for each word the English writes in capitals and the
+    translation does not (WHAT_FAILED #51). Given its language, the piece must
+    also be written in it (_off_language). What it says is read, not checked
+    here: P10 above all (RUNBOOK 1v)."""
     lost = [f"`{c}`" for c in dict.fromkeys(_CODE.findall(english)) if c not in translated]
     lost += [x for x in dict.fromkeys(_SECTION.findall(english))
              if not re.search(rf"(?<![A-Za-z0-9]){re.escape(x)}(?![0-9])", translated)]
@@ -256,8 +280,40 @@ def policy_missing(english: str, translated: str) -> list[str]:
     lost += [f"{n} (x{k}, {have[n]} in the translation)" if have[n] else str(n)
              for n, k in need.items() if have[n] < k]
     en, tr = _shape(english), _shape(translated)
-    lost += [f"{en[k]} {k}(s), {tr[k]} in the translation" for k in en if en[k] != tr[k]]
-    return lost
+    restressed = sum(not re.search(rf"(?<![A-Za-z0-9]){w}(?![A-Za-z0-9])", translated)
+                     for w in _CAPS.findall(_CODE.sub(" ", english)))
+    for k in en:
+        if k == "bold" and en[k] <= tr[k] <= en[k] + restressed:
+            continue
+        if en[k] != tr[k]:
+            lost.append(f"{en[k]} {k}(s), {tr[k]} in the translation" + (
+                f" ({restressed} more allowed, for words in capitals)"
+                if k == "bold" and restressed else ""))
+    off = _off_language(english, translated, language) if language else None
+    return lost + ([off] if off else [])
+
+
+def _off_language(english: str, translated: str, language: str) -> str | None:
+    """How a translated piece is not in its language, as far as its letters
+    tell, or None. What the policy keeps as written -- its backticks, section
+    numbers and words in capitals -- is taken out first. Then: Chinese written
+    in Chinese characters and Thai in Thai, for at least half of the letters
+    left; Vietnamese with its own letters among them; and in every language,
+    no more than half of its words the English's own. Malay written for
+    Indonesian, or the reverse, it cannot see: that is read (WHAT_FAILED #51)."""
+    rest = _CAPS.sub(" ", _SECTION.sub(" ", _CODE.sub(" ", translated)))
+    letters = [c for c in rest if c.isalpha()]
+    if language in _SCRIPTS and letters:
+        name, mine, least = _SCRIPTS[language]
+        share = sum(map(mine, letters)) / len(letters)
+        if share < least:
+            return f"not in its language: {share:.0%} of its letters are {name}"
+    own = {w.lower() for w in _WORD.findall(_CAPS.sub(" ", _CODE.sub(" ", english)))}
+    words = [w.lower() for w in _WORD.findall(rest)]
+    same = sum(w in own for w in words) / len(words) if len(words) >= 5 else 0.0
+    if same > 0.5:
+        return f"not translated: {same:.0%} of its words are the English's"
+    return None
 
 
 def _unfenced(text: str) -> str:
@@ -269,13 +325,14 @@ def translate_policy(text: str, language: str, translate: Callable[[str, str], s
                      ) -> tuple[str, list[tuple[int, list[str]]]]:
     """The policy in `language`, piece by piece, its lines of --- and the
     space around each piece kept; and [(piece, what it lost)] for every piece
-    that lost something (policy_missing). A run uses it only if none did."""
+    that lost something or is not in `language` (policy_missing). A run uses
+    it only if none did."""
     out, bad = [], []
     for i, chunk in enumerate(text.split(POLICY_BREAK)):
         core = chunk.strip()
         lead, trail = chunk[:len(chunk) - len(chunk.lstrip())], chunk[len(chunk.rstrip()):]
         got = _unfenced(translate(core, language)).strip() if core else ""
-        lost = policy_missing(core, got)
+        lost = policy_missing(core, got, language)
         if lost:
             bad.append((i, lost))
         out.append(lead + got + trail)
