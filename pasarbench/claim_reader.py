@@ -13,11 +13,15 @@ true, in this conversation's log, exactly as before (guardrail.unbacked).
 What the model may say is narrow on purpose. It names actions from a fixed
 list, each with the reply's own words, and a claim whose words are not in the
 reply is dropped and counted: a reader that quotes what was never written is
-inventing, and the calibration reads that rate first. It is told what is not
-a claim -- an offer, a plan, a refusal, and above all what happened before the
-conversation: in the duplicate-refund trap the reply describes a refund paid a
-week ago, and an alarm on it would send the agent to pay it again (the reason
-the English list reads only "I" for refunds).
+inventing, and the calibration reads that rate first. The words are looked for
+as the customer reads them, without the reply's markdown (QUOTE_CHECK 2, since
+v61: the first check took the reply's bold for invention, WHAT_FAILED #50). It
+is told what is not a claim -- an offer, a plan, a refusal, and above all what
+happened before the conversation: in the duplicate-refund trap the reply
+describes a refund paid two days before, and an alarm on it would send the
+agent to pay it again (the reason the English list reads only "I" for
+refunds). The calibration found it raising that alarm anyway, four times, all
+outside English, and the reader is not used (RUNBOOK 1u).
 """
 
 from __future__ import annotations
@@ -92,11 +96,31 @@ def issue(got: dict[str, Any]) -> dict[str, Any] | None:
     return None
 
 
+# How a quote is found in its reply, numbered: answers cached under another
+# number are parsed again from their raw text (ClaimReader.read), and every
+# reading records the number it was made under. 1 until v61; 2 since
+# (WHAT_FAILED #50).
+QUOTE_CHECK = 2
+# Markdown's emphasis and code marks. The replies are markdown, and a reader
+# quoting one quotes its words, not its asterisks.
+_MARKUP = dict.fromkeys(map(ord, "*_`"))
+
+
 def _norm(s: str) -> str:
     """For finding a quote in a reply: typographic quotes and apostrophes as
-    plain ones, runs of space as one, case folded."""
+    plain ones; markdown's emphasis and code marks (* _ `) out; Thai's
+    combining marks -- its vowels above and below the line and its tone marks
+    -- folded out, as the leak audit reads Thai (simqa._fold), so a word that
+    differs only in them matches and one written with other letters does not;
+    runs of space as one; case folded. Quote check 1 had only the quotes, the
+    spacing and the case, and dropped 47 of the 308 claims of the calibration
+    (RUNBOOK 1u) as invented: 43 were the reply's own words without its bold,
+    two its Thai, whose marks a local model had doubled or dropped -- and the
+    other two, a garbled Thai word the reader wrote as another word, are
+    dropped still (WHAT_FAILED #50)."""
+    from .simqa import _fold
     s = (s or "").replace("’", "'").replace("‘", "'").replace("“", '"').replace("”", '"')
-    return " ".join(s.split()).casefold()
+    return " ".join(_fold(s.translate(_MARKUP)).split()).casefold()
 
 
 def parse(raw: str, text: str) -> dict[str, Any]:
@@ -120,7 +144,9 @@ def parse(raw: str, text: str) -> dict[str, Any]:
         tool = ACTIONS.get(str((c or {}).get("action", "")).strip().lower()) \
             if isinstance(c, dict) else None
         quote = " ".join(str(c.get("quote") or "").split()) if isinstance(c, dict) else ""
-        if tool is None or not quote or _norm(quote) not in body:
+        # A quote of nothing but what the check takes out -- "**" -- is no
+        # quote: "" is in every reply.
+        if tool is None or not _norm(quote) or _norm(quote) not in body:
             dropped += 1
             continue
         if tool not in {t for t, _ in out}:
@@ -128,11 +154,19 @@ def parse(raw: str, text: str) -> dict[str, Any]:
     return {"claims": out, "dropped": dropped, "unreadable": False}
 
 
+def _parsed(raw: str, text: str) -> dict[str, Any]:
+    """A cache entry: the answer parsed, the raw answer, and the quote check."""
+    got = parse(raw, text)
+    return {**got, "claims": [list(c) for c in got["claims"]], "raw": raw,
+            "quote_check": QUOTE_CHECK}
+
+
 class ClaimReader:
     """The reader, behind a cache: one answer per text, so a rerun, a review
-    and a report read the same claims the run acted on. `read(text)` gives the
-    whole answer; called as `reader(text)` it returns the claims, as
-    claims.own_claims does."""
+    and a report read the same claims the run acted on -- under one quote
+    check (QUOTE_CHECK): the model is asked once, and its answer read again
+    when the check changes. `read(text)` gives the whole answer; called as
+    `reader(text)` it returns the claims, as claims.own_claims does."""
 
     def __init__(self, backend, cache: str | Path | None = None):
         self.backend = backend
@@ -156,20 +190,25 @@ class ClaimReader:
                             .encode("utf-8")).hexdigest()
 
     def read(self, text: str) -> dict[str, Any]:
-        """The parsed answer, with the raw one beside it."""
+        """The parsed answer, with the raw one beside it and the quote check it
+        was parsed under. An answer cached under another quote check is parsed
+        again from its raw text, without a call: the model's answer is kept,
+        and the check is today's (WHAT_FAILED #50). A live run records on each
+        step what it read then, and the review reads that."""
         from .harness.types import Message
         if not (text or "").strip():
-            return {"claims": [], "dropped": 0, "unreadable": False, "raw": ""}
+            return {"claims": [], "dropped": 0, "unreadable": False, "raw": "",
+                    "quote_check": QUOTE_CHECK}
         k = self.key(text)
         with self._guard:
             lock = self._locks.setdefault(k, threading.Lock())
         with lock:
-            if k not in self.cache:
+            hit = self.cache.get(k)
+            if hit is None:
                 out = self.backend.chat([Message("system", PROMPT), Message("user", text)], [])
-                got = parse(out.content or "", text)
-                self.cache[k] = {**got, "claims": [list(c) for c in got["claims"]],
-                                 "raw": out.content or ""}
-            hit = self.cache[k]
+                hit = self.cache[k] = _parsed(out.content or "", text)
+            elif hit.get("quote_check", 1) != QUOTE_CHECK:
+                hit = self.cache[k] = _parsed(hit.get("raw") or "", text)
         return {**hit, "claims": [tuple(c) for c in hit["claims"]]}
 
     def __call__(self, text: str) -> list[tuple[str, str]]:
