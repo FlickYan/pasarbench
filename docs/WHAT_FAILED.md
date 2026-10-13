@@ -2062,19 +2062,31 @@ English's own — and allows one bold more for each word the English writes in
 capitals that the translation does not keep in capitals. On the first
 translation it names the Malay P1 and nothing else; on English handed back
 unchanged, every piece in every language. The prompt is reworded, as 1v's
-reading says a failed piece is: every sentence in the language asked, Chinese
-named in its own script (简体中文), a word stressed in capitals kept stressed.
-The prompt is part of the cache's key, so the whole policy is translated again,
-and P10 is read again before the run — as both texts have it now: `P10.md` had
-shown only the one without the tools named, which 31 of the 96 prompts carry.
-The tests' translator writes each language in its own script. Malay written for
-Indonesian no letter can tell; that is read.
+reading says a failed piece is: every sentence in the language asked, and
+Chinese named in its own script (简体中文). The prompt is part of the cache's
+key, so the whole policy is translated again, and P10 is read again before the
+run — as both texts have it now: `P10.md` had shown only the one without the
+tools named, which 31 of the 96 prompts carry. The tests' translator writes
+each language in its own script. Malay written for Indonesian no letter can
+tell; that is read.
+
+The fix took two wordings. v65's also asked for a word the English stresses in
+capitals to stay stressed — in bold where a script has none — and the
+translator, run on 2026-10-14, set in bold nearly every prohibition in Chinese
+and Thai: 切勿, 不得, 必须, อย่า, ต้องไม่ — 9 pieces, among them Singapore
+Chinese's P10 with the tools named, where "不能", cannot, was bold. Every piece
+was in its language; the check named all nine, and nothing ran on them. v66
+says nothing of capitals and asks for bold on the words the English sets in
+bold and on no others; a capital's stress in bold is still allowed by the
+check, as the first translation did it twice.
 
 **Lesson.** A check of a translation that never asks what language it is in
 will pass one into the wrong language, and a stand-in translator that writes
 every language in the same letters is why its tests could not see it. Read a
 translated text for its language before reading it for its meaning: it takes a
-glance, and here it found what every check had passed.
+glance, and here it found what every check had passed. And an instruction to a
+translator is followed more widely than it is meant: asked to keep four words
+stressed, it stressed every prohibition.
 
 ---
 
