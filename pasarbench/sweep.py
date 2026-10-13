@@ -35,6 +35,7 @@ from .harness.backends import (AnthropicBackend, MuteBackend,
                                OpenAICompatBackend, ScriptedBackend)
 from .analyze import attribute_failures, markdown_report
 from .diagnose import tool_scaling_report
+from .claim_reader import QUOTE_CHECK as READER_QUOTES
 from .harness.closing import GUARD_VERSION
 from .harness.context import BASE_STRATEGIES, make_strategy, note_discipline
 from .harness.exposure import build_exposure
@@ -470,6 +471,8 @@ def run_cell(strategy_name: str, backend_factory, simulator_factory, tasks: list
                         and head.get("closing_guard", 1) != GUARD_VERSION)
                     or head.get("closing_room", False) != closing_room
                     or head.get("claim_reader") != getattr(claim_reader, "model", None)
+                    or (guardrail == "reader"
+                        and head.get("claim_reader_quotes", 1) != READER_QUOTES)
                     or head.get("tool_checks", 1) != TOOL_CHECKS):
                 raise SystemExit(
                     f"--resume: {cell_dir} already holds episodes from a different "
@@ -479,6 +482,8 @@ def run_cell(strategy_name: str, backend_factory, simulator_factory, tasks: list
                     f"{head.get('closing', 'off')!r}"
                     + (f" v{head.get('closing_guard', 1)}" if closing == "guard" else "")
                     + (" with room" if head.get("closing_room") else "")
+                    + (f", reader {head.get('claim_reader')!r} quote check "
+                       f"{head.get('claim_reader_quotes', 1)}" if guardrail == "reader" else "")
                     + f", tool checks "
                     f"v{head.get('tool_checks', 1)}). Use a new --run-id.")
             if save_messages and not done["has_messages"]:
