@@ -2586,15 +2586,26 @@ its words the English's — and allows one bold more for each word the English
 writes in capitals that the translation does not keep in capitals. On the
 first translation it names the Malay P1 and nothing else; on English handed
 back unchanged, every piece in every language. The prompt is reworded, as the
-reading says a failed piece is: every sentence in the language asked, Chinese
-named in its own script (简体中文), a word stressed in capitals kept stressed.
-The prompt is part of the cache's key, so the whole policy is translated again,
-some 110 pieces for cents, and P10 is read again before the run — now as both
-texts have it: `P10.md` showed only the one without the tools named, which 31 of
-the 96 prompts carry and every search returns. The first translation stays in
-the cache under its own prompt. The conversations are 1t's, read for their
-language too (1t's results): 4 of the 96 prefixes hold a message not in its
-arm's language, alike in `local` and `policy`.
+reading says a failed piece is: every sentence in the language asked, and
+Chinese named in its own script (简体中文). The prompt is part of the cache's
+key, so the whole policy is translated again, some 110 pieces for cents, and
+P10 is read again before the run — now as both texts have it: `P10.md` showed
+only the one without the tools named, which 31 of the 96 prompts carry and
+every search returns. Each translation stays in the cache under its own prompt.
+The conversations are 1t's, read for their language too (1t's results): 4 of
+the 96 prefixes hold a message not in its arm's language, alike in `local` and
+`policy`.
+
+**The second translation, 2026-10-14 (v65's wording): stopped again.** Every
+piece was in its language. But v65's prompt also asked for a word the English
+stresses in capitals to stay stressed, in bold where a script has none, and the
+translator set in bold nearly every prohibition in Chinese and Thai — 切勿,
+不得, 必须, อย่า, ต้องไม่ — none of them bold or in capitals in the English. The
+check named 9 pieces, Singapore Chinese's P10 with the tools named among them
+("不能", cannot, in bold). Nothing ran on it. v66's wording says nothing of
+capitals and asks for bold on the words the English sets in bold, and on no
+others; the check still allows a capital's stress in bold, as the first
+translation set it twice.
 
 ```bash
 python scripts/language_swap.py policy data/swap/W-prefixes.jsonl --run-id V-policy
