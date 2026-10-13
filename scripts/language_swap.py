@@ -280,7 +280,10 @@ def _policies(prefixes: list, tr, workers: int = 8) -> tuple[dict, dict, list]:
 
 def _write_policies(texts: dict, root: Path) -> Path:
     """Each translation, to read; and P10 in English and every language side
-    by side -- the section the run is about, read before it runs."""
+    by side -- the section the run is about, read before it runs: as the
+    plain text has it (what search_policy returns, and the prompt where the
+    tools are not named) and, where a prompt names the tools, as that text has
+    it -- a translation of its own (v65; until then the plain one alone)."""
     from pasarbench.harness.prompts import policy_text
     from pasarbench.tools import policy_sections
     out = root / "policy-translated"
@@ -289,13 +292,13 @@ def _write_policies(texts: dict, root: Path) -> Path:
         (out / f"{lang}.{'named' if named else 'plain'}.md").write_text(text, encoding="utf-8")
 
     def p10(text: str) -> str:
-        return next((f"## {h}\n\n{b}" for h, b in policy_sections(text)
+        return next((f"### {h}\n\n{b}" for h, b in policy_sections(text)
                      if h.startswith("P10")), "(no P10 found)")
     lines = ["# P10 in every language, to read before the run (RUNBOOK 1v)", "",
-             "## English", "", p10(policy_text()), ""]
+             "## English", "", p10(policy_text()), "",
+             "## English, the tools named", "", p10(policy_text(named=True)), ""]
     for (lang, named), text in sorted(texts.items()):
-        if not named:
-            lines += [f"## {lang}", "", p10(text), ""]
+        lines += [f"## {lang}" + (", the tools named" if named else ""), "", p10(text), ""]
     (out / "P10.md").write_text("\n".join(lines), encoding="utf-8")
     return out
 
@@ -303,9 +306,10 @@ def _write_policies(texts: dict, root: Path) -> Path:
 def _print_policy_check(texts: dict, bad: list) -> None:
     print(f"the policy in {len({l for l, _ in texts})} languages "
           f"({', '.join(sorted({l for l, _ in texts}))}), {len(texts)} texts with the tools "
-          f"named in them or not: every text in backticks, section number, number and "
-          f"heading of each piece kept -- " + ("yes" if not bad else f"NO, {len(bad)} "
-                                               f"pieces lost something:"))
+          f"named in them or not: each piece in its language, with every text in backticks, "
+          f"section number, number, heading, list item and bold kept -- "
+          + ("yes" if not bad else f"NO, {len(bad)} pieces lost something or are not "
+                                 f"in their language:"))
     for lang, variant, i, lost in bad:
         where = "its sections" if i < 0 else f"piece {i}"
         print(f"  {lang} {variant}, {where}: " + ", ".join(lost))
@@ -325,7 +329,7 @@ def cmd_policy(a, translator_backend=None) -> int:
     _print_policy_check(texts, bad)
     where = _write_policies(texts, Path(a.out_root) / a.run_id)
     print(f"written to {where}/ -- read {where / 'P10.md'} before the run" + (
-        "" if not bad else ". The run will not start until every piece keeps them."))
+        "" if not bad else ". The run will not start until every piece passes."))
     return 1 if bad else 0
 
 
@@ -394,7 +398,8 @@ def cmd_run(a, agent_factory=None, translator_backend=None) -> int:
         where = _write_policies(policies, root / a.run_id)
         if bad:
             raise SystemExit(f"the run does not start: a piece of the policy lost something "
-                             f"in translation (read {where}/; RUNBOOK 1v)")
+                             f"in translation, or is not in its language (read {where}/; "
+                             f"RUNBOOK 1v)")
         print(f"the policy in each language: {where}/ (P10.md: P10 in each, side by side)")
         # Every arm's messages made once before anything is spent: a prefix
         # that cannot be one stops the run here, not in a worker.
