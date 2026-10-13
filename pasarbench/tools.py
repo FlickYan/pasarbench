@@ -11,9 +11,11 @@ Read tools do not appear in the verifier's action checks. Write tools do.
 
 from __future__ import annotations
 
+import contextvars
 import functools
 import inspect
 import re
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Callable
 
@@ -197,35 +199,75 @@ def get_payment(db: Database, order_id: str) -> dict:
       ["query"])
 def search_policy(db: Database, query: str) -> dict:
     sections = _policy_sections()
+    # Inside policy_shown_as (RUNBOOK 1v) it returns the same sections in
+    # another language. What a query finds is what it always found, in the
+    # English; a query that finds nothing there -- one in her language -- is
+    # looked for in the policy the agent is reading.
+    shown = _POLICY_SHOWN.get()
     terms = [t for t in re.split(r"\W+", query.lower()) if len(t) > 2]
+    scored = _scored(sections, terms) or (_scored(shown, terms) if shown else [])
+    hits = [{"section": (shown or sections)[i][0], "text": (shown or sections)[i][1]}
+            for _, i in scored[:3]]
+    return _ok(db, "search_policy", {"query": query}, results=hits,
+               note="no match" if not hits else None)
+
+
+def _scored(sections: list[tuple[str, str]], terms: list[str]) -> list[tuple[int, int]]:
+    """(score, index) of every section the terms touch, best first; ties in
+    the policy's order."""
     scored = []
-    for heading, body in sections:
+    for i, (heading, body) in enumerate(sections):
         hay = (heading + " " + body).lower()
         score = sum(hay.count(t) for t in terms)
         if heading.lower().startswith("p") and any(t in heading.lower() for t in terms):
             score += 5
         if score:
-            scored.append((score, heading, body))
+            scored.append((score, i))
     scored.sort(reverse=True, key=lambda x: x[0])
-    hits = [{"section": h, "text": b} for _, h, b in scored[:3]]
-    return _ok(db, "search_policy", {"query": query}, results=hits,
-               note="no match" if not hits else None)
+    return scored
 
 
 _SECTION_CACHE: list[tuple[str, str]] | None = None
 
 
+def policy_sections(text: str) -> list[tuple[str, str]]:
+    """A policy's sections as search_policy reads them: (heading, body), one
+    for each `## ` heading, the text before the first left out."""
+    out = []
+    for p in re.split(r"\n## ", text)[1:]:
+        head, _, body = p.partition("\n")
+        out.append((head.strip(), body.strip()))
+    return out
+
+
 def _policy_sections() -> list[tuple[str, str]]:
     global _SECTION_CACHE
     if _SECTION_CACHE is None:
-        text = POLICY_PATH.read_text()
-        parts = re.split(r"\n## ", text)
-        out = []
-        for p in parts[1:]:
-            head, _, body = p.partition("\n")
-            out.append((head.strip(), body.strip()))
-        _SECTION_CACHE = out
+        _SECTION_CACHE = policy_sections(POLICY_PATH.read_text())
     return _SECTION_CACHE
+
+
+# The sections search_policy returns in place of policy.md's, while set: the
+# policy in the conversation's language (RUNBOOK 1v). A context variable, so
+# it holds for the thread that set it and no other -- the arms of a run go on
+# side by side in a pool.
+_POLICY_SHOWN: contextvars.ContextVar[list[tuple[str, str]] | None] = \
+    contextvars.ContextVar("policy_shown", default=None)
+
+
+@contextmanager
+def policy_shown_as(sections: list[tuple[str, str]]):
+    """Inside it, search_policy finds what it always finds and returns the
+    same sections of `sections` in their place, section for section: the
+    policy as the agent reads it in its prompt, in another language."""
+    if len(sections) != len(_policy_sections()):
+        raise ValueError(f"{len(sections)} sections where the policy has "
+                         f"{len(_policy_sections())}: they would not pair up")
+    token = _POLICY_SHOWN.set(list(sections))
+    try:
+        yield
+    finally:
+        _POLICY_SHOWN.reset(token)
 
 
 @tool("get_livestream_claims",
