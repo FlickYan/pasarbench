@@ -265,6 +265,16 @@ Whether the customer was told something would happen is a language question,
 and a model can answer it; whether it happened is a state question, and the
 tool log can.
 
+So I tried one, calibrated on 626 recorded replies before it could hold back a
+live one. In English it held back every claim my list did, and nothing else.
+Outside English it read a refund paid before the conversation — "refund sudah
+diterbitkan ke kartu Anda", the refund has been issued to your card — as one
+the agent had just made, four times in four languages. Held back there, a reply
+sends the agent to pay it again. It isn't used; the list stays. (Its first
+reading also said it had invented 15% of its quotes. It hadn't: nearly all were
+the replies' own words without their markdown bold, which my check had compared
+character for character.)
+
 ## Result 3: the language effect was my regex
 
 The multilingual comparison is the one the benchmark was built for. In two
@@ -314,6 +324,22 @@ has already been issued for this order, I need to escalate this for review" —
 and does. In Vietnamese it reads the same refund, asks the customer to check
 her card statement, and stops. On the policy's three other escalations the
 languages are level, and a second model, Qwen3.8-27B, shows no such gap.
+
+Was that the language, or everything else that differs between two conversations
+— her words, the agent's earlier replies? I held 96 recorded conversations fixed
+at the moment the agent reads the refund, translated every turn into the other
+language, and let it decide again. The same conversation got the escalation more
+often in English: in 47 conversations more often, in 16 less (p = 0.0001), and
+the same way whichever language it was first held in. Moved into English, a
+conversation's escalations went from 16% of runs to 35%; moved out of it, from
+50% to 31%; translated there and back, no significant change. Language by
+language — read, not tested — it is Malay, Chinese and Vietnamese; in Thai and
+Indonesian the agent decided as it does in English. And it is a little over half
+of the gap between those recordings. The rest stays with the conversation. Is it
+DeepSeek's alone? I couldn't tell: two other models escalate that refund almost
+every time in every language, leaving nothing to move, and a third decides it
+differently from one run to the next, so holding the conversation fixed didn't
+hold its decision fixed.
 
 ## Result 4: my fine-tune learned my verifier
 
@@ -485,7 +511,7 @@ doing it twice.
   customer takes.** Offered a voucher or a human, mine often took the human, and
   the check wanted the voucher: a "gain" from reinforcement learning was her
   choosing differently.
-- **Write down what failed.** The project's failure log has 49 entries; most
+- **Write down what failed.** The project's failure log has 50 entries; most
   were found by refusing a number that couldn't be right.
 
 ## Limits
@@ -499,11 +525,13 @@ reads English only, and only the phrasings I wrote — the same kind of
 instrument as the leak detector — so its counts are a floor: in the re-run, the
 one failure it couldn't read told the customer, in Vietnamese, that the case
 had gone to the complaints team. It hadn't. The guardrail shares that blind
-spot, and its live test is one run of 192 conversations. The Thai and
+spot, and its live test is one run of 192 conversations; the model that was to
+read every language in the list's place failed its calibration. The language
+effect is one agent's. The Thai and
 Vietnamese translations are not native-reviewed. The fine-tune is one recipe
 run twice, and the second's photo-trap numbers are the simulated customer's: told
 she had no photos, she sent them anyway once she could not leave. GRPO ran one
 iteration, judged on tasks whose room was partly that customer's choice.
 
-The code, the trace generators, and all 49 failures are in the repo:
+The code, the trace generators, and all 50 failures are in the repo:
 [github.com/FlickYan/pasarbench](https://github.com/FlickYan/pasarbench).
