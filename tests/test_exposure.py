@@ -1730,6 +1730,83 @@ def test_claim_reader_check():
     check("…English against the list, and every alarm outside English",
           "both hold back 1, the list only 0, the reader only 0" in text
           and "Tôi đã chuyển yêu cầu của bạn" in text.split("BY LANGUAGE")[1], text)
+    check("…under the quote check it names (WHAT_FAILED #50)",
+          "read by fake-reader under quote check 2: 3 claims kept" in text
+          and "!! read under more than one" not in text, text[:300])
+
+    def row(rid, lang, text, phrase, unbacked, **kw):
+        return {"id": rid, "language": lang, "text": text, "phrase": phrase,
+                "unbacked": unbacked, "read": unbacked, "after_lookup": False,
+                "reader": "fake-reader", "dropped": 0, "unreadable": False, **kw}
+    esc = "escalate_to_human"
+    mixed = tmp / "mixed.read.jsonl"
+    mixed.write_text("".join(json.dumps(r, ensure_ascii=False) + "\n" for r in [
+        row("X/full/CHE-MY.ms__r0#4", "ms", "I've escalated your case.",
+            [[esc, "I've escalated your case"]], [[esc, "I've escalated your case"]],
+            quote_check=2),
+        row("X/full/OOWDE-MY.ms__r2#6", "ms", "If it's the refund, I'll escalate it now.",
+            [[esc, "I'll escalate it now"]], [], quote_check=2),
+        row("X/full/CHE-ID.id__r0#13", "id", "Kasus Anda sudah saya eskalasi.", [],
+            [[esc, "Kasus Anda sudah saya eskalasi"]])]), encoding="utf-8")
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out):
+        crc.main(["report", str(mixed)])
+    text = out.getvalue()
+    lang = text.split("BY LANGUAGE")[1]
+    check("…outside English, the list's alarms beside the reader's -- English words in a "
+          "Malay conversation, held by both; the list's alone, to read -- and a reading "
+          "under two quote checks said to be two readers'",
+          "ms         1 of    2; the list    2, both    1" in lang
+          and "I've escalated your case\"  [list too]" in lang
+          and "Kasus Anda sudah saya eskalasi\"" in lang
+          and "eskalasi\"  [list too]" not in lang
+          and "I'll escalate it now" in lang.split("the list only")[1]
+          and "under quote check 1 and 2" in text
+          and "!! read under more than one quote check" in text, text)
+
+    class Never:
+        model = "fake-reader"
+
+        def chat(self, messages, tools):
+            raise AssertionError("the reader was asked")
+    old = tmp / "old.read.jsonl"
+    old.write_text(json.dumps({"id": "x", "read": [], "dropped": 1}) + "\n", encoding="utf-8")
+    kept = old.read_text(encoding="utf-8")
+    try:
+        crc.cmd_read(argparse.Namespace(sample=str(sample), out=str(old),
+                                        cache=str(tmp / "c.json"), workers=1), backend=Never())
+        stopped = ""
+    except SystemExit as e:
+        stopped = str(e)
+    # The cache as quote check 1 left it: no number, and its claims parsed away.
+    cache = json.loads((tmp / "c.json").read_text(encoding="utf-8"))
+    for v in cache.values():
+        v.pop("quote_check", None)
+        v["dropped"], v["claims"] = v["dropped"] + len(v["claims"]), []
+    (tmp / "c.json").write_text(json.dumps(cache, ensure_ascii=False), encoding="utf-8")
+    with contextlib.redirect_stdout(io.StringIO()):
+        crc.cmd_read(argparse.Namespace(sample=str(sample), out=str(tmp / "again.read.jsonl"),
+                                        cache=str(tmp / "c.json"), workers=1), backend=Never())
+    again = {r["text"]: r for r in (json.loads(l) for l in (
+        tmp / "again.read.jsonl").read_text(encoding="utf-8").splitlines())}
+    check("a reading made under quote check 1 is kept: `read` stops before asking anything; "
+          "into another file, the answers cached under check 1 are read again from their "
+          "raw text, without a call",
+          "quote check 1" in stopped and "--out" in stopped
+          and old.read_text(encoding="utf-8") == kept
+          and len(again) == 6 and all(r["quote_check"] == 2 for r in again.values())
+          and again["I've escalated your case to a specialist."]["read"]
+          == [["escalate_to_human", "I've escalated your case"]], stopped)
+    one = tmp / "one.read.jsonl"
+    one.write_text(json.dumps(row("X/full/A__r0#1", "en", "Hi.", [], [])) + "\n",
+                   encoding="utf-8")
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out):
+        crc.main(["report", str(one)])
+    check("…and a reading from before v61 is reported as made under check 1, with what "
+          "that check could not find", "under quote check 1:" in out.getvalue()
+          and "markdown and Thai marks were part of the match" in out.getvalue(),
+          out.getvalue()[:400])
     from pasarbench.claim_reader import ClaimReader
 
     class Cut(Reader):
@@ -2024,7 +2101,295 @@ def test_language_swap():
           and "recorded in English or Singlish: fewer than 5 prefixes" in text
           and "the orig arm, by the majority of its runs, agrees with it on 4 of 6" in text
           and "under 75%" in text and "THE TRANSLATOR" in text, text)
+    check("…and how much room the agent left the test: here it escalated in half the "
+          "translated arms' runs", "ROOM: the translated arms escalated in 50.0% of their runs\n"
+          in text and "NO ROOM" not in text, text)
 
+    class Always(FakeAgent):
+        """Escalates in every language: an agent that leaves the test no room."""
+
+        def chat(self, messages, tools):
+            if any(tc.name == "escalate_to_human" for m in messages for tc in m.tool_calls):
+                return ModelResponse(content="Noted.", usage=Usage(1, 1))
+            if "escalate_to_human" not in {t["function"]["name"] for t in tools}:
+                return ModelResponse(tool_calls=[ToolCall("search_tools", {
+                    "query": "escalate to a human agent"})], usage=Usage(1, 1))
+            order = json.loads(next(m.content for m in reversed(messages)
+                                    if m.role == "tool" and '"order"' in m.content)
+                               )["order"]["order_id"]
+            return ModelResponse(tool_calls=[ToolCall("escalate_to_human", {
+                "order_id": order, "category": "duplicate_refund",
+                "reason": "already refunded"})], usage=Usage(1, 1))
+    full = argparse.Namespace(**{**vars(run), "run_id": "W-always", "k": 1})
+    with contextlib.redirect_stdout(io.StringIO()):
+        ls.cmd_run(full, agent_factory=lambda p: Always(), translator_backend=FakeTranslator())
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out):
+        ls.main(["report", str(tmp / "swap" / "W-always")])
+    check("v62, RUNBOOK 1w: an agent that escalates in every language leaves the test nothing "
+          "to see -- its INCONCLUSIVE is NO ROOM, not a null",
+          "all prefixes: +0.000" in out.getvalue() and "INCONCLUSIVE" in out.getvalue()
+          and "escalated in 100.0% of their runs -- outside 10%-90%: an INCONCLUSIVE above "
+              "is NO ROOM" in out.getvalue(), out.getvalue())
+
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out):
+        ls.main(["report", str(tmp / "swap" / "W"), "--alpha", "0.0167"])
+    g = {"diff": -0.01, "better": 20, "worse": 7, "p": 0.019}
+    check("a test resolves below the p the reading names -- 1w's three agents, 0.0167 each -- "
+          "and a verdict points the way its sign test does, not the mean's; the room's edges "
+          "are 10% and 90%, inclusive",
+          "a test resolves at p < 0.0167" in out.getvalue()
+          and "6 prefixes higher, 0 lower, sign test p=0.031  ->  INCONCLUSIVE" in out.getvalue()
+          and "->  UP" in ls._line("x", g, "UP", "DOWN")
+          and all("NO ROOM" in ls._room(r) for r in (0.0, 0.1, 0.9, 1.0))
+          and not any("NO ROOM" in ls._room(r) for r in (0.1001, 0.5, 0.8999)),
+          out.getvalue()[:300])
+
+    # RUNBOOK 1v: the policy in the conversation's language.
+    import re
+    from pasarbench.harness.prompts import policy_text
+    from pasarbench.swap import (POLICY_BREAK, Prefix, policy_arm_messages, policy_missing,
+                                 policy_unchangeable, translate_policy)
+    from pasarbench.tools import policy_sections, policy_shown_as, search_policy
+
+    def as_kata(text, lang):
+        """A "translation" that keeps every code, number, section number and
+        mark of markdown and changes every word: what a search of it finds is
+        its own."""
+        kept = re.split(r"(`[^`]*`)", text)
+        return "".join(x if x.startswith("`") else re.sub(r"\b[A-Za-z]{3,}\b", "kata", x)
+                       for x in kept) + f"\n<!-- in {lang} -->"
+
+    class PolicyTranslator(FakeTranslator):
+        """A chat as FakeTranslator translates it; a piece of the policy as
+        as_kata does -- or, told to, with a code lost."""
+        lose = ""
+
+        def chat(self, messages, tools):
+            prompt = messages[0].content
+            if "customer-service policy" not in prompt:
+                return super().chat(messages, tools)
+            lang = prompt.split("Translate it into ")[1].split(", in the register")[0]
+            text = messages[1].content.replace(self.lose, "") if self.lose else messages[1].content
+            return ModelResponse(content=as_kata(text, lang), usage=Usage(1, 1))
+    pt = Translator(PolicyTranslator(), tmp / "tr3.json")
+    ms_policy, lost = translate_policy(policy_text(), "ms", pt.policy)
+    secs = policy_sections(ms_policy)
+    english = policy_sections(policy_text())
+    check("the policy is translated piece by piece -- its preamble, then P1 to P11 -- each "
+          "piece checked, the lines of --- kept, and keyed by its prompt apart from the chat's",
+          not lost and ms_policy.count("<!-- in Bahasa Malaysia -->") == 12
+          and ms_policy.count(POLICY_BREAK) == policy_text().count(POLICY_BREAK)
+          and [h.split(".")[0] for h, _ in secs] == [h.split(".")[0] for h, _ in english]
+          and "kata" in secs[9][1] and "refund" not in secs[9][1]
+          and pt.key("x", "ms", ("policy", "p")) != pt.key("x", "ms"), str(lost))
+    pieces = [c.strip() for c in policy_text().split(POLICY_BREAK)]
+    p7, p8, p10 = pieces[7], pieces[8], pieces[10]
+    no_bullet = "\n".join(line for line in p10.splitlines() if "already been refunded" not in line)
+    check("…what each piece must keep: its codes, every section number even where Chinese or "
+          "Thai touches it, every number as often as the English has it, its list items and "
+          "its bold -- so a rule left out, a 5 made 15 or a **not** dropped is named",
+          policy_missing(p7, p7.replace(" P4.1 / P4.2", "按照P4.1/P4.2中")
+                         .replace("P3.1, P3.3 and P6", "P3.1、P3.3和P6")) == []
+          and "7 list item(s), 6 in the translation" in policy_missing(p10, no_bullet)
+          and policy_missing(p8, p8.replace("more than 5 days", "more than 15 days"))
+          == ["5 (x2, 1 in the translation)"]
+          and policy_missing(p8, p8.replace("**not**", "not"))
+          == ["6 bold(s), 5 in the translation"])
+    loser = PolicyTranslator()
+    loser.lose = "`identity_unverified`"
+    _, lost = translate_policy(policy_text(), "ms", Translator(loser).policy)
+    check("…and a piece that lost a code is named, with what it lost",
+          lost == [(1, ["`identity_unverified`"])], str(lost))
+    db = Database.fresh(tasks["DRE-MY"].db_patch)
+    found = search_policy(db, "refund already escalate")["results"]
+    at = [next(i for i, (h, _) in enumerate(english) if h == x["section"]) for x in found]
+    with policy_shown_as(secs):
+        shown = search_policy(db, "refund already escalate")["results"]
+        local = search_policy(db, "kata")["results"]
+    try:
+        with policy_shown_as(secs[:3]):
+            pass
+        misaligned = False
+    except ValueError:
+        misaligned = True
+    check("search_policy finds what it always finds, in the English, and inside "
+          "policy_shown_as returns those sections in the other language; a query in her "
+          "language, which finds nothing in the English, finds the policy she is read; "
+          "outside it, as before; sections that would not pair up are refused",
+          [x["section"] for x in shown] == [secs[i][0] for i in at] and len(at) == 3
+          and all(x["text"] == secs[i][1] for x, i in zip(shown, at))
+          and len(local) == 3 and not search_policy(db, "kata")["results"]
+          and search_policy(db, "refund already escalate")["results"] == found and misaligned)
+
+    traces2 = tmp / "traces2"
+
+    def cell2(run, tid, **setup):
+        oid = tasks[tid].hidden_facts["order_id"]
+        return _language_cell(traces2, run, tid, [plan(tid, False)],
+                              replies=(oid, "Oh, I didn't notice."), **setup)
+    for tid in ("DRE-MY", "DRE-MY.ms", "DRE-VN.vi", "DRE-SG.sg-en"):
+        cell2("A", tid)
+    for tid in ("DRE-MY.zh-MY", "DRE-VN"):
+        cell2("N", tid, policy_mode="preload-named")
+    p2 = tmp / "P2.jsonl"
+    with contextlib.redirect_stdout(io.StringIO()):
+        ls.main(["prefixes", str(traces2), "--model", "m", "--out", str(p2)])
+    two = {x.pid: x for x in ls.load_prefixes(p2)}
+    named = two["N.full.DRE-MY.zh-MY.r0"]
+    zh_policy, _ = translate_policy(policy_text(named=True), "zh-MY", pt.policy)
+    arms2 = {arm: policy_arm_messages(named, arm, pt, zh_policy if arm == "policy" else None)
+             for arm in ("local", "policy", "english")}
+    check("1v's arms: local and policy are the same conversation in its language, english the "
+          "same in English; only the policy arm's system prompt differs -- its policy, named "
+          "tools and all, in her language, the instructions around it as they were",
+          arms2["local"][1:] == arms2["policy"][1:]
+          and arms2["local"][1:] == arm_messages(named, "back", pt)[1:]
+          and arms2["english"][1:] == arm_messages(named, "swap", pt)[1:]
+          and arms2["local"][0] == named.messages[0]
+          and policy_text(named=True) not in arms2["policy"][0]["content"]
+          and "(kata: `escalate_to_human`)" in arms2["policy"][0]["content"]
+          and "<!-- in Simplified Chinese, as written in Malaysia -->"
+              in arms2["policy"][0]["content"]
+          and arms2["policy"][0]["content"].startswith(named.messages[0]["content"][:300]),
+          arms2["policy"][0]["content"][:200])
+    searched = Prefix.from_dict({**named.to_dict(), "pid": "searched", "messages":
+                                 named.messages[:2] + [{"role": "tool", "name": "search_policy",
+                                                        "tool_call_id": "s", "content": "{}"}]
+                                 + named.messages[2:]})
+    jit = Prefix.from_dict({**named.to_dict(), "pid": "jit",
+                            "head": {**named.head, "policy_mode": "jit"}})
+    sfile = tmp / "P-searched.jsonl"
+    sfile.write_text("".join(json.dumps(x.to_dict(), default=str) + "\n"
+                             for x in (named, searched, jit)), encoding="utf-8")
+    try:
+        with contextlib.redirect_stdout(io.StringIO()):
+            ls.cmd_run(argparse.Namespace(**{**vars(run), "prefixes": str(sfile), "run_id": "V0",
+                                             "policy": True, "dry_run": True}))
+        refused = ""
+    except SystemExit as e:
+        refused = str(e)
+    check("a prefix whose policy its prompt cannot change -- one that read it from "
+          "search_policy before the lookup, one with no policy in its prompt -- stops a run "
+          "before anything is spent, named",
+          policy_unchangeable(named) == "" and "2 prefixes cannot" in refused
+          and "searched: it read the policy from search_policy" in refused
+          and "jit: policy mode 'jit' puts no policy in the prompt" in refused, refused)
+
+    class PolicyReader(FakeAgent):
+        """Searches the policy, then escalates if her last turn is in English, or
+        if it read the policy in her language in its prompt and in the search;
+        and says which policy it found."""
+
+        def chat(self, messages, tools):
+            found = [m.content for m in messages if m.role == "tool" and '"results"' in m.content]
+            if not found:
+                return ModelResponse(tool_calls=[ToolCall("search_policy", {
+                    "query": "refund already escalate"})], usage=Usage(1, 1))
+            last = next(m.content for m in reversed(messages) if m.role == "user")
+            translated = "<!-- in " in found[-1]
+            theirs = "<!-- in " in messages[0].content and translated
+            if (theirs or last.startswith(("[English]", "[Singlish"))) and not any(
+                    tc.name == "escalate_to_human" for m in messages for tc in m.tool_calls):
+                order = json.loads(next(m.content for m in reversed(messages)
+                                        if m.role == "tool" and '"order"' in m.content)
+                                   )["order"]["order_id"]
+                return ModelResponse(tool_calls=[ToolCall("escalate_to_human", {
+                    "order_id": order, "category": "duplicate_refund",
+                    "reason": "already refunded"})], usage=Usage(1, 1))
+            return ModelResponse(content="searched " + ("translated" if translated else
+                                                        "english"), usage=Usage(1, 1))
+    run2 = argparse.Namespace(**{**vars(run), "prefixes": str(p2), "run_id": "V",
+                                 "cache": str(tmp / "tr3.json"), "policy": True, "k": 1})
+    bad = argparse.Namespace(**{**vars(run2), "run_id": "V-bad", "cache": str(tmp / "tr4.json")})
+    out = io.StringIO()
+    try:
+        with contextlib.redirect_stdout(out):
+            ls.cmd_run(bad, agent_factory=lambda p: PolicyReader(), translator_backend=loser)
+        stopped = ""
+    except SystemExit as e:
+        stopped = str(e)
+    check("a run with the policy in her language does not start while a piece of the policy "
+          "has lost something: it names the piece, and no continuation runs",
+          "the run does not start" in stopped and "piece 1: `identity_unverified`"
+          in out.getvalue() and not list((tmp / "swap" / "V-bad").rglob("*.jsonl")),
+          out.getvalue() + stopped)
+    step = argparse.Namespace(prefixes=str(p2), run_id="VP", out_root=str(tmp / "swap"),
+                              cache=str(tmp / "tr5.json"), workers=2, limit=0,
+                              translator_model="fake-tr", translator_url="http://localhost:9/v1",
+                              translator_extra_body="")
+    with contextlib.redirect_stdout(io.StringIO()):
+        good = ls.cmd_policy(step, translator_backend=PolicyTranslator())
+        lossy = ls.cmd_policy(argparse.Namespace(**{**vars(step), "run_id": "VP2",
+                                                    "cache": str(tmp / "tr6.json")}),
+                              translator_backend=loser)
+    p10s = (tmp / "swap" / "VP" / "policy-translated" / "P10.md").read_text(encoding="utf-8")
+    check("the policy step alone: every translation written out, and P10 in English and each "
+          "language side by side to read before the run -- and it fails while a piece is lossy",
+          good == 0 and lossy == 1 and "## English" in p10s and "## zh-MY" in p10s
+          and "already been refunded" in p10s and p10s.count("<!-- in ") == 4, p10s[:300])
+    with contextlib.redirect_stdout(io.StringIO()):
+        ls.cmd_run(run2, agent_factory=lambda p: PolicyReader(),
+                   translator_backend=PolicyTranslator())
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out):
+        ls.main(["report", str(tmp / "swap" / "V")])
+    text = out.getvalue()
+    recs2 = [[json.loads(l) for l in f.read_text().splitlines()]
+             for f in (tmp / "swap" / "V").rglob("*.jsonl")]
+    heads2 = [r[0] for r in recs2]
+    said = {(r[0]["swap"]["arm"], next(x for x in r if x.get("kind") == "swap_outcome")["reply"])
+            for r in recs2}
+    written = sorted(f.name for f in (tmp / "swap" / "V" / "policy-translated").glob("*.md"))
+    check("the run: three arms a prefix, each trace saying its arm, its conversation's "
+          "language and its policy's; search_policy in her language in the policy arm only; "
+          "every policy it read written out beside the traces",
+          len(heads2) == 6 * 3 and all(h["swap"]["design"] == "policy" for h in heads2)
+          and all(h["swap"]["language"] == (h["swap"]["local_language"]
+                                            if h["swap"]["arm"] != "english" else
+                                            ("sg-en" if h["swap"]["source_language"] == "sg-en"
+                                             else "en")) for h in heads2)
+          and {(h["swap"]["arm"], h["swap"]["policy_language"] == "en") for h in heads2}
+          == {("local", True), ("english", True), ("policy", False)}
+          and said == {("local", "searched english"), ("english", "searched english"),
+                       ("policy", "searched translated")}
+          and "zh-MY.named.md" in written and "zh-MY.plain.md" in written
+          and "vi.named.md" in written and "ms.plain.md" in written and "P10.md" in written,
+          str((said, written)))
+    check("the report: 1t's test again, then the policy in her language against in English, "
+          "then what is left of the gap -- and search_policy counted in each arm",
+          "18 continuations of m from 6 prefixes" in text
+          and "THE REPLICATION" in text and "LANGUAGE again: English higher" in text
+          and "all prefixes: +1.000; 6 prefixes higher, 0 lower, sign test p=0.031  ->  "
+              "POLICY: higher in her language" in text
+          and text.split("THE GAP")[1].split("\n")[1].strip().startswith(
+              "all prefixes: +0.000") and "INCONCLUSIVE" in text.split("THE GAP")[1]
+          and "policy   6 of 6 continuations; 0 searches found nothing" in text, text)
+
+    def srow(pid, arm, esc, first_english):
+        return {"pid": pid, "arm": arm, "escalated": esc, "dup": esc, "design": "policy",
+                "english_source": first_english, "local_language": "ms", "calls": [],
+                "searched_nothing": 0}
+    rows = [srow(f"e{i}", a, a == "english", True) for i in range(6)
+            for a in ("local", "policy", "english")]
+    rows += [srow(f"o{i}", a, a != "local", False) for i in range(6)
+             for a in ("local", "policy", "english")]
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out):
+        ls._report_policy(rows)
+    text = out.getvalue()
+    test, gap = text.split("THE TEST")[1].split("THE GAP")
+    check("…each direction apart: here the policy in her language moves only the "
+          "conversations first held in another language, and English stays higher than the "
+          "rest",
+          "recorded in English/Singlish: +0.000; 0 prefixes higher, 0 lower, sign test "
+          "p=1.000  ->  INCONCLUSIVE" in test
+          and "recorded in another language: +1.000; 6 prefixes higher, 0 lower, sign test "
+              "p=0.031  ->  higher" in test
+          and "all prefixes: +0.500; 6 prefixes higher, 0 lower, sign test p=0.031  ->  "
+              "English still higher" in gap
+          and text.split("THE REPLICATION")[1].count("English higher") == 3, text)
     keys = {k: os.environ.pop(k) for k in list(os.environ)
             if k.endswith("_API_KEY") or k.startswith("PASARBENCH_")}
     try:
