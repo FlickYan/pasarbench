@@ -38,6 +38,7 @@ from .exposure import schema_tokens
 from .context import ContextStrategy, FullContext
 from . import closing as closing_check
 from . import guardrail as claim_guard
+from ..claim_reader import QUOTE_CHECK as READER_QUOTES
 from ..claim_reader import issue as reader_issue
 from ..tasks import task_digest, world_digest
 from .prompts import system_prompt
@@ -132,9 +133,11 @@ def run_episode(
         "agent_temperature": getattr(backend, "temperature", None),
         # Only when on, so the headers of every run before it stay as they were.
         **({"guardrail": guardrail} if guardrail != "off" else {}),
-        # The model the reader guardrail read with (v50): a run read by one is
-        # not another's.
-        **({"claim_reader": getattr(claim_reader, "model", "?")}
+        # The model the reader guardrail read with (v50), and how it found its
+        # quotes (claim_reader.QUOTE_CHECK, v61; WHAT_FAILED #50): a run read by
+        # one is not another's.
+        **({"claim_reader": getattr(claim_reader, "model", "?"),
+            "claim_reader_quotes": READER_QUOTES}
            if guardrail == "reader" else {}),
         **({"closing": closing} if closing != "off" else {}),
         # What the guard compares (closing.GUARD_VERSION): a run under one is
