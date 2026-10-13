@@ -367,13 +367,14 @@ def test_claim_reader():
     language, and only that changes -- the check against the tool log stays
     mechanical. What it may say is narrow: actions from a fixed list, each with
     the reply's own words; a claim whose words are not in the reply is dropped
-    and counted. Its answers are cached, recorded on the step, and read back."""
+    and counted -- found without the reply's markdown since v61 (WHAT_FAILED
+    #50). Its answers are cached, recorded on the step, and read back."""
     print("\n=== the claim reader: a model where the English list was ===")
     import json
     import os
     from types import SimpleNamespace
 
-    from pasarbench.claim_reader import ACTIONS, ClaimReader, parse
+    from pasarbench.claim_reader import ACTIONS, QUOTE_CHECK, ClaimReader, parse
     from pasarbench.harness import guardrail as g
     from pasarbench.harness.simulator import LLMUser
     from pasarbench.harness.types import ModelResponse, Usage
@@ -399,6 +400,29 @@ def test_claim_reader():
           "counted -- and one claim a tool, the first",
           odd == {"claims": [("escalate_to_human", "kepada pasukan pakar")], "dropped": 2,
                   "unreadable": False}, str(odd))
+    bold = ("Saya telah keluarkan **baucar ihsan bernilai MYR 38.00** untuk anda "
+            "(case **ESC0001**).")
+    voucher = "Saya telah keluarkan baucar ihsan bernilai MYR 38.00 untuk anda"
+    md = parse(json.dumps({"claims": [{"action": "voucher", "quote": voucher},
+                                      {"action": "escalate", "quote": "(case ESC0001)"}]}), bold)
+    thai = parse(json.dumps({"claims": [{"action": "escalate", "quote":
+                                         "ส่งเคสนี้ต่อเจ้าหน้าที่ตรวจสอบแล้ว (เคส ESC0001) ค่ะ"}]}),
+                 "ส่่งเคสนี้ตอเจ้้าหน้้าท่ีตรวจสอบแล้้ว (เคส ESC0001) ค่ะ")
+    spelt = parse(json.dumps({"claims": [{"action": "escalate", "quote":
+                                          "เข้ามารับส่วนนี้ให้ค่ะ (ส่วน ESC0001)"}]}),
+                  "คุณจะให้ผู้ช่วยเหลือคนจริงเข้ามารับคาสวนนี้ให้ค่ะ (คาสวน ESC0001)")
+    bare = parse(json.dumps({"claims": [{"action": "refund", "quote": "**"}]}),
+                 "Thank you for waiting.")
+    check("quote check 2 (WHAT_FAILED #50): the reply's words are found without its "
+          "markdown, and its Thai without the marks a model doubled -- a word written "
+          "with other letters is still not the reply's, and a quote of nothing but "
+          "markdown is no quote",
+          QUOTE_CHECK == 2 and md["dropped"] == 0
+          and [t for t, _ in md["claims"]] == ["issue_goodwill_voucher", "escalate_to_human"]
+          and thai["dropped"] == 0 and spelt == {"claims": [], "dropped": 1,
+                                                  "unreadable": False}
+          and bare == {"claims": [], "dropped": 1, "unreadable": False},
+          str((md, thai, spelt, bare)))
     check("…and an answer that is not the JSON asked for is no claims, marked unreadable",
           parse("I think the agent escalated.", text) == {"claims": [], "dropped": 0,
                                                           "unreadable": True}
@@ -432,6 +456,21 @@ def test_claim_reader():
           "the file", first == [("escalate_to_human", "Saya sudah eskalasikan kes anda")]
           and FakeReaderBackend.calls == 1 and again(text) == first
           and FakeReaderBackend.calls == 1 and again.read(text)["raw"].startswith('{"claims"'))
+    stale = Path(tempfile.mkdtemp()) / "claims.json"
+    k = ClaimReader(FakeReaderBackend()).key(bold)
+    stale.write_text(json.dumps({k: {"claims": [], "dropped": 1, "unreadable": False, "raw":
+                                     json.dumps({"claims": [{"action": "voucher",
+                                                             "quote": voucher}]})}}),
+                     encoding="utf-8")
+    reread = ClaimReader(FakeReaderBackend(), stale)
+    got = reread.read(bold)
+    reread.save()
+    check("…an answer cached under quote check 1 is read again under today's, from its raw "
+          "text, asking the model nothing -- and saved as read",
+          got["claims"] == [("issue_goodwill_voucher", voucher)] and got["dropped"] == 0
+          and got["quote_check"] == QUOTE_CHECK and FakeReaderBackend.calls == 1
+          and json.loads(stale.read_text(encoding="utf-8"))[k]["quote_check"] == QUOTE_CHECK
+          and reader.read(text)["quote_check"] == QUOTE_CHECK, str(got))
 
     class Customer:
         name, reports_usage = "seen", False
@@ -468,10 +507,12 @@ def test_claim_reader():
     held = [s for s in rec.steps if s.get("guardrail")]
     read = [s["claims_read"] for s in rec.steps if "claims_read" in s]
     check("in the loop: a claim in Malay no call backs is held back, the customer sees "
-          "only the reply after the call, and the header names the reader",
+          "only the reply after the call, and the header names the reader and its quote "
+          "check",
           len(held) == 1 and held[0]["guardrail"]["claims"][0][0] == "escalate_to_human"
           and cust.views[-1].count(text) == 1 and rec.meta.get("guardrail") == "reader"
           and rec.meta.get("claim_reader") == "fake-reader"
+          and rec.meta.get("claim_reader_quotes") == QUOTE_CHECK
           and any(a.tool == "escalate_to_human" and a.ok for a in db.action_log),
           str(cust.views))
     r = g.review(rec.steps)
@@ -480,6 +521,32 @@ def test_claim_reader():
           read == [[["escalate_to_human", "Saya sudah eskalasikan kes anda"]],
                    [["escalate_to_human", "Saya sudah eskalasikan kes anda"]], []]
           and r["outcomes"] == ["made the call"] and not r["delivered"], str((read, r)))
+    import contextlib
+    import io
+
+    from pasarbench.harness import Budget
+    from pasarbench.sweep import run_cell
+    root = tempfile.mkdtemp()
+
+    def cell(resume):
+        with contextlib.redirect_stdout(io.StringIO()):
+            run_cell("full", lambda t: ScriptedBackend([text, esc, text]),
+                     lambda t: LLMUser(Customer(), persona="a", facts={}), [task], 1,
+                     Budget(), "preload", root, "q", resume=resume, guardrail="reader",
+                     claim_reader=ClaimReader(FakeReaderBackend()))
+    cell(False)
+    f = next(Path(root).glob("q/*/*.jsonl"))
+    lines = f.read_text(encoding="utf-8").splitlines()
+    head = json.loads(lines[0])
+    recorded = head.pop("claim_reader_quotes", None)
+    f.write_text("\n".join([json.dumps(head)] + lines[1:]) + "\n", encoding="utf-8")
+    try:
+        cell(True)
+        refused = ""
+    except SystemExit as e:
+        refused = str(e)
+    check("…and --resume will not add episodes read under quote check 2 to a cell read "
+          "under check 1", recorded == QUOTE_CHECK and "quote check 1" in refused, refused)
     off = Rec()
     run_episode(task, Database.fresh(task.db_patch), ScriptedBackend([text]), trace=off,
                 guardrail="claims", simulator=LLMUser(Customer(), persona="a", facts={}))
