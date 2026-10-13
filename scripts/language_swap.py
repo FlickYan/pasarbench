@@ -12,9 +12,21 @@ changed and nothing else, and the agent asked again (pasarbench/swap.py).
     # 3. the reading
     python scripts/language_swap.py report data/swap/W-swap
 
+    # 1v: the same prefixes, the policy in the conversation's language
+    python scripts/language_swap.py policy data/swap/W-prefixes.jsonl --run-id V-policy
+    python scripts/language_swap.py run data/swap/W-prefixes.jsonl --policy --run-id V-policy
+    python scripts/language_swap.py report data/swap/V-policy
+
+    # 1w: another agent's own conversations (its endpoint, its key)
+    python scripts/language_swap.py prefixes traces --model glm-5.3-flash \\
+        --out data/swap/X-glm-prefixes.jsonl
+    python scripts/language_swap.py run data/swap/X-glm-prefixes.jsonl --run-id X-glm \\
+        --base-url https://api.z.ai/api/paas/v4 --max-tokens 4096
+
 Keys come from the environment, as the sweep's do, each by the provider its
-endpoint is on: the agent's from DEEPSEEK_API_KEY (or PASARBENCH_API_KEY), the
-translator's from DASHSCOPE_API_KEY (or PASARBENCH_SIM_API_KEY) -- and one
+endpoint is on: the agent's from its provider's variable -- DEEPSEEK_API_KEY,
+ZAI_API_KEY, MIMO_API_KEY, XAI_API_KEY (or PASARBENCH_API_KEY) -- the
+translator's from DASHSCOPE_API_KEY (or PASARBENCH_SIM_API_KEY), and one
 provider's key is never sent to another.
 """
 
@@ -23,9 +35,11 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import re
 import sys
 from collections import Counter, defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from contextlib import nullcontext
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -147,10 +161,23 @@ def _extra(raw: str) -> dict:
     return d
 
 
+def _translator_key(a) -> str:
+    """The translator's key, from its own provider's variables."""
+    from pasarbench.sweep import SIM_KEY, _local, key_for, key_hint
+    if _local(a.translator_url):
+        return "EMPTY"
+    tr = key_for(a.translator_url, SIM_KEY)
+    if not tr:
+        raise SystemExit(f"the translator is on {a.translator_url} and no key is set for it: "
+                         f"{key_hint(a.translator_url, SIM_KEY)}. The agent's key is not sent "
+                         f"to another provider.")
+    return tr
+
+
 def _keys(a) -> tuple[str, str]:
     """(the agent's key, the translator's): each from its own variables, and
     never one provider's for another."""
-    from pasarbench.sweep import SIM_KEY, _local, key_for, key_hint
+    from pasarbench.sweep import _local, key_for, key_hint
     agent = key_for(a.base_url)
     if not agent:
         raise SystemExit(f"no key for {a.base_url}: {key_hint(a.base_url)}")
@@ -158,12 +185,7 @@ def _keys(a) -> tuple[str, str]:
         return agent, "EMPTY"
     if a.translator_url == a.base_url:
         return agent, agent
-    tr = key_for(a.translator_url, SIM_KEY)
-    if not tr:
-        raise SystemExit(f"the translator is on {a.translator_url} and no key is set for it: "
-                         f"{key_hint(a.translator_url, SIM_KEY)}. The agent's key is not sent "
-                         f"to another provider.")
-    return agent, tr
+    return agent, _translator_key(a)
 
 
 class _SwapTrace:
@@ -192,15 +214,133 @@ def _finished(path: Path) -> bool:
         return False
 
 
+def _translator(a, translator_backend=None):
+    """The translator behind its cache: the backend given (a test's), or the
+    one the arguments name, with its own key."""
+    from pasarbench.harness.backends import OpenAICompatBackend
+    from pasarbench.swap import Translator
+    if translator_backend is None:
+        # The policy step needs no agent, and asks for no agent's key.
+        tr_key = _keys(a)[1] if getattr(a, "base_url", None) else _translator_key(a)
+        # Room for a section of the policy in Thai (1v); a chat message takes
+        # a fraction of it.
+        translator_backend = OpenAICompatBackend(
+            model=a.translator_model, base_url=a.translator_url, api_key=tr_key,
+            temperature=0.0, max_tokens=4096, extra_body=_extra(a.translator_extra_body))
+    return Translator(translator_backend, Path(a.cache))
+
+
+def _policy_needs(prefixes: list) -> list[tuple[str, bool]]:
+    """(language, named) for every policy a 1v run reads: each prefix's
+    language other than English, with the tools named in it or not as its
+    prompt had it -- and the plain one in every language, which is what
+    search_policy returns. A prefix whose policy cannot be changed by its
+    prompt stops this before anything is asked of anyone."""
+    from pasarbench.swap import local_language, policy_unchangeable
+    stuck = [f"{p.pid}: {why}" for p in prefixes for why in [policy_unchangeable(p)] if why]
+    if stuck:
+        raise SystemExit(f"{len(stuck)} prefixes cannot have their policy put in another "
+                         f"language (RUNBOOK 1v):\n  " + "\n  ".join(stuck[:20]))
+    need = {(local_language(p), (p.head.get("policy_mode") or "preload") == "preload-named")
+            for p in prefixes}
+    return sorted(need | {(lang, False) for lang, _ in need})
+
+
+def _policies(prefixes: list, tr, workers: int = 8) -> tuple[dict, dict, list]:
+    """Every policy the prefixes need, translated piece by piece (the pieces
+    asked for side by side, then read from the cache): {(language, named):
+    text} for the system prompts, {language: sections} for search_policy, and
+    [(language, variant, piece, what it lost)] -- a run starts only if that is
+    empty."""
+    from pasarbench.harness.prompts import policy_text
+    from pasarbench.swap import POLICY_BREAK, translate_policy
+    from pasarbench.tools import policy_sections
+    need = _policy_needs(prefixes)
+    pieces = {(c.strip(), lang) for lang, named in need
+              for c in policy_text(named=named).split(POLICY_BREAK) if c.strip()}
+    with ThreadPoolExecutor(max_workers=max(1, workers)) as pool:
+        for f in as_completed([pool.submit(tr.policy, c, lang) for c, lang in pieces]):
+            f.result()
+    texts, bad = {}, []
+    for lang, named in need:
+        text, lost = translate_policy(policy_text(named=named), lang, tr.policy)
+        texts[(lang, named)] = text
+        bad += [(lang, "named" if named else "plain", i, x) for i, x in lost]
+    english = [re.match(r"P\d+", h).group() for h, _ in policy_sections(policy_text())]
+    sections = {}
+    for lang in sorted({lang for lang, _ in need}):
+        sections[lang] = policy_sections(texts[(lang, False)])
+        heads = [h for h, _ in sections[lang]]
+        if len(heads) != len(english) or not all(
+                re.search(rf"\b{n}\b", h) for n, h in zip(english, heads)):
+            bad.append((lang, "plain", -1, ["its sections are not P1 to P11, one each, "
+                                            "each under its own heading"]))
+    return texts, sections, bad
+
+
+def _write_policies(texts: dict, root: Path) -> Path:
+    """Each translation, to read; and P10 in English and every language side
+    by side -- the section the run is about, read before it runs."""
+    from pasarbench.harness.prompts import policy_text
+    from pasarbench.tools import policy_sections
+    out = root / "policy-translated"
+    out.mkdir(parents=True, exist_ok=True)
+    for (lang, named), text in texts.items():
+        (out / f"{lang}.{'named' if named else 'plain'}.md").write_text(text, encoding="utf-8")
+
+    def p10(text: str) -> str:
+        return next((f"## {h}\n\n{b}" for h, b in policy_sections(text)
+                     if h.startswith("P10")), "(no P10 found)")
+    lines = ["# P10 in every language, to read before the run (RUNBOOK 1v)", "",
+             "## English", "", p10(policy_text()), ""]
+    for (lang, named), text in sorted(texts.items()):
+        if not named:
+            lines += [f"## {lang}", "", p10(text), ""]
+    (out / "P10.md").write_text("\n".join(lines), encoding="utf-8")
+    return out
+
+
+def _print_policy_check(texts: dict, bad: list) -> None:
+    print(f"the policy in {len({l for l, _ in texts})} languages "
+          f"({', '.join(sorted({l for l, _ in texts}))}), {len(texts)} texts with the tools "
+          f"named in them or not: every text in backticks, section number, number and "
+          f"heading of each piece kept -- " + ("yes" if not bad else f"NO, {len(bad)} "
+                                               f"pieces lost something:"))
+    for lang, variant, i, lost in bad:
+        where = "its sections" if i < 0 else f"piece {i}"
+        print(f"  {lang} {variant}, {where}: " + ", ".join(lost))
+
+
+def cmd_policy(a, translator_backend=None) -> int:
+    """1v, before any agent runs: the policy translated into every language the
+    prefixes need, each piece checked, written out to be read."""
+    prefixes = load_prefixes(a.prefixes)[:a.limit or None]
+    if not prefixes:
+        raise SystemExit(f"no prefixes in {a.prefixes}")
+    tr = _translator(a, translator_backend)
+    try:
+        texts, _, bad = _policies(prefixes, tr, a.workers)
+    finally:
+        tr.save()
+    _print_policy_check(texts, bad)
+    where = _write_policies(texts, Path(a.out_root) / a.run_id)
+    print(f"written to {where}/ -- read {where / 'P10.md'} before the run" + (
+        "" if not bad else ". The run will not start until every piece keeps them."))
+    return 1 if bad else 0
+
+
 def cmd_run(a, agent_factory=None, translator_backend=None) -> int:
     """Translate every prefix both ways first (one cache, so every arm and
-    every repetition reads the same text), then run the arms."""
+    every repetition reads the same text) -- and with --policy, the policy too,
+    checked -- then run the arms."""
     from pasarbench.harness.backends import OpenAICompatBackend
     from pasarbench.harness.exposure import build_exposure
     from pasarbench.rescore import all_tasks
-    from pasarbench.swap import ARMS, Translator, arm_language, arm_messages, continue_agent
+    from pasarbench.swap import (ARMS, POLICY_ARMS, arm_language, arm_messages, continue_agent,
+                                 local_language, policy_arm_language, policy_arm_messages)
     from pasarbench.sweep import ALL_SOLUTIONS
     from pasarbench.tasks import task_digest
+    from pasarbench.tools import policy_shown_as
 
     prefixes = load_prefixes(a.prefixes)[:a.limit or None]
     if not prefixes:
@@ -215,37 +355,56 @@ def cmd_run(a, agent_factory=None, translator_backend=None) -> int:
             raise SystemExit(f"{p.pid}: its task has changed since the prefixes were made "
                              f"(or is not defined today): make them again")
     model = models.pop()
-    jobs = [(p, arm, k) for p in prefixes for arm in ARMS for k in range(a.k)]
+    policy = bool(getattr(a, "policy", False))
+    arms = POLICY_ARMS if policy else ARMS
+    jobs = [(p, arm, k) for p in prefixes for arm in arms for k in range(a.k)]
     root = Path(a.out_root)
     todo = [j for j in jobs if not _finished(root / a.run_id / j[1] / f"{j[0].pid}__r{j[2]}.jsonl")]
     texts = sum(1 for p in prefixes for m in p.messages if (m.get("content") or "").strip()
                 and m["role"] in ("user", "assistant"))
     chars = {p.pid: sum(len(m.get("content") or "") for m in p.messages) for p in prefixes}
     approx = sum(2 * chars[p.pid] // 4 for p, _, _ in todo)
-    print(f"{len(prefixes)} prefixes x {len(ARMS)} arms x k={a.k}: {len(jobs)} continuations "
+    print(f"{len(prefixes)} prefixes x {len(arms)} arms x k={a.k}: {len(jobs)} continuations "
           f"of {model}, {len(todo)} still to run; {texts} messages to translate both ways "
           f"with {a.translator_model}. Roughly {approx / 1e6:.1f}M prompt tokens for the agent "
           f"(4 characters a token, two steps a continuation, tool schemas not counted)")
+    if policy:
+        need = _policy_needs(prefixes)
+        print(f"  and the policy, in {len({l for l, _ in need})} languages, {len(need)} texts "
+              f"(the tools named in it or not), translated piece by piece and checked before "
+              f"any continuation runs; every prefix's policy can be put in its language")
     if a.dry_run:
         return 0
-    if agent_factory is None or translator_backend is None:
-        agent_key, tr_key = _keys(a)
-    if translator_backend is None:
-        translator_backend = OpenAICompatBackend(
-            model=a.translator_model, base_url=a.translator_url, api_key=tr_key,
-            temperature=0.0, max_tokens=2048, extra_body=_extra(a.translator_extra_body))
-    tr = Translator(translator_backend, Path(a.cache))
+    if agent_factory is None:
+        agent_key, _ = _keys(a)
+    tr = _translator(a, translator_backend)
     try:
         with ThreadPoolExecutor(max_workers=max(1, a.workers)) as pool:
             futs = [pool.submit(arm_messages, p, arm, tr) for p in prefixes
                     for arm in ("swap", "back")]
             for f in as_completed(futs):
                 f.result()
+        if policy:
+            policies, sections, bad = _policies(prefixes, tr, a.workers)
     finally:
         tr.save()
     print(f"translated: {len(tr.cache)} texts in the cache ({a.cache})")
-    shown = write_arms(prefixes, tr, root / a.run_id / "arms.md")
-    print(f"every prefix's words in its three arms, to read before the results: {shown}")
+    if policy:
+        _print_policy_check(policies, bad)
+        where = _write_policies(policies, root / a.run_id)
+        if bad:
+            raise SystemExit(f"the run does not start: a piece of the policy lost something "
+                             f"in translation (read {where}/; RUNBOOK 1v)")
+        print(f"the policy in each language: {where}/ (P10.md: P10 in each, side by side)")
+        # Every arm's messages made once before anything is spent: a prefix
+        # that cannot be one stops the run here, not in a worker.
+        for p in prefixes:
+            named = (p.head.get("policy_mode") or "preload") == "preload-named"
+            for arm in arms:
+                policy_arm_messages(p, arm, tr, policies.get((local_language(p), named)))
+    else:
+        shown = write_arms(prefixes, tr, root / a.run_id / "arms.md")
+        print(f"every prefix's words in its three arms, to read before the results: {shown}")
 
     if agent_factory is None:
         def agent_factory(p):
@@ -265,16 +424,32 @@ def cmd_run(a, agent_factory=None, translator_backend=None) -> int:
     def one(job):
         p, arm, k = job
         task = tasks[p.task_id]
-        msgs = arm_messages(p, arm, tr)
-        extra = {"pid": p.pid, "arm": arm, "language": arm_language(p, arm),
-                 "source_language": p.language, "target": p.target, "source": p.source,
-                 "translator": None if arm == "orig" else tr.model,
-                 "prefix_steps": p.steps, "recorded_escalated": p.escalated}
+        local = local_language(p)
+        named = (p.head.get("policy_mode") or "preload") == "preload-named"
+        if policy:
+            msgs = policy_arm_messages(p, arm, tr, policies.get((local, named)))
+            extra = {"design": "policy", "pid": p.pid, "arm": arm,
+                     "language": policy_arm_language(p, arm), "local_language": local,
+                     "policy_language": local if arm == "policy" else "en",
+                     "source_language": p.language, "target": p.target, "source": p.source,
+                     "translator": tr.model, "prefix_steps": p.steps,
+                     "recorded_escalated": p.escalated}
+            shown = policy_shown_as(sections[local]) if arm == "policy" else nullcontext()
+        else:
+            msgs = arm_messages(p, arm, tr)
+            extra = {"pid": p.pid, "arm": arm, "language": arm_language(p, arm),
+                     "local_language": local,
+                     "source_language": p.language, "target": p.target, "source": p.source,
+                     "translator": None if arm == "orig" else tr.model,
+                     "prefix_steps": p.steps, "recorded_escalated": p.escalated}
+            shown = nullcontext()
         trace = _SwapTrace(root, f"{a.run_id}/{arm}", p.pid, extra)
-        out = continue_agent(p, msgs, task, agent_factory(p), trace=trace, run_index=k,
-                             max_steps=a.max_steps, exposure=exposure(p.head.get("exposure")))
+        with shown:
+            out = continue_agent(p, msgs, task, agent_factory(p), trace=trace, run_index=k,
+                                 max_steps=a.max_steps,
+                                 exposure=exposure(p.head.get("exposure")))
         trace.event("swap_outcome", escalated=out.escalated, category=out.category,
-                    calls=out.calls, reply=out.reply)
+                    calls=out.calls, reply=out.reply, searched_nothing=out.searched_nothing)
         trace.close_episode(out.stop, None, [], out.budget)
         return out
 
@@ -377,7 +552,9 @@ def read_run(run_dir: Path) -> list[dict]:
             continue
         rows.append({**sw, "task_id": head.get("task_id"), "stop": foot.get("stop_reason"),
                      "escalated": bool(out.get("escalated")),
-                     "category": out.get("category"), "model": head.get("requested_model")})
+                     "category": out.get("category"), "calls": out.get("calls") or [],
+                     "searched_nothing": out.get("searched_nothing") or 0,
+                     "model": head.get("requested_model")})
     return rows
 
 
@@ -395,15 +572,43 @@ def _rate(rows: list[dict], key: str = "escalated") -> str:
     return f"{k}/{n} {k / n:4.0%}" if n else "-"
 
 
+# The p below which a test resolves: 0.05, or less where a reading tests
+# several at once (RUNBOOK 1w: 0.05 over three agents). Set by report --alpha.
+ALPHA = 0.05
+
+
 def _line(label: str, g: dict | None, more: str, fewer: str) -> str:
+    """A sign test's line. Its direction is the sign test's own -- more
+    prefixes higher than lower, or fewer -- not the mean difference's, which
+    can point the other way."""
     if g is None:
         return f"  {label}: fewer than 5 prefixes in both -- not testable"
-    v = (more if g["diff"] > 0 else fewer) if g["resolved"] else "INCONCLUSIVE"
+    v = ((more if g["better"] > g["worse"] else fewer) if g["p"] < ALPHA
+         else "INCONCLUSIVE")
     return (f"  {label}: {g['diff']:+.3f}; {g['better']} prefixes higher, {g['worse']} lower, "
             f"sign test p={g['p']:.3f}  ->  {v}")
 
 
+def _room(rate: float) -> str:
+    """RUNBOOK 1w: an agent whose translated arms escalate in 10% of their
+    runs or fewer, or 90% or more, decides alike in every language."""
+    out = rate <= 0.1 or rate >= 0.9
+    return (f"  ROOM: the translated arms escalated in {rate:.1%} of their runs"
+            + (" -- outside 10%-90%: an INCONCLUSIVE above is NO ROOM, not a null "
+               "(RUNBOOK 1w)" if out else ""))
+
+
 def cmd_report(a) -> int:
+    """The reading, its tests resolving below --alpha (and only for it)."""
+    global ALPHA
+    before, ALPHA = ALPHA, getattr(a, "alpha", 0.05) or 0.05
+    try:
+        return _report(a)
+    finally:
+        ALPHA = before
+
+
+def _report(a) -> int:
     from pasarbench.swap import ENGLISH
     rows = read_run(Path(a.run_dir))
     if not rows:
@@ -417,7 +622,10 @@ def cmd_report(a) -> int:
     pids = {r["pid"] for r in rows}
     print(f"{len(rows)} continuations of {', '.join(sorted({str(r['model']) for r in rows}))} "
           f"from {len(pids)} prefixes" + (f" ({len(broken)} ended by a server or API error, "
-                                          f"left out: run again)" if broken else ""))
+                                          f"left out: run again)" if broken else "")
+          + (f"; a test resolves at p < {ALPHA}" if ALPHA != 0.05 else ""))
+    if any(r.get("design") == "policy" for r in rows):
+        return _report_policy(rows)
     print("\nescalated before its next reply to the customer, by arm and source:")
     print(f"  {'':30s} {'orig':>13s} {'swap':>13s} {'back':>13s}")
     for label, keep in (("recorded in English/Singlish", lambda r: r["english_source"]),
@@ -451,6 +659,10 @@ def cmd_report(a) -> int:
                         ("recorded in another language", lambda r: not r["english_source"])):
         mine = [r for r in rows if keep(r)]
         print(_line(label, _paired(mine, loc, eng), "English higher", "English lower"))
+    # An agent that decides alike in every language -- always or never --
+    # leaves the test nothing to see (RUNBOOK 1w).
+    moved = [r for r in rows if r["arm"] != "orig"]
+    print(_room(sum(r["escalated"] for r in moved) / len(moved) if moved else 0.0))
     print("\nTHE TRANSLATOR: as recorded against there and back, the same language, paired")
     print(_line("all prefixes", _paired(rows, lambda r: r["arm"] == "orig",
                                         lambda r: r["arm"] == "back"),
@@ -466,6 +678,63 @@ def cmd_report(a) -> int:
     print("\nwith the category the policy names (duplicate_refund):")
     print(_line("all prefixes", _paired(rows, loc, eng, key="dup"), "English higher",
                 "English lower"))
+    return 0
+
+
+def _report_policy(rows: list[dict]) -> int:
+    """1v's reading (RUNBOOK 1v): 1t's test again, then the policy in the
+    conversation's language against in English, then what is left of the gap."""
+    from pasarbench.swap import POLICY_ARMS
+
+    def arm(name):
+        return lambda r: r["arm"] == name
+    print("\nescalated before its next reply to the customer, by arm and source:")
+    print(f"  {'':30s} " + " ".join(f"{h:>13s}" for h in POLICY_ARMS))
+    sources = (("recorded in English/Singlish", lambda r: r["english_source"]),
+               ("recorded in another language", lambda r: not r["english_source"]),
+               ("all", lambda r: True))
+    for label, keep in sources:
+        mine = [r for r in rows if keep(r)]
+        print(f"  {label:30s} " + " ".join(f"{_rate([r for r in mine if r['arm'] == x]):>13s}"
+                                           for x in POLICY_ARMS))
+    print("  local: the conversation in the language other than English, the policy in English; "
+          "policy: the same, the policy in that language; english: the conversation in English")
+    print("\nTHE REPLICATION: 1t's test on another day -- the conversation in English against "
+          "in the other language, the policy in English in both, paired by prefix")
+    print(_line("all prefixes", _paired(rows, arm("local"), arm("english")),
+                "LANGUAGE again: English higher", "LANGUAGE: English lower"))
+    for label, keep in sources[:2]:
+        mine = [r for r in rows if keep(r)]
+        print(_line(label, _paired(mine, arm("local"), arm("english")), "English higher",
+                    "English lower"))
+    print("\nTHE TEST: the policy in the conversation's language against in English, the "
+          "conversation the same, paired by prefix")
+    print(_line("all prefixes", _paired(rows, arm("local"), arm("policy")),
+                "POLICY: higher in her language", "POLICY: lower in her language"))
+    for label, keep in sources[:2]:
+        mine = [r for r in rows if keep(r)]
+        print(_line(label, _paired(mine, arm("local"), arm("policy")), "higher", "lower"))
+    print("\nTHE GAP: the conversation and the policy in that language, against both in English")
+    print(_line("all prefixes", _paired(rows, arm("policy"), arm("english")),
+                "English still higher", "English lower"))
+    print("\nby the language other than English: escalated with the conversation in it, under "
+          "the policy in English / in it; and the conversation in English")
+    for lang in sorted({r["local_language"] for r in rows}):
+        mine = [r for r in rows if r["local_language"] == lang]
+        print(f"  {lang:7s} {_rate([r for r in mine if r['arm'] == 'local']):>10s} / "
+              f"{_rate([r for r in mine if r['arm'] == 'policy']):>10s};  "
+              f"{_rate([r for r in mine if r['arm'] == 'english']):>10s} in English  "
+              f"({len({r['pid'] for r in mine})} prefixes)")
+    print("\nsearch_policy, which returns the policy in the language the arm's prompt has it "
+          "in, called in:")
+    for x in POLICY_ARMS:
+        mine = [r for r in rows if r["arm"] == x]
+        print(f"  {x:8s} {sum('search_policy' in r['calls'] for r in mine)} of {len(mine)} "
+              f"continuations; {sum(r.get('searched_nothing', 0) for r in mine)} searches "
+              f"found nothing")
+    print("\nwith the category the policy names (duplicate_refund):")
+    print(_line("the test", _paired(rows, arm("local"), arm("policy"), key="dup"),
+                "higher", "lower"))
     return 0
 
 
@@ -503,7 +772,24 @@ def main(argv: list[str] | None = None) -> int:
     r.add_argument("--workers", type=int, default=8)
     r.add_argument("--limit", type=int, default=0, help="the first N prefixes only (a smoke)")
     r.add_argument("--dry-run", action="store_true", help="count, call nothing")
+    r.add_argument("--policy", action="store_true",
+                   help="RUNBOOK 1v: the arms local, policy and english -- the policy in the "
+                        "conversation's language against in English")
     r.set_defaults(fn=cmd_run)
+
+    po = sub.add_parser("policy", help="1v, before any agent runs: the policy translated "
+                                       "into every language the prefixes need, and checked")
+    po.add_argument("prefixes")
+    po.add_argument("--run-id", default="V-policy")
+    po.add_argument("--out-root", default=str(ROOT))
+    po.add_argument("--translator-model", default="qwen3.8-flash")
+    po.add_argument("--translator-url",
+                    default="https://dashscope-intl.aliyuncs.com/compatible-mode/v1")
+    po.add_argument("--translator-extra-body", default='{"reasoning_effort":"low"}')
+    po.add_argument("--cache", default=str(CACHE))
+    po.add_argument("--workers", type=int, default=8)
+    po.add_argument("--limit", type=int, default=0)
+    po.set_defaults(fn=cmd_policy)
 
     c = sub.add_parser("check", help="before any spend: is each prefix what the agent saw?")
     c.add_argument("prefixes")
@@ -511,6 +797,9 @@ def main(argv: list[str] | None = None) -> int:
 
     rp = sub.add_parser("report", help="the reading")
     rp.add_argument("run_dir")
+    rp.add_argument("--alpha", type=float, default=0.05,
+                    help="the p below which a test resolves: 0.0167 for each of 1w's three "
+                         "agents (0.05 over three)")
     rp.set_defaults(fn=cmd_report)
     a = ap.parse_args(argv)
     return a.fn(a)
