@@ -77,7 +77,7 @@ Unpaired rates over whatever tasks each language drew in this run: a gap here mi
 ## 2. Tool scaling
 
 *Source: `traces/I-tools2` — 480 episodes, pinned with `--tools-run`.*  
-*Also qualifying: `I-tools` (480), `J-preload` (96), `J-preload-named` (96), `K-preload` (171), `K-preload-named` (171), `L-claims` (96), `L-off` (96), `L2-claims` (96), `L2-off` (96), `M-check` (171), `M-off` (171), `N-check` (474), `N-off` (474), `O-c1` (252), `O-c2` (252), `Q-check` (186), `Q-off` (186), `R-check` (186), `R-record` (186), `S-check` (186), `S-guard` (186), `T-guard` (474), `U-guard` (474).*
+*Also qualifying: `I-tools` (480), `J-preload` (96), `J-preload-named` (96), `K-preload` (171), `K-preload-named` (171), `L-claims` (96), `L-off` (96), `L2-claims` (96), `L2-off` (96), `M-check` (171), `M-off` (171), `N-check` (474), `N-off` (474), `O-c1` (252), `O-c2` (252), `Q-check` (186), `Q-off` (186), `R-check` (186), `R-record` (186), `S-check` (186), `S-guard` (186), `T-guard` (474), `U-guard` (474), `U-room` (474).*
 
 
 | exposure | tools | schema tokens | total tokens | pass^1 | budget stops | pass^1, finished only |
@@ -546,7 +546,7 @@ Each episode's recorded tool calls are replayed against the world it ran in, and
 | `S-guard/full+search-300` | 186 | 0.946 → 0.946 | 0.903 → 0.903 | 0 | 0 | 0 |
 | `T-guard/full+search-300` | 474 | 0.970 → 0.970 | 0.930 → 0.930 | 0 | 0 | 0 |
 | `U-guard/full+search-300` | 474 | 0.973 → 0.973 | 0.943 → 0.943 | 0 | 0 | 0 |
-| `U-room/full+search-300` | 16 | 0.938 → 0.938 | 0.833 → 0.833 | 0 | 0 | 0 |
+| `U-room/full+search-300` | 474 | 0.970 → 0.970 | 0.924 → 0.924 | 0 | 0 | 0 |
 | `V-dsk/full` | 108 | 0.944 → 0.944 | 0.889 → 0.889 | 0 | 0 | 0 |
 | `V-dsk-flash/full` | 108 | 0.991 → 0.991 | 0.972 → 0.972 | 0 | 0 | 0 |
 | `V-dsk-flash-parts/full` | 117 | 1.000 → 1.000 | 1.000 → 1.000 | 0 | 0 | 0 |
