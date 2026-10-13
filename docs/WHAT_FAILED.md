@@ -1,6 +1,6 @@
 # What failed
 
-Forty-nine real defects found while building this. The first fifteen are in
+Fifty real defects found while building this. The first fifteen are in
 the order of how much damage they would have done; the rest are in the order
 they were found. Every one is reproducible from the git history.
 
@@ -1951,6 +1951,60 @@ section 8 and every reading that counts the choice use it.
 **Lesson.** A filter written to ignore one kind of failed call ignores them all.
 Name which failed calls a reading may skip, and test it with the one it must
 not.
+
+---
+
+## 50. The claim reader's quote check took the reply's bold for invention
+
+**What happened.** RUNBOOK 1u calibrated a model to read the claims in a reply
+in any language, before it could hold back a live one, and the first thing its
+reading counts is the quotes: each claim comes with the reply's own words, a
+claim whose words are not in the reply is dropped, and over 5% dropped the
+reader "invents" and is not used. It dropped 47 of 308, 15.3%. Read one by one
+— the cache keeps every raw answer — none named a claim its reply does not
+make. 43 were the reply's words without its markdown: "(case ESC0001)" from
+"(case **ESC0001**)", "Refund issued: SGD 59.00 back to your original card"
+from "**Refund issued**: SGD 59.00 back to your original card". The other four
+were Thai written by Qwen3.8-27B, which doubles, drops and misplaces Thai's
+vowel and tone marks: two matched once those marks are folded out, as the leak
+audit has read Thai since the same model's first runs; in the last two the
+reader wrote a garbled word as another word, and those two are quotes not in
+the reply by the reading's own rule.
+
+**Why.** The check compared the quote with the reply character for character,
+after spacing, case and curly quotes. The replies are markdown, which the
+customer sees rendered, and a model quoting one quotes what it says, not its
+asterisks. The tests gave it plain sentences; the calibration was its first
+meeting with real replies.
+
+**What it moved.** Not the decision. The reading fixed before the read was
+applied as written, and the quotes failed it; but the reader was stopped on its
+own by the refund already paid — four alarms, each the refund paid before the
+conversation. Read again under the corrected check, from the cached answers and
+without a call, the quotes pass (the two respelt words, 0.6% — under a check
+written after reading these drops, so that describes them rather than tests
+it) and the refund fails by one more: a fifth refund paid before, in
+Vietnamese, which the old check had dropped. A dropped claim is an alarm the
+reader cannot raise, so the strict check made the reader look like it
+invented, and miss.
+
+**Fix.** v61: quote check 2 (`claim_reader.QUOTE_CHECK`) looks for a quote
+with markdown's emphasis and code marks taken out of both texts and Thai's
+vowel and tone marks folded out, as the leak audit reads Thai — a word that
+differs only in those marks matches, one written with other letters is still
+dropped, and a quote of nothing but what the check takes out is no quote. Every
+reading names its check: a calibration's rows, and a live run's header
+(`claim_reader_quotes`), which `--resume` compares. An answer cached under
+check 1 is parsed again from its raw text, asking nothing; and
+`claim_reader_check.py read` will not write over 1u's reading, which stays its
+record. The report also sets the list's alarms beside the reader's outside
+English, where the list reads English sentences too.
+
+**Lesson.** A check that turns a model's answer into a number meets the data's
+format on the first real run. Test it on replies as the customer sees them —
+markdown, a small model's Thai — before the reading that depends on it is
+fixed; and keep the raw answers, which is what let this be read without asking
+the model again.
 
 ---
 
