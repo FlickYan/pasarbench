@@ -216,20 +216,20 @@ POLICY_LANGUAGES = {
     "zh-SG": "Simplified Chinese (简体中文) as written in Singapore",
 }
 
-# The second wording (v65). The first left a section of Chinese (Malaysia) in
-# Malay, and stressed in some scripts without capitals, and not in others, the
-# words the English writes in capitals (WHAT_FAILED #51); its translations stay
-# in the cache under it, and nothing ran on them.
+# The third wording (v66). The first left a section of Malaysian Chinese in
+# Malay; the second, told to stress in bold, where a script has no capitals, a
+# word the English writes in them, set in bold nearly every prohibition in
+# Chinese and Thai (WHAT_FAILED #51). Each wording's translations stay in the
+# cache under it, and nothing ran on them.
 TRANSLATE_POLICY = (
     "You translate one section of the customer-service policy that an online "
     "marketplace's support agents must follow exactly. Translate it into {language}, in "
     "the register of a written policy, adding nothing and leaving nothing out, and write "
     "every sentence of it in {language}: none in English, none in another language. Keep "
-    "exactly as written: the markdown (headings, bold, list markers), every section number "
-    "such as P10 or P6.3, every text in backticks, and every number, amount, currency and "
-    "date. A word the English stresses by writing it in capitals, such as NOT, stays "
-    "stressed: in capitals if the language has them, in bold if it has none. Reply with "
-    "the translation only.")
+    "exactly as written: the markdown (headings, list markers, and bold: on the words the "
+    "English sets in bold, and on no others), every section number such as P10 or P6.3, "
+    "every text in backticks, and every number, amount, currency and date. Reply with the "
+    "translation only.")
 
 # The policy is translated in the pieces between its lines of ---: its title
 # and preamble, then one section each, P1 to P11.
