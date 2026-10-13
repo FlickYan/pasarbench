@@ -2149,17 +2149,26 @@ def test_language_swap():
     # RUNBOOK 1v: the policy in the conversation's language.
     import re
     from pasarbench.harness.prompts import policy_text
-    from pasarbench.swap import (POLICY_BREAK, Prefix, policy_arm_messages, policy_missing,
-                                 policy_unchangeable, translate_policy)
+    from pasarbench.swap import (POLICY_BREAK, POLICY_LANGUAGES, TRANSLATE_POLICY, Prefix,
+                                 policy_arm_messages, policy_missing, policy_unchangeable,
+                                 translate_policy)
     from pasarbench.tools import policy_sections, policy_shown_as, search_policy
+
+    code_of = {name: code for code, name in POLICY_LANGUAGES.items()}
+    script_word = {"zh-MY": "字", "zh-SG": "字", "th": "คำ", "vi": "từ"}
 
     def as_kata(text, lang):
         """A "translation" that keeps every code, number, section number and
         mark of markdown and changes every word: what a search of it finds is
-        its own."""
+        its own. A word is "kata", or one in the language's own script, every
+        word, as a translation into it would be (WHAT_FAILED #51); the mark at
+        its end names the language the prompt asked for, or "?"."""
+        code = code_of.get(lang, "?")
+        word = script_word.get(code)
+        swap = (lambda x: re.sub(r"\b[A-Za-z]+\b", word, x)) if word else \
+            (lambda x: re.sub(r"\b[A-Za-z]{3,}\b", "kata", x))
         kept = re.split(r"(`[^`]*`)", text)
-        return "".join(x if x.startswith("`") else re.sub(r"\b[A-Za-z]{3,}\b", "kata", x)
-                       for x in kept) + f"\n<!-- in {lang} -->"
+        return "".join(x if x.startswith("`") else swap(x) for x in kept) + f"\n<!-- in {code} -->"
 
     class PolicyTranslator(FakeTranslator):
         """A chat as FakeTranslator translates it; a piece of the policy as
@@ -2179,7 +2188,7 @@ def test_language_swap():
     english = policy_sections(policy_text())
     check("the policy is translated piece by piece -- its preamble, then P1 to P11 -- each "
           "piece checked, the lines of --- kept, and keyed by its prompt apart from the chat's",
-          not lost and ms_policy.count("<!-- in Bahasa Malaysia -->") == 12
+          not lost and ms_policy.count("<!-- in ms -->") == 12
           and ms_policy.count(POLICY_BREAK) == policy_text().count(POLICY_BREAK)
           and [h.split(".")[0] for h, _ in secs] == [h.split(".")[0] for h, _ in english]
           and "kata" in secs[9][1] and "refund" not in secs[9][1]
@@ -2197,6 +2206,41 @@ def test_language_swap():
           == ["5 (x2, 1 in the translation)"]
           and policy_missing(p8, p8.replace("**not**", "not"))
           == ["6 bold(s), 5 in the translation"])
+    p2, p5 = pieces[2], pieces[5]
+    check("…where the English stresses a word in capitals, a script without them may stress "
+          "it in bold: one bold more for each such word the translation does not keep in "
+          "capitals -- a bold added anywhere else, or one dropped, is still named "
+          "(WHAT_FAILED #51)",
+          policy_missing(p2, p2.replace("NOT possible", "**不可**能")) == []
+          and policy_missing(p5, p5.replace("IS the amount", "**คือ** the amount")) == []
+          and policy_missing(p2, p2.replace("Do not attempt it", "**Do not** attempt it"))
+          == ["4 bold(s), 5 in the translation"]
+          and policy_missing(p2, p2.replace("NOT", "**NOT**"))
+          == ["4 bold(s), 5 in the translation"]
+          and policy_missing(p2, p2.replace("NOT", "不").replace("**P2.4**", "P2.4"))
+          == ["4 bold(s), 3 in the translation (1 more allowed, for words in capitals)"])
+    zh_p1 = as_kata(pieces[1], POLICY_LANGUAGES["zh-MY"])
+    ms_p1 = as_kata(pieces[1], POLICY_LANGUAGES["ms"])
+    check("…and, told its language, a piece must be in it: Chinese in Chinese characters, "
+          "Thai in Thai, Vietnamese in its own letters, and in every language not the "
+          "English's words -- Chinese (Malaysia)'s P1 came back in Malay, every code and "
+          "number in place (WHAT_FAILED #51); the prompt names Chinese in its own script, and "
+          "asks for every sentence in the language",
+          policy_missing(pieces[1], zh_p1, "zh-MY") == []
+          and policy_missing(pieces[1], ms_p1, "ms") == []
+          and policy_missing(pieces[1], as_kata(pieces[1], POLICY_LANGUAGES["th"]), "th") == []
+          and policy_missing(pieces[1], as_kata(pieces[1], POLICY_LANGUAGES["vi"]), "vi") == []
+          and policy_missing(pieces[1], ms_p1, "zh-MY")
+          == ["not in its language: 0% of its letters are Chinese characters"]
+          and policy_missing(pieces[1], ms_p1, "vi")
+          == ["not in its language: 0% of its letters are Vietnamese letters"]
+          and all(policy_missing(e, e, lang)[-1].startswith(("not in its language: 0%",
+                                                             "not translated: 100%"))
+                  for e in pieces for lang in POLICY_LANGUAGES)
+          and policy_missing(pieces[1], ms_p1) == []
+          and all("简体中文" in POLICY_LANGUAGES[z] for z in ("zh-MY", "zh-SG"))
+          and "none in another language" in TRANSLATE_POLICY
+          and "in bold if it has none" in TRANSLATE_POLICY)
     loser = PolicyTranslator()
     loser.lose = "`identity_unverified`"
     _, lost = translate_policy(policy_text(), "ms", Translator(loser).policy)
@@ -2249,9 +2293,8 @@ def test_language_swap():
           and arms2["english"][1:] == arm_messages(named, "swap", pt)[1:]
           and arms2["local"][0] == named.messages[0]
           and policy_text(named=True) not in arms2["policy"][0]["content"]
-          and "(kata: `escalate_to_human`)" in arms2["policy"][0]["content"]
-          and "<!-- in Simplified Chinese, as written in Malaysia -->"
-              in arms2["policy"][0]["content"]
+          and "(字: `escalate_to_human`)" in arms2["policy"][0]["content"]
+          and "<!-- in zh-MY -->" in arms2["policy"][0]["content"]
           and arms2["policy"][0]["content"].startswith(named.messages[0]["content"][:300]),
           arms2["policy"][0]["content"][:200])
     searched = Prefix.from_dict({**named.to_dict(), "pid": "searched", "messages":
@@ -2326,9 +2369,15 @@ def test_language_swap():
                               translator_backend=loser)
     p10s = (tmp / "swap" / "VP" / "policy-translated" / "P10.md").read_text(encoding="utf-8")
     check("the policy step alone: every translation written out, and P10 in English and each "
-          "language side by side to read before the run -- and it fails while a piece is lossy",
-          good == 0 and lossy == 1 and "## English" in p10s and "## zh-MY" in p10s
-          and "already been refunded" in p10s and p10s.count("<!-- in ") == 4, p10s[:300])
+          "language side by side to read before the run -- as the plain text has it and, "
+          "where a prompt names the tools, as that text has it -- and it fails while a piece "
+          "is lossy",
+          good == 0 and lossy == 1 and "## English\n" in p10s and "## zh-MY\n" in p10s
+          and "## English, the tools named" in p10s and "## zh-MY, the tools named" in p10s
+          and "## vi, the tools named" in p10s and "## ms, the tools named" not in p10s
+          and "already been refunded" in p10s and p10s.count("(tool: `escalate_to_human`)") == 1
+          and p10s.count("(字: `escalate_to_human`)") == 1
+          and p10s.count("<!-- in ") == 6, p10s[:300])
     with contextlib.redirect_stdout(io.StringIO()):
         ls.cmd_run(run2, agent_factory=lambda p: PolicyReader(),
                    translator_backend=PolicyTranslator())
