@@ -2281,6 +2281,13 @@ higher, in both directions.** The reproduction held, and the test resolved.
 - **The translations.** Every order number, amount, date and digit in the
   recorded turns, 157 of them, is in both translated arms; the Thai and
   Vietnamese turns read in `arms.md` keep their request.
+- **Their language, read after** (v65, from the cache; WHAT_FAILED #51): 6 of
+  the 374 translated messages are not in their arm's language, in 4 of the 96
+  prefixes. Three are Singapore's, asked for Chinese heavily mixed with English:
+  an agent's reply left wholly in English in the Chinese arm, or Singlish
+  translated back into English that stayed in mixed Chinese — each makes the
+  two arms more alike, so it can have narrowed the difference, not made it.
+  One is a Malaysian Chinese reply put into Malay: still not English.
 
 **What the table shows beyond the test** (read, not tested). Moving a
 conversation into English raised its escalations from 16% to 35%; moving one out
@@ -2503,7 +2510,8 @@ and as many headings, list items and bold as the English — so a rule left out
 or a **not** dropped stops it too. Nothing runs until every piece passes.
 `policy` does that alone, before any agent's spend, and writes each translation
 to `data/swap/V-policy/policy-translated/`, with P10 in English and every
-language side by side in `P10.md`.
+language side by side in `P10.md`. (v65 checks each piece's language too, and
+lets a word stressed in capitals be stressed in bold: below.)
 
 ```bash
 set -a; . ./.env; set +a
@@ -2555,6 +2563,42 @@ translated):
   agent but deepseek-v4-pro; whether the translations are good policy: they are
   a model's, checked for what they keep and read, not reviewed by native
   speakers.
+
+**The policy step, run on 2026-10-13** (`data/swap/V-policy/policy-translated/`):
+**stopped, and translated again.** The check named four pieces — Thai's P5 and
+Singapore Chinese's P2, with the tools named and without — each with one bold
+more than the English. None had lost anything: where the English stresses a
+word in capitals — "the stored integer IS the amount", "cancellation is NOT
+possible" — Thai and Chinese, which have no capitals, set it in bold. P10, as
+the text without the tools named has it, said what the English says in all six
+languages: escalate a refund already paid even when she accepts the
+explanation; a duplicate refund is a sign of fraud or a system error and is
+recorded; resolving the conversation does not replace it. But the rest, read
+for its language, held what the check had passed: Malaysian Chinese's P1,
+without the tools named, was in Malay, every code, section number and number in
+place — the text `search_policy` returns, and the prompt of 5 of the 16
+Malaysian Chinese prefixes. Nothing ran on it (WHAT_FAILED #51).
+
+v65, before any continuation: told its language, the check asks each piece to
+be in it — Chinese in Chinese characters and Thai in Thai for at least half of
+its letters, Vietnamese with its own letters, and none with more than half of
+its words the English's — and allows one bold more for each word the English
+writes in capitals that the translation does not keep in capitals. On the
+first translation it names the Malay P1 and nothing else; on English handed
+back unchanged, every piece in every language. The prompt is reworded, as the
+reading says a failed piece is: every sentence in the language asked, Chinese
+named in its own script (简体中文), a word stressed in capitals kept stressed.
+The prompt is part of the cache's key, so the whole policy is translated again,
+some 110 pieces for cents, and P10 is read again before the run — now as both
+texts have it: `P10.md` showed only the one without the tools named, which 31 of
+the 96 prompts carry and every search returns. The first translation stays in
+the cache under its own prompt. The conversations are 1t's, read for their
+language too (1t's results): 4 of the 96 prefixes hold a message not in its
+arm's language, alike in `local` and `policy`.
+
+```bash
+python scripts/language_swap.py policy data/swap/W-prefixes.jsonl --run-id V-policy
+```
 
 ### 1w. Is it DeepSeek-V4-Pro's? The swap on three other agents (API only, no GPU)
 
@@ -2649,6 +2693,12 @@ unchanged since.)
   from the cache), MiMo 5.0 million (89%), GLM 2.6 million (76%) — roughly
   $0.40 together at what 1s cost — and 337 messages more translated by
   qwen3.8-flash.
+- **The translations' language**, read after (v65; WHAT_FAILED #51): 9 of
+  V4.1-Flash's 36 prefixes hold a message not in its arm's language — Malay for
+  Malaysian Chinese in three, English or Chinese out of place in six of
+  Singapore's — 1 of GLM's, none of MiMo's. V4.1-Flash's room, 90.7%, is two
+  runs above the line, and its arms differed by one prefix: its NO ROOM is at
+  the edge of one, and either way it shows no effect.
 
 **What it means.** The language effect is not seen in any other agent, and
 this run could not have seen it: two of the three decide P10's escalation the
