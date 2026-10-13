@@ -394,6 +394,21 @@ recorded runs can't separate is the language from everything else that differs
 between two conversations; that takes a run that changes only the language.
 <!-- RUNBOOK 1r; python scripts/language_lead.py traces, deepseek-v4-pro, the 16 cells that ran the trap on both sides, 778 episodes: en 223/378, sg-en 37/60, id 30/60, vi 22/60, th 21/60, zh-SG 4/50, ms 4/60, zh-MY 1/50; twins 14 of 14 below, mean -38 points, sign test p=0.0001; the 7 runs before the lead (B, C, D, F, G, K-preload, P-ref) 7/7, -21, p=0.016; second edition (Q, R, S) 7/7, -47, p=0.016; 341 of 342 escalations in the turn of the first get_order; customs hold, identity, out-of-window dispute twins level 8, 3, 11 of 14, mean gaps 0, +3, -1; P-base (Qwen3.8-27B) 38/40 vs 26/30, P-ref 25/40 vs 12/30; Q-off DRE2-VN 3/3 escalated, DRE2-VN.vi 0/3; every trap on the recorded verdicts, cells without a closing phase: DRE 12 of 14 below, -34 points, p=0.0005 against 0.05/16=0.0031, next below -5 to -8, livestream +12 p=0.031, identity +14 p=0.227 -->
 
+So I ran it. I held 96 recorded conversations fixed at the moment the agent
+reads the refund — the refund, the tools and the world unchanged — translated
+every turn of hers and every reply of its into the other language, and let it
+decide again, three times each. The same conversation got the escalation more
+often in English: in 47 conversations more often, in 16 less (p = 0.0001), and
+the same way in both directions — moved into English, a conversation's
+escalations went from 16% of runs to 35%; moved out of it, from 50% to 31%.
+Translated there and back, without changing the language, it did not change
+significantly (p = 0.36). By language — read, not tested, 16 conversations each
+— it is Malay, Chinese and Vietnamese; in Thai and Indonesian the agent decided
+as it does in English. The language is a little over half of the gap between
+these recordings. The rest stays with the conversation — her words and the
+agent's own earlier replies — which a run that swaps each alone would separate.
+<!-- RUNBOOK 1t, run on 2026-10-13, data/swap/W-swap, W.txt: 96 prefixes x 3 arms x 3 = 864 continuations of deepseek-v4-pro, translator qwen3.8-flash; reproduction 75/96; swap vs back, English minus the other language: +0.191, 47 vs 16, p=0.0001; recorded in English +0.194, 25 vs 10, p=0.017; recorded in another language +0.188, 22 vs 6, p=0.004; orig vs back +0.024, 25 vs 18, p=0.36; escalated, orig/swap/back: recorded in English 45/31/50%, recorded in another language 16/35/16%; English vs it: id 40/42%, ms 40/6%, th 25/21%, vi 65/46%, zh-MY 33/10%, zh-SG 52/15% -->
+
 ### Result 4: my fine-tune learned my verifier
 
 Then I trained on it. Qwen3.8-27B with LoRA, rejection-sampling fine-tuning:
@@ -535,7 +550,7 @@ doing it twice.
 
 ### What failed
 
-`docs/WHAT_FAILED.md` has 49 entries. Most were found by running experiments
+`docs/WHAT_FAILED.md` has 50 entries. Most were found by running experiments
 and refusing a number that couldn't be right. Four more:
 
 **The ceiling was below the floor.** The oracle arm — by design the best case —
@@ -601,7 +616,7 @@ iteration, judged on tasks whose room was partly the customer's choice. Serving
 cost is built but not measured.
 <!-- RESULTS.md §3 paired table (pairs 13–16); audit_tool_arms.py §3 header; traces/J-preload OOWDE-VN.vi__r2: "Trường hợp của bạn đã được chuyển lên bộ phận xử lý khiếu nại", escalate_to_human never searched for, never called; traces/L2-claims OOWOV-VN__r1, DRE-PH__r1, HPRR-PH__r2 (RUNBOOK 1i, v25) -->
 
-The code, the trace generators, and all 49 failures are in the repo.
+The code, the trace generators, and all 50 failures are in the repo.
 
 ---
 
@@ -657,7 +672,9 @@ One line each, a number, and the mechanism. Pick three.
 > English overall, but deepseek-v4-pro made one counter-intuitive escalation in
 > 59% of English conversations and 2–8% of Malay and Chinese ones; all 14
 > local-language tasks fell below their English twin (p = 0.0001), and the
-> decision came the moment it read the refund.
+> decision came the moment it read the refund. Held fixed there and only
+> translated, the same conversation got it more often in English, in both
+> directions (47 conversations against 16, p = 0.0001).
 
 > **Ran GRPO under a reading fixed before it ran, and found its test's room was
 > the simulated customer's**: one iteration on Qwen3.8-27B gained 2.6 points on
@@ -665,11 +682,12 @@ One line each, a number, and the mechanism. Pick three.
 > escalation the policy asks for and the check failed, and read as the policy
 > reads them the gain was zero.
 
-> **Documented 46 defects**, most caught by refusing implausible results —
+> **Documented 50 defects**, most caught by refusing implausible results —
 > including a "ceiling" arm that scored below baseline, a judge evaluated
 > without the evidence it was judging, a fine-tune rewarded for a checker's
 > quirk, a guardrail graded by its own detector, a tool that took what its
-> own schema refused, and a simulated customer whose "yes" ended the episode.
+> own schema refused, a simulated customer whose "yes" ended the episode, and
+> a model's quotes counted as invented for leaving out the reply's bold.
 
 ---
 
@@ -738,8 +756,10 @@ and define "the same call" the way the policy does.
 
 **8. The null that hid a rule.** Two runs, no language beyond noise — and one
 trap where the agent made the escalation in 59% of English conversations and
-2% of Malaysian Chinese ones, every twin pointing the same way. Lands: a null
-over an average is a null for the average; keep a table by trap beside it.
+2% of Malaysian Chinese ones, every twin pointing the same way; held fixed at
+that moment and translated, the same conversation moved with its language.
+Lands: a null over an average is a null for the average; keep a table by trap
+beside it.
 
 ### Questions you will be asked
 
@@ -917,15 +937,27 @@ phase 4, GRPO; WHAT_FAILED #46); on the hard edition, inconclusive again.
 Measured on the tasks it trained on, the one iteration showed no gain there
 either (0.912 → 0.920, p = 0.71): not an update that learned its tasks and
 didn't carry them over, but one too small to move anything, so the next needs
-more signal before another held-out test. Along the way, each built and waiting
-for its run: the run the language finding needs — hold a conversation fixed at
-the moment the agent reads the refund and change only its language (v49, RUNBOOK
-1t: 96 recorded conversations rebuilt exactly, each run as recorded, translated,
-and translated back); room for the closing phase in the token budget (27 of 456
-cut short in the last run; v49, `--closing-room`, RUNBOOK 1q); and a model that
-reads what the customer was told in place of the guardrail's phrase list, with
-the check against the tool log kept mechanical (v50, RUNBOOK 1u: calibrated on
-recorded replies before it holds back a live one). Then serving cost.
+more signal before another held-out test. Along the way, the three that were
+waiting are done — two runs and a calibration. The language: held fixed at the
+moment the agent reads the refund and only translated, the same conversation
+got the escalation more often in English, both ways (RUNBOOK 1t, above). Room
+for the closing phase: given its own, no phase was cut short — the episode's
+budget had cut 27 of 456 — and no rescue turned up that the budget had hidden
+(RUNBOOK 1q). And a model that reads what the
+customer was told in place of the guardrail's phrase list, the check against
+the tool log kept mechanical: calibrated on 626 recorded replies, it held back
+in English every claim the list did and nothing more, but outside English it
+took the refund paid before the conversation for a payment the agent made —
+four times, in four languages — so it is not used, and the list stays (RUNBOOK
+1u). Its calibration found one more broken instrument, its own quote check,
+which counted the reply's bold as invention (WHAT_FAILED #50). The same swap on
+three other agents could not test the language effect: two of them escalate a
+refund already paid in nearly every run, in every language, and the third,
+GLM, decides it differently from one run to the next, so holding the
+conversation fixed did not hold its decision fixed (RUNBOOK 1w; Grok, which
+escalated in none of its conversations, was left out). Next: the same
+conversations under a policy in her language (RUNBOOK 1v). Then serving cost.
+<!-- RUNBOOK 1q, U-room, run on 2026-10-13: closing phases cut 0 of 469 (U-guard 27 of 456); of U-guard's 27, 25 ran, none wrote; rescues 3 (CCRTOM-MY.ms__r1, T14__r1, T14__r2), none a phase U-guard had cut; passed->failed 0, forbidden 0, refusals 4 each the same call again, another amount 1 (CCRTOM-ID.id__r1 IDR 37,000 after 700,000); pass^1 0.970 vs 0.973, 4 better 5 worse p=1.0. RUNBOOK 1u, C.txt: 626 replies, 261 kept, 47 dropped (15.3%) under quote check 1; refund already paid 4 alarms of 167, all the refund paid before, all outside English; English both 132, list only 4 (offers), reader only 0; outside English 25 alarms: 19 English sentences the list holds too, 1 Indonesian claim, 5 false alarms; under quote check 2, 2 dropped (0.6%) and 5 refund alarms -->
 
 ### One thing not to do
 
