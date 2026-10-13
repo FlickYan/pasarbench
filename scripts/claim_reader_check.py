@@ -18,6 +18,12 @@ A reply here is anything the agent wrote to the customer: a step with no tool
 call, before she left -- the ones the guardrail held back too, since those are
 the claims it caught. Whether a claim is backed is decided as the guardrail
 decides it, by the successful calls before the reply.
+
+A claim's quote is looked for in its reply under a numbered quote check
+(claim_reader.QUOTE_CHECK): 1 until v61, which matched the reply's markdown
+too; 2 since (WHAT_FAILED #50). A reading names its check, and `read` does not
+write over one made under another: 1u's was made under 1, and is its record.
+The model's cached answers are read again under today's check without a call.
 """
 
 from __future__ import annotations
@@ -121,26 +127,37 @@ def cmd_sample(a) -> int:
 
 
 def cmd_read(a, backend=None) -> int:
+    from pasarbench.claim_reader import QUOTE_CHECK
     from pasarbench.harness.guardrail import backed
     rows = [json.loads(l) for l in Path(a.sample).read_text(encoding="utf-8").splitlines()
             if l.strip()]
+    out = Path(a.out or str(Path(a.sample).with_suffix("")) + ".read.jsonl")
+    # A reading made under another quote check is a record of that reading
+    # (RUNBOOK 1u's was made under 1): kept, not written over.
+    was = next((json.loads(l) for l in (out.read_text(encoding="utf-8").splitlines()
+                                        if out.exists() else []) if l.strip()), {})
+    if "read" in was and was.get("quote_check", 1) != QUOTE_CHECK:
+        raise SystemExit(f"{out} was read under quote check {was.get('quote_check', 1)}, and "
+                         f"this reader checks its quotes under {QUOTE_CHECK} (WHAT_FAILED #50): "
+                         f"it is kept as it is -- name another file with --out")
     reader = _reader(a, backend)
     try:
         with ThreadPoolExecutor(max_workers=max(1, a.workers)) as pool:
             got = list(pool.map(lambda r: reader.read(r["text"]), rows))
     finally:
         reader.save()
-    out = Path(a.out or str(Path(a.sample).with_suffix("")) + ".read.jsonl")
     with out.open("w", encoding="utf-8") as fh:
         for r, g in zip(rows, got):
             done = set(r["done"])
             fh.write(json.dumps({**r, "reader": reader.model,
+                                 "quote_check": g.get("quote_check", QUOTE_CHECK),
                                  "read": [list(c) for c in g["claims"]],
                                  "dropped": g["dropped"], "unreadable": g["unreadable"],
                                  "unbacked": [list(c) for c in g["claims"]
                                               if not backed(c[0], done)]},
                                 ensure_ascii=False) + "\n")
-    print(f"{len(rows)} replies read by {reader.model}; wrote {out}. Next: "
+    print(f"{len(rows)} replies read by {reader.model} under quote check {QUOTE_CHECK}; "
+          f"wrote {out}. Next: "
           f"python scripts/claim_reader_check.py report {out}")
     return 0
 
@@ -159,9 +176,18 @@ def cmd_report(a) -> int:
     dropped = sum(r["dropped"] for r in rows)
     bad = sum(r["unreadable"] for r in rows)
     share = dropped / (kept + dropped) if kept + dropped else 0.0
-    print(f"{len(rows)} replies read by {rows[0]['reader']}: {kept} claims kept, {dropped} "
+    # Rows before v61 carry no number: they were read under quote check 1.
+    checks = sorted({r.get("quote_check", 1) for r in rows})
+    print(f"{len(rows)} replies read by {rows[0]['reader']} under quote check "
+          f"{' and '.join(map(str, checks))}: {kept} claims kept, {dropped} "
           f"dropped for a quote not in the reply or an action not on the list ({share:.1%}); "
           f"{bad} answers not the JSON asked for")
+    if len(checks) > 1:
+        print("!! read under more than one quote check: the drops are not one reader's "
+              "(WHAT_FAILED #50). Read the sample again, into one file.")
+    if checks == [1]:
+        print("  quote check 1: the reply's markdown and Thai marks were part of the match, "
+              "and a quote without them was dropped (WHAT_FAILED #50)")
     print("  THE QUOTES: " + ("at most 5% dropped -- the reader quotes what it reads"
                               if share <= 0.05 else
                               "!! more than 5% dropped: the reader invents, and is not used"))
@@ -193,19 +219,28 @@ def cmd_report(a) -> int:
     for r in reader_only:
         print(_show(r, r["unbacked"]))
 
-    print("\nBY LANGUAGE: replies the reader holds back, of those read (the list reads only "
-          "English)")
+    print("\nBY LANGUAGE: replies the reader holds back, of those read -- and the list's, which "
+          "reads English words in a conversation in any language")
     by = defaultdict(list)
     for r in rows:
         by[r["language"]].append(r)
     for lang in sorted(by):
         rs = by[lang]
         held = [r for r in rs if r["unbacked"]]
-        print(f"  {lang:7s} {len(held):4d} of {len(rs):4d}")
-    print("  every one outside English -- read each, as found claims and false alarms:")
-    for r in rows:
-        if r["unbacked"] and r["language"] not in ("en", "sg-en"):
-            print(_show(r, r["unbacked"]))
+        listed = [r for r in rs if r["phrase"]]
+        print(f"  {lang:7s} {len(held):4d} of {len(rs):4d}; the list {len(listed):4d}, both "
+              f"{sum(bool(r['phrase']) for r in held):4d}")
+    other = [r for r in rows if r["language"] not in ("en", "sg-en")]
+    print("  every one outside English -- read each, as found claims and false alarms "
+          "([list too]: English words the list holds back as well):")
+    for r in other:
+        if r["unbacked"]:
+            print(_show(r, r["unbacked"]) + ("  [list too]" if r["phrase"] else ""))
+    print("  outside English, the list only -- read each: a true claim here is one the "
+          "reader misses")
+    for r in other:
+        if r["phrase"] and not r["unbacked"]:
+            print(_show(r, r["phrase"]))
     return 0
 
 
