@@ -18,6 +18,7 @@ Volume -- the two can be mixed).
     PASAR_ROUND=2 modal run --detach scripts/modal_pipeline.py --stage customer3   # ~10 min
     PASAR_ROUND=2 modal run --detach scripts/modal_pipeline.py --stage edition3    # ~20 min
     PASAR_ROUND=2 modal run --detach scripts/modal_pipeline.py --stage grpo-measure   # ~25 min
+    modal run --detach scripts/modal_pipeline.py --stage serving   # phase 3, ~1 h (v68)
 
 The GPU is one B200 unless PASAR_GPU says otherwise when you run the command:
 PASAR_GPU=H200 (one card: cheaper per hour, slower, tighter) or PASAR_GPU=H100:2
@@ -71,7 +72,9 @@ RESULTS = ["logs", "data/splits", "data/rft/stats.json", "data/run_settings.env"
            # the customer check (round 2's customer3 stage): customer 2 and 3
            "traces/P2-c?-check",
            # the hard edition (round 2's edition3 stage): base, RFT, GRPO
-           "traces/P2-base-e3", "traces/P2-rft-e3", "traces/P2-grpo-i?-e3"]
+           "traces/P2-base-e3", "traces/P2-rft-e3", "traces/P2-grpo-i?-e3",
+           # serving (phase 3): each bar's snapshots and record, and its conversations
+           "data/serving", "traces/P-serve-*", "traces/P2-serve-*"]
 # One GPU stage at a time: two writing the same traces corrupt both, and bill
 # twice. The lock is a heartbeat, so a stage that dies without cleaning up
 # stops blocking after STALE seconds; Modal's restart of a preempted stage
@@ -166,6 +169,7 @@ def _run(cmd: list[str], cwd: Path) -> None:
 # knobs gpu_pipeline.sh documents (repetitions, epochs, turn length, the
 # simulated customer's rules).
 PASSED_ON = ("AGENT_MODEL", "SIM_MODEL", "SGLANG_ARGS", "PASAR_K", "PASAR_COLLECT_K",
+             "PASAR_SERVE_K", "PASAR_SERVE_SAMPLE",
              "PASAR_EPOCHS", "PASAR_TRAIN_MAX_LEN", "PASAR_CUSTOMER", "PASAR_PER_TRAP",
              "PASAR_ROUND", "PASAR_GRPO_ITERS", "PASAR_GRPO_K", "PASAR_GRPO_LR",
              "PASAR_GRPO_SKIP_TRAPS", "PASAR_GRPO_READING", "PASAR_E3_CUSTOMER",
@@ -285,7 +289,7 @@ def main(stage: str) -> None:
     elif stage == "test":
         test.remote()
     elif stage in ("smoke", "stage1", "stage2", "grpo", "customer3", "edition3",
-                   "grpo-measure"):
+                   "grpo-measure", "serving"):
         if (stage in ("grpo", "customer3", "edition3", "grpo-measure")
                 and os.environ.get("PASAR_ROUND") != "2"):
             raise SystemExit(f"{stage} runs on round 2's models: PASAR_ROUND=2 modal run "
@@ -299,4 +303,5 @@ def main(stage: str) -> None:
         pull()
     else:
         raise SystemExit(f"unknown stage {stage!r}: download | test | smoke | stage1 | "
-                         f"stage2 | grpo | customer3 | edition3 | grpo-measure | pull")
+                         f"stage2 | grpo | customer3 | edition3 | grpo-measure | serving | "
+                         f"pull")
