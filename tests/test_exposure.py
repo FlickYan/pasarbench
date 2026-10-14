@@ -2410,14 +2410,18 @@ def test_language_swap():
           and "vi.named.md" in written and "ms.plain.md" in written and "P10.md" in written,
           str((said, written)))
     check("the report: 1t's test again, then the policy in her language against in English, "
-          "then what is left of the gap -- and search_policy counted in each arm",
+          "then what is left of the gap -- and search_policy counted in each arm, and the "
+          "prompts that name the tools set beside those that do not, read (v67)",
           "18 continuations of m from 6 prefixes" in text
           and "THE REPLICATION" in text and "LANGUAGE again: English higher" in text
           and "all prefixes: +1.000; 6 prefixes higher, 0 lower, sign test p=0.031  ->  "
               "POLICY: higher in her language" in text
           and text.split("THE GAP")[1].split("\n")[1].strip().startswith(
               "all prefixes: +0.000") and "INCONCLUSIVE" in text.split("THE GAP")[1]
-          and "policy   6 of 6 continuations; 0 searches found nothing" in text, text)
+          and "policy   6 of 6 continuations; 0 searches found nothing" in text
+          and "tools named (2 prefixes): 0/2   0% / 2/2 100% / 2/2 100%" in text
+          and "tools not named (4 prefixes): 0/4   0% / 4/4 100% / 4/4 100%" in text
+          and text.index("by the policy's text") > text.index("THE GAP"), text)
 
     def srow(pid, arm, esc, first_english):
         return {"pid": pid, "arm": arm, "escalated": esc, "dup": esc, "design": "policy",
@@ -2441,7 +2445,14 @@ def test_language_swap():
               "p=0.031  ->  higher" in test
           and "all prefixes: +0.500; 6 prefixes higher, 0 lower, sign test p=0.031  ->  "
               "English still higher" in gap
-          and text.split("THE REPLICATION")[1].count("English higher") == 3, text)
+          and text.split("THE REPLICATION")[1].split("THE TEST")[0].count("English higher") == 3,
+          text)
+    check("…and the gap by direction, read, not tested: an average of two directions is not "
+          "either's (v67)",
+          "recorded in English/Singlish (read): +1.000; 6 prefixes higher, 0 lower, sign test "
+          "p=0.031  ->  English still higher" in gap
+          and "recorded in another language (read): +0.000; 0 prefixes higher, 0 lower, sign "
+              "test p=1.000  ->  INCONCLUSIVE" in gap, gap)
     keys = {k: os.environ.pop(k) for k in list(os.environ)
             if k.endswith("_API_KEY") or k.startswith("PASARBENCH_")}
     try:
