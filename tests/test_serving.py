@@ -323,6 +323,220 @@ def test_three_bar():
     print(f"       jit vs preload-nocache: {v['headline']}")
 
 
+def _prom(prompt: int, cached: int, gen: int, ttft: tuple[int, int, int]) -> str:
+    """An SGLang /metrics page: the three counters and a TTFT histogram."""
+    a, b, c = ttft
+    return "\n".join([
+        f'sglang:prompt_tokens_total{{model_name="m"}} {prompt}',
+        f'sglang:cached_tokens_total{{model_name="m",cache_source="device"}} {cached}',
+        f'sglang:generation_tokens_total{{model_name="m"}} {gen}',
+        f'sglang:time_to_first_token_seconds_bucket{{model_name="m",le="0.1"}} {a}',
+        f'sglang:time_to_first_token_seconds_bucket{{model_name="m",le="0.5"}} {b}',
+        f'sglang:time_to_first_token_seconds_bucket{{model_name="m",le="+Inf"}} {c}'])
+
+
+def _episode(cell, i: int, trap: str, passed: bool, escalated: bool, first_cached: int,
+             mode: str, stop: str = "done") -> None:
+    """A trace the sweep would write: two requests, the first of 3000 prompt
+    tokens with `first_cached` of them cached, the second of 4000, 3800 cached."""
+    import json
+    steps = [{"type": "step", "step": 0, "usage": {"prompt": 3000, "completion": 50,
+                                                   "cached": first_cached},
+              "tool_calls": [{"name": "get_order"}], "tool_results": [{"name": "get_order",
+                                                                         "ok": True}]},
+             {"type": "step", "step": 1, "usage": {"prompt": 4000, "completion": 80,
+                                                   "cached": 3800 if first_cached else 0},
+              "tool_calls": [{"name": "escalate_to_human"}] if escalated else [],
+              "tool_results": [{"name": "escalate_to_human", "ok": True}] if escalated else []}]
+    recs = [{"type": "header", "task_id": f"T{i:02d}", "trap": trap, "policy_mode": mode},
+            *steps, {"type": "footer", "passed": passed, "stop_reason": stop}]
+    cell.mkdir(parents=True, exist_ok=True)
+    (cell / f"T{i:02d}__r0.jsonl").write_text("".join(json.dumps(r) + "\n" for r in recs))
+
+
+def test_serving_bars():
+    print("\n=== the serving stage's bars (scripts/serving_bars.py; RUNBOOK phase 3) ===")
+    import contextlib
+    import importlib
+    import io
+    import json
+    import os
+    import sys
+    import tempfile
+    from argparse import Namespace
+    from pathlib import Path
+    root = Path(__file__).resolve().parent.parent
+    sys.path.insert(0, str(root / "scripts"))
+    sb = importlib.import_module("serving_bars")
+    work = Path(tempfile.mkdtemp())
+    here = os.getcwd()
+    os.chdir(work)
+    try:
+        traps = ["trap_a", "trap_b"]
+        # preload-radix: 18 of 20 pass, 4 escalate; jit-radix: 14 of 20, its
+        # first requests found little; preload-noradix: 18 of 20, nothing cached.
+        plan = {"preload-radix": (18, 2900, (500_000, 450_000, 9_000), (300, 380, 400)),
+                "jit-radix": (14, 400, (300_000, 240_000, 10_000), (320, 390, 400)),
+                "preload-noradix": (18, 0, (500_000, 0, 9_000), (100, 300, 400))}
+        for bar, (npass, first_cached, (pr, ca, ge), ttft) in plan.items():
+            f = sb.files("P", bar)
+            mode = sb.BARS[bar][0]
+            for i in range(20):
+                _episode(f["cell"], i, traps[i % 2], i < npass, i < 4, first_cached, mode)
+            sb.OUT.mkdir(parents=True, exist_ok=True)
+            f["before"].write_text(_prom(1000, 500, 100, (5, 5, 5)))
+            f["after"].write_text(_prom(1000 + pr, 500 + ca, 100 + ge,
+                                        (5 + ttft[0], 5 + ttft[1], 5 + ttft[2])))
+            f["bar"].write_text(json.dumps({
+                "bar": bar, "policy_mode": mode, "agent_args": sb.BARS[bar][1],
+                "radix": not sb.BARS[bar][1], "k": 1, "sample": 0, "workers": 24,
+                "warmup": 3, "conversations": 20, "expected": 20, "server_errors": 0,
+                "sweep_exit": 0, "wall_seconds": 600.0, "started": "x",
+                "agent_model": "Qwen/Qwen3.8-27B", "sim_model": "gemma", "customer": 2,
+                "gpu": "NVIDIA B200", "complete": True}))
+        md = sb.report("P", 6.88, 2.5)
+        server = md.split("## What the server did")[1].split("## What the agent did")[0]
+        agent = md.split("## What the agent did")[1]
+        check("the report reads each bar's counters over the bar alone: the hit rate is the "
+              "diff of cached over the diff of prompt tokens, from the server's own count",
+              "| `preload-radix` | preload | on | 10.0 | 40 | 7,000 | 90.0% |" in server
+              and "| `preload-noradix` | preload | off |" in server
+              and "| 0.0% |" in server.split("preload-noradix")[1].split("\n")[0], server)
+        # first requests: 20 x 2900 of 20 x (2900 + 3800) cached tokens
+        check("…and splits the cached tokens: those a conversation's first request found -- "
+              "shared between conversations, which this suite's six customers flatter -- "
+              "from those of its later requests",
+              f"{2900 / (2900 + 3800):.1%}" in server.split("preload-radix")[1].split("\n")[0]
+              and f"| {3800 / 7000:.1%} |" in server.split("preload-radix")[1].split("\n")[0]
+              and "six customers" in server and "own history" in server, server)
+        check("…its TTFT from the histogram's diff, and output tokens a second over the "
+              "bar's wall time", "| 15 |" in server.split("preload-radix")[1].split("\n")[0]
+              and "bucket-limited" in server, server)
+        check("what the agent did: pass^1, escalations, searches, and each bar against "
+              "preload-radix task by task",
+              "| `preload-radix` | 0.900 (18/20) | 4 | 0 | - |" in agent
+              and "| `jit-radix` | 0.700 (14/20) | 4 | 0 | 0 / 4, p = 0.125 (-0.200) |" in agent,
+              agent[:600])
+        check("…then the three bars with their verdicts, by trap, the cost per resolved "
+              "conversation, and what the measurement cannot say",
+              "### Verdicts" in md and "## By trap" in md
+              and "Cost per resolved conversation" in md and "## What this cannot say" in md
+              and "upper bound on the agent's" in md, md[-900:])
+        f = sb.files("P", "preload-noradix")
+        meta = json.loads(f["bar"].read_text())
+        f["bar"].write_text(json.dumps({**meta, "complete": False, "conversations": 12}))
+        md2 = sb.report("P", 6.88, 2.5)
+        check("a bar not measured whole is left out and named, not read",
+              "`preload-noradix`: not a measurement: 12 of 20" in md2
+              and "| `preload-noradix` |" not in md2, md2[:700])
+        check("`done` says a bar is measured only whole, at the k and sample asked",
+              sb.measured("P", "preload-radix", 1) and not sb.measured("P", "preload-radix", 2)
+              and not sb.measured("P", "preload-noradix", 1)
+              and not sb.measured("P", "jit-radix", 1, sample=1))
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            sb.cmd_plan(Namespace())
+        check("the plan the stage reads: the bars in order, the no-cache bar last, each "
+              "with the agent's own flags",
+              out.getvalue().splitlines() == ["preload-radix\t", "jit-radix\t",
+                                               "preload-noradix\t--disable-radix-cache"],
+              out.getvalue())
+
+        # run, with the server, the sweep and the GPU stood in for.
+        from pasarbench.sweep import SUITES
+        warm = sb.warmup_tasks()
+        users = {t.user_id for t in SUITES["all"]}
+        e2 = {t.task_id: t for t in SUITES["edition2"]}
+        check("the warm-up is three conversations from outside the suite, in three markets, "
+              "with customers none of the suite's conversations has",
+              len(warm) == 3 and all(w in e2 and e2[w].user_id not in users for w in warm)
+              and len({e2[w].market for w in warm}) == 3, str(warm))
+        pages = iter([_prom(10, 5, 1, (1, 1, 1)), _prom(9010, 8005, 501, (1, 41, 41))])
+        sweeps = []
+
+        def fake_sweep(a, rid, suite, k, workers, extra, errors=0):
+            sweeps.append((rid, suite, k, workers, extra))
+            cell = Path("traces") / rid / "full"
+            for i in range(2):
+                _episode(cell, i, "trap_a", True, False, 100, extra[1],
+                         "backend_error" if i < errors else "done")
+            return 0
+        saved = (sb._sweep, sb._get, sb.server_radix, sb.expected, sb._gpu)
+        sb._get = lambda path, url=sb.AGENT_URL, timeout=30: next(pages)
+        sb._sweep = fake_sweep
+        sb.server_radix = lambda url=sb.AGENT_URL: True
+        sb.expected = lambda sample, k: 2 * k
+        sb._gpu = lambda: "TEST GPU"
+        args = Namespace(bar="jit-radix", prefix="P2", k=1, sample=0, workers=24, customer=2,
+                         model="m", base_url="u", sim_model="s", sim_url="v", extra_body="{}",
+                         agent_url=sb.AGENT_URL, dry_run=False)
+        try:
+            stale = sb.files("P2", "jit-radix")["cell"] / "stale__r0.jsonl"
+            stale.parent.mkdir(parents=True)
+            stale.write_text("{}\n")
+            with contextlib.redirect_stdout(io.StringIO()):
+                rc = sb.cmd_run(args)
+            jf = sb.files("P2", "jit-radix")
+            meta = json.loads(jf["bar"].read_text())
+            check("a bar runs whole: what an earlier attempt left is cleared, three warm-up "
+                  "conversations run and are thrown away, the counters are read before and "
+                  "after, and the bar records its wall time and machine",
+                  rc == 0 and not stale.exists() and sweeps[0][0] == "P2-serve-warm-jit-radix"
+                  and sweeps[0][1] == "edition2" and sweeps[0][3] == 3
+                  and "--tasks" in sweeps[0][4] and sweeps[1][:4] == ("P2-serve-jit-radix",
+                                                                        "all", 1, 24)
+                  and sweeps[1][4] == ["--policy-mode", "jit"]
+                  and not (Path("traces") / "P2-serve-warm-jit-radix").exists()
+                  and jf["before"].exists() and jf["after"].exists()
+                  and meta["complete"] and meta["gpu"] == "TEST GPU"
+                  and meta["agent_args"] == "" and sb.measured("P2", "jit-radix", 1),
+                  str((sweeps, meta)))
+            sb.server_radix = lambda url=sb.AGENT_URL: True
+            try:
+                sb.cmd_run(Namespace(**{**vars(args), "bar": "preload-noradix"}))
+                refused = ""
+            except SystemExit as e:
+                refused = str(e)
+            check("a bar refuses a server whose radix cache is not the bar's, as the server "
+                  "itself reports it", "needs it off" in refused, refused)
+            sb.server_radix = lambda url=sb.AGENT_URL: None
+            os.environ.pop("AGENT_ARGS", None)
+            try:
+                sb.cmd_run(Namespace(**{**vars(args), "bar": "preload-noradix"}))
+                refused = ""
+            except SystemExit as e:
+                refused = str(e)
+            check("…and, where the server will not say, one started without the bar's flags",
+                  "will not say" in refused and "--disable-radix-cache" in refused, refused)
+            sb.server_radix = lambda url=sb.AGENT_URL: True
+            pages = iter([_prom(10, 5, 1, (1, 1, 1)), _prom(20, 10, 2, (1, 2, 2))])
+            sb._get = lambda path, url=sb.AGENT_URL, timeout=30: next(pages)
+            sb._sweep = lambda *a, **k: fake_sweep(*a, errors=1, **k)
+            try:
+                with contextlib.redirect_stdout(io.StringIO()):
+                    sb.cmd_run(Namespace(**{**vars(args), "bar": "preload-radix"}))
+                refused = ""
+            except SystemExit as e:
+                refused = str(e)
+            check("a conversation a server error ended makes the bar no measurement: it is "
+                  "recorded as such, and the stage runs it again from the start",
+                  "not a measurement" in refused and "1 ended by a server error" in refused
+                  and not json.loads(sb.files("P2", "preload-radix")["bar"].read_text())
+                  ["complete"] and not sb.measured("P2", "preload-radix", 1), refused)
+        finally:
+            sb._sweep, sb._get, sb.server_radix, sb.expected, sb._gpu = saved
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            sb.cmd_run(Namespace(**{**vars(args), "dry_run": True}))
+        check("…and its dry run prints the two sweeps the pipeline's baseline would, the "
+              "policy mode the bar's",
+              out.getvalue().count("-m pasarbench.sweep") == 2
+              and "--policy-mode jit" in out.getvalue() and "--suite edition2" in out.getvalue()
+              and "--run-id P2-serve-jit-radix" in out.getvalue(), out.getvalue())
+    finally:
+        os.chdir(here)
+
+
 def main() -> int:
     test_parsing()
     test_counter_diffing()
@@ -333,6 +547,7 @@ def main() -> int:
     test_quality_guard()
     test_per_trap_guard()
     test_three_bar()
+    test_serving_bars()
     print(f"\n{len(PASS)} passed, {len(FAIL)} failed")
     for f in FAIL:
         print(f"  FAILED: {f}")
