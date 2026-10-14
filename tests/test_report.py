@@ -441,6 +441,20 @@ def test_planted_mistakes_section():
     gone = mr.section_planted(tmp / "report.json")
     check("before the calibration has run, the section says so and how to run it",
           "**NOT MEASURED**" in gone and "judge_calibration.py run" in gone, gone)
+    (tmp / "set.jsonl").write_text("{}\n")
+    built = mr.section_planted(tmp / "report.json")
+    check("…with the set built, only the judging and the report: the set is not "
+          "sampled again",
+          "**NOT MEASURED**" in built and "judge_calibration.py run" in built
+          and "judge_calibration.py report" in built
+          and "judge_calibration.py build" not in built, built)
+    (tmp / "judged.jsonl").write_text("{}\n")
+    judged = mr.section_planted(tmp / "report.json")
+    check("…and with it judged, only the report: no API call spent again",
+          "**NOT MEASURED**" in judged and "no API call" in judged
+          and "judge_calibration.py report" in judged
+          and "judge_calibration.py run" not in judged
+          and "judge_calibration.py build" not in judged, judged)
     crit = lambda **k: {"critical": False, "planted": 20, "clean_pairs": 20, "caught": 0,
                         "false_alarms": 0, "other_languages": 50,
                         "false_alarms_other_languages": 0, "naive_pairs": 20,
