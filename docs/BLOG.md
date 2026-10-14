@@ -355,11 +355,20 @@ agent now escalated more often than in English, and in Malay and Malaysian
 Chinese it barely moved. Reading it again afterwards, the prompts that didn't
 name the tool were mostly from runs that showed the agent every tool, where her
 policy didn't help; the rest hid the tools behind search, where without the
-name nothing got escalated in any language. Whether the name is what makes a
-translated rule work when every tool is in sight is the next run. And
-Malaysia's floor may not be its languages at all: in the runs that showed every
-tool, the same English words got the escalation for 8 of 8 Indonesian orders and
-none of 8 Malaysian ones.
+name nothing got escalated in any language. So I crossed the two, on 88
+conversations whose runs showed every tool, with the reading written down first:
+with every tool in sight, the policy in her language didn't raise the
+escalation, with the tool named or without. What did was the name itself.
+Writing the tool's name into the rule raised the escalation in every arm, in
+English from 45% to 64%, even though the agent could already see the tool. The
+same run caught a mistake of mine: the two versions of the translated policy
+were meant to differ only in those names, but I'd had each translated
+separately, and the translations differed in more than that. In Vietnamese, one
+kept "escalate" in English. And in Malaysia, with the name, a dozen
+conversations escalated almost every time in English and about half the time in
+Malay; a dozen others, 39% of the time in English and 17% in Malaysian Chinese.
+Whether that's Malaysia's languages or something about its orders is the next
+run: each market's conversations in its neighbours' languages.
 
 ## Result 4: my fine-tune learned my verifier
 
@@ -534,7 +543,7 @@ doing it twice.
 - **Read a translation for its language before its meaning.** My check of a
   translated policy counted every code, number and heading of a section that
   had come back in Malay instead of Chinese, and passed it.
-- **Write down what failed.** The project's failure log has 52 entries; most
+- **Write down what failed.** The project's failure log has 53 entries; most
   were found by refusing a number that couldn't be right.
 
 ## Limits
@@ -557,5 +566,5 @@ run twice, and the second's photo-trap numbers are the simulated customer's: tol
 she had no photos, she sent them anyway once she could not leave. GRPO ran one
 iteration, judged on tasks whose room was partly that customer's choice.
 
-The code, the trace generators, and all 52 failures are in the repo:
+The code, the trace generators, and all 53 failures are in the repo:
 [github.com/FlickYan/pasarbench](https://github.com/FlickYan/pasarbench).

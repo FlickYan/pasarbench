@@ -424,12 +424,24 @@ own policy, while in Indonesian and Thai the agent now escalates more often
 than in English. Read afterwards, the prompts that did not name the tool were
 mostly from runs that showed the agent every tool, where her policy did not
 help; the rest hid the tools behind search, where without the name nothing was
-escalated in any language. Whether the name is what makes a translated rule work
-with every tool in sight is the next run, its reading already fixed. And
-Malaysia's floor may not be its languages at all: in the runs that showed every
-tool, the same English words got the escalation for 8 of 8 Indonesian orders and
-0 of 8 Malaysian ones.
-<!-- RUNBOOK 1v, run on 2026-10-14, data/swap/V-policy, V.txt: 96 prefixes x 3 arms x 3 = 864 continuations of deepseek-v4-pro; escalated local/policy/english 62/127/130 of 288 (22/44/45%); replication english vs local +0.236, 48 vs 10, both directions (+0.347 28/2; +0.125 20/8 p=0.036); test policy vs local +0.226, 47 vs 14, p<0.0001 (+0.174 23/9 p=0.020; +0.278 24/5 p=0.0005); gap english vs policy +0.010, 28 vs 33, p=0.61; by direction +0.174 20/11 p=0.15 and -0.153 8/22 p=0.016; tools named (65): 19/56/51%, test +0.364 41/6; not named (31): 26/19/32%, test -0.065 6/8; by language local/policy/english: id 44/85/48, ms 4/17/35, th 19/44/29, vi 42/52/65, zh-MY 4/10/42, zh-SG 17/56/52; policy translated by qwen3.8-flash, third wording (v66); 7.7M prompt tokens, 90% cached, ~$1.10 off-peak. Read after (v70, RUNBOOK 1v): not named = 21 every tool shown (P2-ref, V-dsk-parts) 37/27/46% + 10 behind search (K-preload, J-preload, L2-off) 1/30 in each arm; recorded escalation in that turn, every tool shown, English: ID 8/8 (IDR 737,000), VN 7/8, TH 1/8, MY 0/8 (MYR 200.00); 1x (RUNBOOK) built, not run -->
+escalated in any language. So I crossed the two on 88 conversations whose runs
+showed every tool, each in 1v's three arms with the tools named and without,
+under a rule written before the run: the policy in her language raised the
+escalation neither with the name nor without (the test +0.08, p = 0.24). What
+the run found instead was the name itself. With the tool already in the list,
+writing its name into the rule beside the action raised the escalation in every
+arm — in English from 45% to 64% (37 conversations up, 12 down) — so the fix
+1g found for a tool the agent could not find also works on one it can see. It
+also found my own mistake: the reading said the policy's two versions differ in
+the marks alone, but in her language the run had translated each on its own,
+and the two translations differ in more than the marks — in Vietnamese, one
+kept "escalate" in English (WHAT_FAILED #53). And Malaysia: with the name, 12
+Malaysian conversations escalated in English in 35 of 36 runs and in Malay in
+half of them; 12 others in English in 39%, in Malaysian Chinese in 17%. Whether that floor is the languages or Malaysia's orders, whose
+conversations in English escalated far less than Indonesia's without the name,
+is the next run, its reading fixed: each market's conversations in its
+neighbours' languages.
+<!-- RUNBOOK 1v, run on 2026-10-14, data/swap/V-policy, V.txt: 96 prefixes x 3 arms x 3 = 864 continuations of deepseek-v4-pro; escalated local/policy/english 62/127/130 of 288 (22/44/45%); replication english vs local +0.236, 48 vs 10, both directions (+0.347 28/2; +0.125 20/8 p=0.036); test policy vs local +0.226, 47 vs 14, p<0.0001 (+0.174 23/9 p=0.020; +0.278 24/5 p=0.0005); gap english vs policy +0.010, 28 vs 33, p=0.61; by direction +0.174 20/11 p=0.15 and -0.153 8/22 p=0.016; tools named (65): 19/56/51%, test +0.364 41/6; not named (31): 26/19/32%, test -0.065 6/8; by language local/policy/english: id 44/85/48, ms 4/17/35, th 19/44/29, vi 42/52/65, zh-MY 4/10/42, zh-SG 17/56/52; policy translated by qwen3.8-flash, third wording (v66); 7.7M prompt tokens, 90% cached, ~$1.10 off-peak. Read after (v70, RUNBOOK 1v): not named = 21 every tool shown (P2-ref, V-dsk-parts) 37/27/46% + 10 behind search (K-preload, J-preload, L2-off) 1/30 in each arm; recorded escalation in that turn, every tool shown, English: ID 8/8 (IDR 737,000), VN 7/8, TH 1/8, MY 0/8 (MYR 200.00). RUNBOOK 1x, run on 2026-10-14, data/swap/Y-naming, Y.txt: 88 prefixes x 6 arms x 3 = 1,584; local/policy/english, plain 39/43/45%, named 48/60/64%; test +0.080 34/24 p=0.237 INCONCLUSIVE, room 47.4%; policy vs local named +0.121 29/17 p=0.104, plain +0.042 24/21; 1t gap named +0.163 40/17 p=0.003, plain +0.064; naming local +0.087 27/11 p=0.014, english +0.186 37/12 p<0.001, policy +0.167 35/12 p=0.001; Malay group english named 35/36; twins: named minus marks 93-98% like plain, P10 differs in all six (WHAT_FAILED #53); 14.6M prompt tokens 96% cached, 0.43M completion. RUNBOOK 1y built, not run -->
 
 ### Result 4: my fine-tune learned my verifier
 
@@ -572,7 +584,7 @@ doing it twice.
 
 ### What failed
 
-`docs/WHAT_FAILED.md` has 52 entries. Most were found by running experiments
+`docs/WHAT_FAILED.md` has 53 entries. Most were found by running experiments
 and refusing a number that couldn't be right. Four more:
 
 **The ceiling was below the floor.** The oracle arm — by design the best case —
@@ -638,7 +650,7 @@ iteration, judged on tasks whose room was partly the customer's choice. Serving
 cost is built but not measured.
 <!-- RESULTS.md §3 paired table (pairs 13–16); audit_tool_arms.py §3 header; traces/J-preload OOWDE-VN.vi__r2: "Trường hợp của bạn đã được chuyển lên bộ phận xử lý khiếu nại", escalate_to_human never searched for, never called; traces/L2-claims OOWOV-VN__r1, DRE-PH__r1, HPRR-PH__r2 (RUNBOOK 1i, v25) -->
 
-The code, the trace generators, and all 52 failures are in the repo.
+The code, the trace generators, and all 53 failures are in the repo.
 
 ---
 
@@ -706,7 +718,7 @@ One line each, a number, and the mechanism. Pick three.
 > escalation the policy asks for and the check failed, and read as the policy
 > reads them the gain was zero.
 
-> **Documented 52 defects**, most caught by refusing implausible results —
+> **Documented 53 defects**, most caught by refusing implausible results —
 > including a "ceiling" arm that scored below baseline, a judge evaluated
 > without the evidence it was judging, a fine-tune rewarded for a checker's
 > quirk, a guardrail graded by its own detector, a tool that took what its
@@ -982,9 +994,11 @@ conversation fixed did not hold its decision fixed (RUNBOOK 1w; Grok, which
 escalated in none of its conversations, was left out). And under a policy in
 her language the same conversations escalated, on average, as often as in
 English (RUNBOOK 1v, above) — once its translation had passed a check that
-first let a section in Malay through (WHAT_FAILED #51). Next: whether a
-translated rule needs the tool named in it where every tool is shown (RUNBOOK
-1x), and serving cost (RUNBOOK phase 3), each built with its reading fixed.
+first let a section in Malay through (WHAT_FAILED #51); with every tool
+in sight it did not, named or not — the tool's name in the rule did, in every
+arm (RUNBOOK 1x). Next: whether Malaysia's floor is its languages or its orders
+(RUNBOOK 1y), and serving cost (RUNBOOK phase 3), each built with its reading
+fixed.
 <!-- RUNBOOK 1q, U-room, run on 2026-10-13: closing phases cut 0 of 469 (U-guard 27 of 456); of U-guard's 27, 25 ran, none wrote; rescues 3 (CCRTOM-MY.ms__r1, T14__r1, T14__r2), none a phase U-guard had cut; passed->failed 0, forbidden 0, refusals 4 each the same call again, another amount 1 (CCRTOM-ID.id__r1 IDR 37,000 after 700,000); pass^1 0.970 vs 0.973, 4 better 5 worse p=1.0. RUNBOOK 1u, C.txt: 626 replies, 261 kept, 47 dropped (15.3%) under quote check 1; refund already paid 4 alarms of 167, all the refund paid before, all outside English; English both 132, list only 4 (offers), reader only 0; outside English 25 alarms: 19 English sentences the list holds too, 1 Indonesian claim, 5 false alarms; under quote check 2, 2 dropped (0.6%) and 5 refund alarms -->
 
 ### One thing not to do
