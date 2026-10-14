@@ -66,7 +66,8 @@ VENV = Path(os.environ.get("PASAR_NB_VENV") or
 REPO = "pasarbench"
 LOCK = "logs/.stage-lock.json"
 STALE = 15 * 60
-STAGES = ("smoke", "stage1", "stage2", "grpo", "customer3", "edition3", "grpo-measure")
+STAGES = ("smoke", "stage1", "stage2", "grpo", "customer3", "edition3", "grpo-measure",
+          "serving")
 # What pack() archives: what the report and the audits read (as modal_pipeline.pull).
 RESULTS = ["logs", "data/splits", "data/rft/stats.json", "data/run_settings.env",
            "traces/P-smoke", "traces/P-base", "traces/P-rft", "traces/P-ref",
@@ -79,7 +80,9 @@ RESULTS = ["logs", "data/splits", "data/rft/stats.json", "data/run_settings.env"
            # the customer check (round 2's customer3 stage): customer 2 and 3
            "traces/P2-c?-check",
            # the hard edition (round 2's edition3 stage): base, RFT, GRPO
-           "traces/P2-base-e3", "traces/P2-rft-e3", "traces/P2-grpo-i?-e3"]
+           "traces/P2-base-e3", "traces/P2-rft-e3", "traces/P2-grpo-i?-e3",
+           # serving (phase 3): each bar's snapshots and record, and its conversations
+           "data/serving", "traces/P-serve-*", "traces/P2-serve-*"]
 WEB_DOWNLOAD_LIMIT = 16 * 2**20    # the Modal web UI downloads files up to 16 MB
 # What the packs so far hold: each file's size and modification time, so that a
 # pack holds only what is new or changed since the last (pack()).
