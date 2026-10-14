@@ -341,6 +341,19 @@ every time in every language, leaving nothing to move, and a third decides it
 differently from one run to the next, so holding the conversation fixed didn't
 hold its decision fixed.
 
+Then the obvious question: in every one of those conversations, the agent read
+its policy in English. So I translated the policy too, and ran the same 96
+conversations, held in her language, under it. The translation took three tries
+— the first came back with one section in Malay instead of Chinese, every code
+and number in place, and my check passed it — but once it ran, P10's escalation
+went from 22% of runs to 44%, more often in 47 conversations and less in 14
+(p < 0.0001). With conversation and policy both in English it was 45%. On
+average, the gap was the policy being in a different language from the
+conversation. Not everywhere: it closed only where the prompt named the tool
+the rule calls, which is where the gap had been; in Indonesian and Thai the
+agent now escalated more often than in English, and in Malay and Malaysian
+Chinese it barely moved.
+
 ## Result 4: my fine-tune learned my verifier
 
 Then I trained on it. Qwen3.8-27B with LoRA, rejection-sampling fine-tuning:
@@ -511,6 +524,9 @@ doing it twice.
   customer takes.** Offered a voucher or a human, mine often took the human, and
   the check wanted the voucher: a "gain" from reinforcement learning was her
   choosing differently.
+- **Read a translation for its language before its meaning.** My check of a
+  translated policy counted every code, number and heading of a section that
+  had come back in Malay instead of Chinese, and passed it.
 - **Write down what failed.** The project's failure log has 51 entries; most
   were found by refusing a number that couldn't be right.
 
@@ -527,8 +543,9 @@ one failure it couldn't read told the customer, in Vietnamese, that the case
 had gone to the complaints team. It hadn't. The guardrail shares that blind
 spot, and its live test is one run of 192 conversations; the model that was to
 read every language in the list's place failed its calibration. The language
-effect is one agent's. The Thai and
-Vietnamese translations are not native-reviewed. The fine-tune is one recipe
+effect, and the translated policy that closed it on average, are one agent's;
+the translations, of the conversations and of the policy, are a model's,
+checked and read but not reviewed by native speakers. The fine-tune is one recipe
 run twice, and the second's photo-trap numbers are the simulated customer's: told
 she had no photos, she sent them anyway once she could not leave. GRPO ran one
 iteration, judged on tasks whose room was partly that customer's choice.
