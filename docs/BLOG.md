@@ -367,8 +367,14 @@ separately, and the translations differed in more than that. In Vietnamese, one
 kept "escalate" in English. And in Malaysia, with the name, a dozen
 conversations escalated almost every time in English and about half the time in
 Malay; a dozen others, 39% of the time in English and 17% in Malaysian Chinese.
-Whether that's Malaysia's languages or something about its orders is the next
-run: each market's conversations in its neighbours' languages.
+Was that Malaysia's languages, or something about its orders? I put each
+market's conversations into its neighbours' languages and asked again. It's the
+languages. Malaysia's orders in Indonesian got the escalation as often as
+Indonesia's do, and Indonesia's orders in Malay lost it as Malaysia's do: Malay
+22–27%, Indonesian 57–60%, two languages that share most of their words. The
+same conversation, almost the same words: in Malay, "your refund was paid to
+your card on 9 November"; in Indonesian, "I've passed your case to the team".
+Chinese stays low in both its varieties.
 
 ## Result 4: my fine-tune learned my verifier
 

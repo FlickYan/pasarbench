@@ -437,11 +437,20 @@ the marks alone, but in her language the run had translated each on its own,
 and the two translations differ in more than the marks — in Vietnamese, one
 kept "escalate" in English (WHAT_FAILED #53). And Malaysia: with the name, 12
 Malaysian conversations escalated in English in 35 of 36 runs and in Malay in
-half of them; 12 others in English in 39%, in Malaysian Chinese in 17%. Whether that floor is the languages or Malaysia's orders, whose
-conversations in English escalated far less than Indonesia's without the name,
-is the next run, its reading fixed: each market's conversations in its
-neighbours' languages.
-<!-- RUNBOOK 1v, run on 2026-10-14, data/swap/V-policy, V.txt: 96 prefixes x 3 arms x 3 = 864 continuations of deepseek-v4-pro; escalated local/policy/english 62/127/130 of 288 (22/44/45%); replication english vs local +0.236, 48 vs 10, both directions (+0.347 28/2; +0.125 20/8 p=0.036); test policy vs local +0.226, 47 vs 14, p<0.0001 (+0.174 23/9 p=0.020; +0.278 24/5 p=0.0005); gap english vs policy +0.010, 28 vs 33, p=0.61; by direction +0.174 20/11 p=0.15 and -0.153 8/22 p=0.016; tools named (65): 19/56/51%, test +0.364 41/6; not named (31): 26/19/32%, test -0.065 6/8; by language local/policy/english: id 44/85/48, ms 4/17/35, th 19/44/29, vi 42/52/65, zh-MY 4/10/42, zh-SG 17/56/52; policy translated by qwen3.8-flash, third wording (v66); 7.7M prompt tokens, 90% cached, ~$1.10 off-peak. Read after (v70, RUNBOOK 1v): not named = 21 every tool shown (P2-ref, V-dsk-parts) 37/27/46% + 10 behind search (K-preload, J-preload, L2-off) 1/30 in each arm; recorded escalation in that turn, every tool shown, English: ID 8/8 (IDR 737,000), VN 7/8, TH 1/8, MY 0/8 (MYR 200.00). RUNBOOK 1x, run on 2026-10-14, data/swap/Y-naming, Y.txt: 88 prefixes x 6 arms x 3 = 1,584; local/policy/english, plain 39/43/45%, named 48/60/64%; test +0.080 34/24 p=0.237 INCONCLUSIVE, room 47.4%; policy vs local named +0.121 29/17 p=0.104, plain +0.042 24/21; 1t gap named +0.163 40/17 p=0.003, plain +0.064; naming local +0.087 27/11 p=0.014, english +0.186 37/12 p<0.001, policy +0.167 35/12 p=0.001; Malay group english named 35/36; twins: named minus marks 93-98% like plain, P10 differs in all six (WHAT_FAILED #53); 14.6M prompt tokens 96% cached, 0.43M completion. RUNBOOK 1y built, not run -->
+half of them; 12 others in English in 39%, in Malaysian Chinese in 17%. Was
+that floor the languages, or Malaysia's orders, whose conversations in English
+had escalated far less than Indonesia's without the name? I put each market's
+conversations into its neighbours' languages, under a reading written first. It
+is the languages: on Malaysia's orders, Indonesian and Singapore Chinese
+escalated more than Malay and Malaysian Chinese (14 conversations against 1,
+p = 0.001), and on Indonesia's and Singapore's orders Malaysia's languages
+escalated less (14 against 3, p = 0.013). Mostly it is Malay against
+Indonesian — 22% against 57% on Malaysia's orders and 27% against 60% on
+Indonesia's, two languages that share most of their words. The same
+conversation, in Malay: the refund was paid to your card on 9 November. In
+Indonesian: I've passed your case to the team. Chinese stays low in both its
+varieties.
+<!-- RUNBOOK 1v, run on 2026-10-14, data/swap/V-policy, V.txt: 96 prefixes x 3 arms x 3 = 864 continuations of deepseek-v4-pro; escalated local/policy/english 62/127/130 of 288 (22/44/45%); replication english vs local +0.236, 48 vs 10, both directions (+0.347 28/2; +0.125 20/8 p=0.036); test policy vs local +0.226, 47 vs 14, p<0.0001 (+0.174 23/9 p=0.020; +0.278 24/5 p=0.0005); gap english vs policy +0.010, 28 vs 33, p=0.61; by direction +0.174 20/11 p=0.15 and -0.153 8/22 p=0.016; tools named (65): 19/56/51%, test +0.364 41/6; not named (31): 26/19/32%, test -0.065 6/8; by language local/policy/english: id 44/85/48, ms 4/17/35, th 19/44/29, vi 42/52/65, zh-MY 4/10/42, zh-SG 17/56/52; policy translated by qwen3.8-flash, third wording (v66); 7.7M prompt tokens, 90% cached, ~$1.10 off-peak. Read after (v70, RUNBOOK 1v): not named = 21 every tool shown (P2-ref, V-dsk-parts) 37/27/46% + 10 behind search (K-preload, J-preload, L2-off) 1/30 in each arm; recorded escalation in that turn, every tool shown, English: ID 8/8 (IDR 737,000), VN 7/8, TH 1/8, MY 0/8 (MYR 200.00). RUNBOOK 1x, run on 2026-10-14, data/swap/Y-naming, Y.txt: 88 prefixes x 6 arms x 3 = 1,584; local/policy/english, plain 39/43/45%, named 48/60/64%; test +0.080 34/24 p=0.237 INCONCLUSIVE, room 47.4%; policy vs local named +0.121 29/17 p=0.104, plain +0.042 24/21; 1t gap named +0.163 40/17 p=0.003, plain +0.064; naming local +0.087 27/11 p=0.014, english +0.186 37/12 p<0.001, policy +0.167 35/12 p=0.001; Malay group english named 35/36; twins: named minus marks 93-98% like plain, P10 differs in all six (WHAT_FAILED #53); 14.6M prompt tokens 96% cached, 0.43M completion. RUNBOOK 1y, run on 2026-10-15, data/swap/Z-cross, Z.txt: 54 prefixes (MY 24 x 5 arms, ID 16 x 3, SG 14 x 3) x 3 = 630; MY ms/id/zh-MY/zh-SG/en 22/57/8/8/69%, ID ms/id/en 27/60/56%, SG zh-MY/zh-SG/en 21/26/43%; test +0.174 14/1 p=0.001, control -0.200 3/14 p=0.013, THE LANGUAGES; id vs ms on MY +0.347 14/1, on ID +0.333 12/2; zh-SG vs zh-MY on MY +0.000 3/4, on SG +0.048 2/1; 5.3M prompt tokens 97% cached, 0.14M completion, off-peak -->
 
 ### Result 4: my fine-tune learned my verifier
 
@@ -710,7 +719,9 @@ One line each, a number, and the mechanism. Pick three.
 > translated, the same conversation got it more often in English, in both
 > directions (47 conversations against 16, p = 0.0001); with the policy
 > translated too, the gap closed on average (22% to 44%, against 45% in
-> English).
+> English). Crossed with each market's neighbours' languages, Malaysia's floor
+> was its languages, not its orders — Malay against Indonesian, 22% against
+> 57% on the same orders (14 conversations against 1, p = 0.001).
 
 > **Ran GRPO under a reading fixed before it ran, and found its test's room was
 > the simulated customer's**: one iteration on Qwen3.8-27B gained 2.6 points on
@@ -996,9 +1007,9 @@ her language the same conversations escalated, on average, as often as in
 English (RUNBOOK 1v, above) — once its translation had passed a check that
 first let a section in Malay through (WHAT_FAILED #51); with every tool
 in sight it did not, named or not — the tool's name in the rule did, in every
-arm (RUNBOOK 1x). Next: whether Malaysia's floor is its languages or its orders
-(RUNBOOK 1y), and serving cost (RUNBOOK phase 3), each built with its reading
-fixed.
+arm (RUNBOOK 1x); and Malaysia's floor is its languages, Malay above all, not its
+orders (RUNBOOK 1y). Next: serving cost, built as one GPU stage with its
+reading fixed (RUNBOOK phase 3).
 <!-- RUNBOOK 1q, U-room, run on 2026-10-13: closing phases cut 0 of 469 (U-guard 27 of 456); of U-guard's 27, 25 ran, none wrote; rescues 3 (CCRTOM-MY.ms__r1, T14__r1, T14__r2), none a phase U-guard had cut; passed->failed 0, forbidden 0, refusals 4 each the same call again, another amount 1 (CCRTOM-ID.id__r1 IDR 37,000 after 700,000); pass^1 0.970 vs 0.973, 4 better 5 worse p=1.0. RUNBOOK 1u, C.txt: 626 replies, 261 kept, 47 dropped (15.3%) under quote check 1; refund already paid 4 alarms of 167, all the refund paid before, all outside English; English both 132, list only 4 (offers), reader only 0; outside English 25 alarms: 19 English sentences the list holds too, 1 Indonesian claim, 5 false alarms; under quote check 2, 2 dropped (0.6%) and 5 refund alarms -->
 
 ### One thing not to do
