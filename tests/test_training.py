@@ -2721,7 +2721,7 @@ esac
           lines[:6] == ["== preload-radix: measured already (data/serving/P2-serve-preload-radix"
                         ".json)", "== jit-radix", "SERVE agent []",
                         "RUN jit-radix [] scripts/serving_bars.py run --bar jit-radix "
-                        "--prefix P2 -k 1 --sample 0 --customer 2",
+                        "--prefix P2 -k 1 --sample 0 --customer 2 --usd-per-hour 6.88",
                         "== preload-noradix (the agent with --disable-radix-cache)",
                         "SERVE agent [--disable-radix-cache]"], "\n".join(lines))
     check("…goes on to the report when a bar fails, names the bar, and stops the servers",
