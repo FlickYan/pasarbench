@@ -556,6 +556,7 @@ def read_run(run_dir: Path) -> list[dict]:
         if not sw or foot is None or out is None:
             continue
         rows.append({**sw, "task_id": head.get("task_id"), "stop": foot.get("stop_reason"),
+                     "policy_mode": head.get("policy_mode"),
                      "escalated": bool(out.get("escalated")),
                      "category": out.get("category"), "calls": out.get("calls") or [],
                      "searched_nothing": out.get("searched_nothing") or 0,
@@ -722,6 +723,28 @@ def _report_policy(rows: list[dict]) -> int:
     print("\nTHE GAP: the conversation and the policy in that language, against both in English")
     print(_line("all prefixes", _paired(rows, arm("policy"), arm("english")),
                 "English still higher", "English lower"))
+    # Read, not tested (v67): the reading tests the gap over all prefixes; a
+    # direction's own can differ from the average, and is shown so it is seen.
+    for label, keep in sources[:2]:
+        mine = [r for r in rows if keep(r)]
+        print(_line(label + " (read)", _paired(mine, arm("policy"), arm("english")),
+                    "English still higher", "English lower"))
+    # Read, not tested, and not foreseen (v67): the prompts that name the tools
+    # -- P10's "Escalate (tool: `escalate_to_human`)", RUNBOOK 1g/1h -- against
+    # those that do not. They are different prefixes, from different runs.
+    print("\nby the policy's text (read, not tested): the prompts that name the tools, and those "
+          "that do not; local / policy / english, then the three comparisons")
+    for label, named in (("tools named", True), ("tools not named", False)):
+        mine = [r for r in rows if (r.get("policy_mode") == "preload-named") == named]
+        if not mine:
+            continue
+        print(f"  {label} ({len({r['pid'] for r in mine})} prefixes): "
+              + " / ".join(_rate([r for r in mine if r["arm"] == x]) for x in POLICY_ARMS))
+        for name, first, second, more, fewer in (
+                ("  the replication", "local", "english", "English higher", "English lower"),
+                ("  the test", "local", "policy", "higher in her language", "lower in her language"),
+                ("  the gap", "policy", "english", "English still higher", "English lower")):
+            print(_line(name, _paired(mine, arm(first), arm(second)), more, fewer))
     print("\nby the language other than English: escalated with the conversation in it, under "
           "the policy in English / in it; and the conversation in English")
     for lang in sorted({r["local_language"] for r in rows}):
