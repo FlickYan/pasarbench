@@ -2453,6 +2453,32 @@ def test_language_swap():
           "p=0.031  ->  English still higher" in gap
           and "recorded in another language (read): +0.000; 0 prefixes higher, 0 lower, sign "
               "test p=1.000  ->  INCONCLUSIVE" in gap, gap)
+    # RESULTS.md section 9 (make_report.section_swap, v69): each run's reading
+    # regenerated from its continuations, 1w's at the p its reading fixed.
+    import importlib.util
+    import shutil
+    spec = importlib.util.spec_from_file_location(
+        "make_report", Path(__file__).resolve().parent.parent / "scripts" / "make_report.py")
+    mr = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mr)
+    rep = tmp / "rep"
+    shutil.copytree(tmp / "swap" / "W", rep / "W-swap")
+    shutil.copytree(tmp / "swap" / "V", rep / "V-policy")
+    shutil.copytree(tmp / "swap" / "W-always", rep / "X-always")
+    sec, part = mr.section_swap(rep), None
+    shutil.rmtree(rep / "V-policy")
+    part = mr.section_swap(rep)
+    check("RESULTS.md section 9 regenerates each run's reading from its continuations -- 1t's, "
+          "1v's, and 1w's at 0.05 over its three agents -- and names any run not there (v69)",
+          "### 1t. The language: one conversation, translated (`" in sec
+          and "THE TEST: the same conversation in English" in sec
+          and "### 1v. A policy in her language (`" in sec and "THE REPLICATION" in sec
+          and "### 1w. The swap on three other agents (`" in sec
+          and "a test resolves at p < 0.0167" in sec.split("### 1w.")[1]
+          and "a test resolves at p" not in sec.split("### 1w.")[0]
+          and sec.count("```text") == 3 and mr.MISSING not in sec
+          and mr.MISSING in part and "1v. A policy in her language" in part.split(mr.MISSING)[1]
+          and mr.section_swap(tmp / "none").startswith(mr.MISSING), sec[:600])
     keys = {k: os.environ.pop(k) for k in list(os.environ)
             if k.endswith("_API_KEY") or k.startswith("PASARBENCH_")}
     try:
