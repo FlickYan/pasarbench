@@ -22,7 +22,7 @@ traces, prices the card's time, and sets each bar against preload-radix
     python scripts/serving_bars.py plan                        # the bars and their flags
     python scripts/serving_bars.py run --bar preload-radix     # the stage runs these
     python scripts/serving_bars.py done --bar preload-radix    # exit 0 once measured
-    python scripts/serving_bars.py report --usd-per-hour 6.88 > logs/serving.md
+    python scripts/serving_bars.py report > logs/serving.md     # at the price the bars recorded
 
 THE CACHE THIS BENCHMARK FLATTERS. 199 of the 215 tasks share six customers,
 one a market, and the system prompt names the customer before the policy:
@@ -224,7 +224,7 @@ def cmd_run(a) -> int:
             "conversations": len(eps), "expected": want_n, "server_errors": broken,
             "sweep_exit": code, "wall_seconds": round(wall, 2), "started": started,
             "agent_model": a.model, "sim_model": a.sim_model, "customer": a.customer,
-            "gpu": _gpu(), "complete": complete}
+            "gpu": _gpu(), "usd_per_hour": a.usd_per_hour, "complete": complete}
     f["bar"].write_text(json.dumps(meta, indent=1), encoding="utf-8")
     if not complete:
         raise SystemExit(
@@ -307,12 +307,35 @@ def _fmt(v: Any, nd: int = 2) -> str:
     return "-" if v is None else f"{v:.{nd}f}"
 
 
-def report(prefix: str, usd_per_hour: float, human_usd: float) -> str:
+def recorded_price(prefix: str) -> float | None:
+    """The card's price the stage recorded with its bars (gpu_plan.py price)."""
+    for bar in ORDER:
+        try:
+            meta = json.loads(files(prefix, bar)["bar"].read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if meta.get("usd_per_hour"):
+            return float(meta["usd_per_hour"])
+    return None
+
+
+def report(prefix: str, usd_per_hour: float | None = None,
+           human_usd: float | None = None) -> str:
+    """The bars side by side. The card's price is the one the bars recorded
+    unless one is given, and a human contact serving/cost.py's illustrative
+    rate unless one is given: regenerated from the files alone, as
+    make_report.py regenerates it."""
     from pasarbench.diagnose import paired_episodes
     from pasarbench.serving import per_trap_guard, three_bar_report
-    from pasarbench.serving.cost import compare, markdown
-    rows: dict[str, Any] = {b: bar_row(prefix, b, usd_per_hour, human_usd) for b in ORDER}
+    from pasarbench.serving.cost import HUMAN_AGENT_USD_PER_CONTACT, compare, markdown
+    usd_per_hour = usd_per_hour or recorded_price(prefix)
+    human_usd = human_usd or HUMAN_AGENT_USD_PER_CONTACT
+    rows: dict[str, Any] = {b: bar_row(prefix, b, usd_per_hour or 0.0, human_usd)
+                            for b in ORDER}
     done = [rows[b] for b in ORDER if isinstance(rows[b], dict)]
+    if done and usd_per_hour is None:
+        raise SystemExit("the bars recorded no card price: pass --usd-per-hour "
+                         "(scripts/gpu_plan.py price on the machine they ran on)")
     out = ["# Serving the agent three ways (RUNBOOK phase 3)", ""]
     if not done:
         out.append("No bar is measured yet: `bash scripts/gpu_pipeline.sh serving` (or "
@@ -433,6 +456,8 @@ def main(argv: list[str] | None = None) -> int:
     r.add_argument("--sim-url", default="http://localhost:8001/v1")
     r.add_argument("--extra-body", default=NO_THINKING)
     r.add_argument("--agent-url", default=AGENT_URL, help="where the agent's /metrics are")
+    r.add_argument("--usd-per-hour", type=float, default=None,
+                   help="the card's price, recorded with the bar (gpu_plan.py price)")
     r.add_argument("--dry-run", action="store_true", help="print the sweeps, run nothing")
     r.set_defaults(fn=cmd_run)
     d = sub.add_parser("done", help="exit 0 if this bar is measured, 1 if not")
@@ -445,8 +470,8 @@ def main(argv: list[str] | None = None) -> int:
     pl.set_defaults(fn=cmd_plan)
     p = sub.add_parser("report", help="the bars side by side, with their verdicts")
     p.add_argument("--prefix", default="P")
-    p.add_argument("--usd-per-hour", type=float, required=True,
-                   help="the card's price (scripts/gpu_plan.py price)")
+    p.add_argument("--usd-per-hour", type=float, default=None,
+                   help="the card's price; default the one the bars recorded")
     p.add_argument("--human-usd", type=float, default=HUMAN_AGENT_USD_PER_CONTACT,
                    help="a human contact's cost; serving/cost.py's is illustrative")
     p.set_defaults(fn=cmd_report)
