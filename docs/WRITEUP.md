@@ -975,7 +975,8 @@ conversation fixed did not hold its decision fixed (RUNBOOK 1w; Grok, which
 escalated in none of its conversations, was left out). And under a policy in
 her language the same conversations escalated, on average, as often as in
 English (RUNBOOK 1v, above) — once its translation had passed a check that
-first let a section in Malay through (WHAT_FAILED #51). Next: serving cost.
+first let a section in Malay through (WHAT_FAILED #51). Next: serving cost,
+built as one GPU stage with its reading fixed (RUNBOOK phase 3).
 <!-- RUNBOOK 1q, U-room, run on 2026-10-13: closing phases cut 0 of 469 (U-guard 27 of 456); of U-guard's 27, 25 ran, none wrote; rescues 3 (CCRTOM-MY.ms__r1, T14__r1, T14__r2), none a phase U-guard had cut; passed->failed 0, forbidden 0, refusals 4 each the same call again, another amount 1 (CCRTOM-ID.id__r1 IDR 37,000 after 700,000); pass^1 0.970 vs 0.973, 4 better 5 worse p=1.0. RUNBOOK 1u, C.txt: 626 replies, 261 kept, 47 dropped (15.3%) under quote check 1; refund already paid 4 alarms of 167, all the refund paid before, all outside English; English both 132, list only 4 (offers), reader only 0; outside English 25 alarms: 19 English sentences the list holds too, 1 Indonesian claim, 5 false alarms; under quote check 2, 2 dropped (0.6%) and 5 refund alarms -->
 
 ### One thing not to do
