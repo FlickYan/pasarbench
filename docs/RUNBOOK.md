@@ -3087,6 +3087,71 @@ number a market).
   but deepseek-v4-pro; Thai and Vietnamese; whether the varieties as the
   translator writes them are how people in each market write.
 
+**Run on 2026-10-15** (`data/swap/Z-cross`, `Z.txt`; five minutes, off-peak):
+**THE LANGUAGES — Malaysia's floor goes with its languages, whatever the
+order.** Both tests resolved, the way the reading names: on Malaysia's orders
+the neighbours' languages escalated more, and on the neighbours' orders
+Malaysia's languages escalated less. Every continuation finished, none ended by
+an API error, every trace's policy mode is the one the arms share, and
+recounted from the traces every number is the report's.
+
+| escalated, of the runs in each | Malay | Indonesian | Malaysian Chinese | Singapore Chinese | English |
+|---|---|---|---|---|---|
+| Malaysia's orders (24 conversations) | 16/72, 22% | 41/72, 57% | 6/72, 8% | 6/72, 8% | 50/72, 69% |
+| Indonesia's (16) | 13/48, 27% | 29/48, 60% | | | 27/48, 56% |
+| Singapore's (14) | | | 9/42, 21% | 11/42, 26% | 18/42, 43% |
+
+- **The test.** On Malaysia's orders, Indonesian and Singapore Chinese against
+  Malay and Malaysian Chinese: +0.174, 14 conversations higher and 1 lower,
+  p = 0.001 — **LANGUAGE, higher in the neighbours' languages**.
+- **The control.** On the neighbours' orders, Malaysia's language against the
+  market's own: −0.200, 3 higher and 14 lower, p = 0.013 — **Malaysia's
+  languages lower on the neighbours' orders too**. Room: the arms in languages
+  other than English escalated in 28% of their runs.
+- **Each pair alone** (read): it is Malay against Indonesian. Indonesian above
+  Malay on Malaysia's orders, +0.347 (14 and 1, p = 0.001), and on
+  Indonesia's, +0.333 (12 and 2, p = 0.013) — the same orders, the same
+  conversations, in two languages that share most of their words: "Saya masih
+  belum dapat duit saya balik. Tolong refund duit saya." against "Saya masih
+  belum dapat uang saya kembali. Tolong refund saya." The two Chinese do not
+  differ: Malaysian and Singapore Chinese escalated alike on Malaysia's orders
+  (8% each; 3 and 4) and on Singapore's (21% and 26%; 2 and 1) — Chinese stays
+  low in both of its varieties, Singapore's English-mixed one too.
+- **English against each market's own** (read): Malaysia's orders, English
+  above Malay by 0.47 (16 and 1) and above Malaysian Chinese by 0.61 (19 and 0);
+  Indonesia's, level with Indonesian (3 and 4); Singapore's, English above its
+  Chinese by 0.17 (7 and 4, p = 0.55).
+- **The orders** (read, not paired): in each language, Malaysia's orders
+  escalated about as often as the neighbour's — Malay 22% and 27%, Indonesian
+  57% and 60% — or more, in English: 69% against Indonesia's 56% and
+  Singapore's 43%. Only in Chinese were Malaysia's lower (8% against 21% and
+  26%), in different conversations.
+- **By how Malaysia's conversations were recorded** (read): recorded in
+  English +0.250 (6 and 0, p = 0.031); in Malay +0.208 (6 and 1); in Malaysian
+  Chinese +0.062 (2 and 0).
+- **Read.** The same Malaysian conversation, recorded in English, in two
+  arms: in Malay the agent checks the payment, tells her the full MYR 200.00
+  was refunded to her card on 9 November, and stops; in Indonesian it checks
+  the payment, escalates, and tells her the case went to the team for review
+  ("Saya sudah mencatat laporan Anda dan meneruskannya ke tim kami").
+- **search_policy** was never called; **every escalation** was a
+  `duplicate_refund`.
+- **What it used.** 1,103 steps; 5.3 million prompt tokens of deepseek-v4-pro,
+  97% from the cache, and 0.14 million completion — two-thirds of 1v's prompt
+  tokens, more of them from the cache, at the off-peak rate; 80 new
+  translations.
+
+**What it means.** Malaysia's floor is its languages, not its orders: put into
+Indonesian or English, Malaysia's duplicate-refund conversations got P10's
+escalation as often as Indonesia's do, and put into Malay, Indonesia's lost it
+as Malaysia's do. Within it, the floor is Malay — Indonesian, a language that
+shares most of Malay's words, escalated more than twice as often on the same
+orders — and Chinese, low in Singapore's variety as in Malaysia's. One agent,
+one rule, one translator, the English policy with the tools named: which of the
+few words that differ between the Malay and the Indonesian moves the decision,
+and whether the floor holds under a policy in her language or without the
+names, is not tested.
+
 ### Publishing the traces (v44)
 
 Every recorded run as a Hugging Face dataset: one JSON line per episode, its
@@ -3122,7 +3187,8 @@ rebuilt — a translation the cache lost, a digest that differs — stops the
 export, named. On 2026-10-14, the first with it: 22,191 episodes in 57 runs, and
 1t, 1v and 1w's 2,691 continuations and 897 arms, every one rebuilt; 60
 addresses replaced in the swap's, all in a profile lookup's payload; 282 MB.
-With 1x: 4,275 continuations and 1,425 arms, 1x's 528 each against its digest.
+With 1x and 1y: 4,905 continuations and 1,635 arms, 1x's 528 and 1y's 210 each
+against its digest.
 
 ---
 
