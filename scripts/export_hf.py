@@ -11,7 +11,7 @@ setup, the verdict the run recorded, steps and tokens -- beside the whole trace
 as it was written. runs.jsonl lists the runs; README.md is the dataset card,
 written from what was exported.
 
-The language swap's runs too (v70; RUNBOOK 1t, 1v, 1w, 1x), from data/swap:
+The language swap's runs too (v70; RUNBOOK 1t, 1v, 1w, 1x, 1y), from data/swap:
 one line per continuation (swap/<run>.jsonl) -- its arm, languages, whether
 the policy named the tools, the recorded conversation it continued, whether
 it escalated, and its trace -- and one per arm of each prefix
@@ -329,7 +329,8 @@ def _swap_card(swap: dict, emails: Counter) -> list[str]:
                                    ("1w, on other agents", "1w" in present)) if there]
     arms = ([f"only the conversation's language ({'; '.join(language)})"] if language else []) \
         + (["the policy's language too (1v)"] if "1v" in present else []) \
-        + (["whether the policy names the tools (1x)"] if "1x" in present else [])
+        + (["whether the policy names the tools (1x)"] if "1x" in present else []) \
+        + (["the language, on the orders of three markets (1y)"] if "1y" in present else [])
     change = (", ".join(arms[:-1]) + ", or " + arms[-1] if len(arms) > 1 else
               "".join(arms) or "the conversation")
     return [
@@ -353,7 +354,7 @@ def _swap_card(swap: dict, emails: Counter) -> list[str]:
         "| --- | --- |",
         "| run, experiment | the run, and the RUNBOOK section it answers |",
         "| arm | orig, swap, back (1t, 1w); local, policy, english (1v); each of those with "
-        "-plain or -named (1x) |",
+        "-plain or -named (1x); the conversation's language, ms, id, zh-MY, zh-SG or en (1y) |",
         "| pid | the prefix: the recorded conversation held fixed, the same in every arm and "
         "run that continued it |",
         "| task_id, run_index, market, trap | the task, the continuation's repetition, its "
@@ -504,7 +505,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--out", default="hf-dataset", help="a new or empty directory")
     ap.add_argument("--runs", default="", help="only these runs, comma-separated")
     ap.add_argument("--swap", default="data/swap",
-                    help="the language swap's runs (RUNBOOK 1t, 1v, 1w, 1x); \"\" leaves "
+                    help="the language swap's runs (RUNBOOK 1t, 1v, 1w, 1x, 1y); \"\" leaves "
                          "them out")
     ap.add_argument("--dry-run", action="store_true",
                     help="check and count, write nothing")
