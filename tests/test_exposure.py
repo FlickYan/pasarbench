@@ -2550,7 +2550,8 @@ def test_language_swap():
     check("the 1x run: six arms a prefix, each trace saying its arm, whether the policy named "
           "the tools and whether the prompt it was recorded with did -- its policy mode is "
           "what the agent was shown -- with the digest of what it was shown; both texts in "
-          "every language translated and checked first; --policy and --naming not together",
+          "every language translated and checked first; --policy and --naming not together "
+          "(nor --cross, v71)",
           len(heads3) == 6 * 6 and all(h["swap"]["design"] == "naming"
                                        and h["swap"]["experiment"] == "1x" for h in heads3)
           and all(h["policy_mode"] == ("preload-named" if h["swap"]["tools_named"]
@@ -2560,7 +2561,8 @@ def test_language_swap():
           and h["swap"]["shown_sha1"] == shown_digest(x[(plain.pid, "policy-named")])
           and all(f"{lang}.{v}.md" in written3 for lang in ("ms", "zh-MY", "vi", "zh-SG")
                   for v in ("plain", "named"))
-          and "not both" in both_refused and "the tools shown: 6 default" in dry.getvalue(),
+          and "one of --policy, --naming and --cross" in both_refused
+          and "the tools shown: 6 default" in dry.getvalue(),
           str((h["swap"], written3, both_refused)))
     test1x = text.split("THE TEST")[1]
     check("the 1x report: the six arms; then the test -- per prefix, the policy in her language "
@@ -2606,6 +2608,131 @@ def test_language_swap():
     check("…and its prefixes, only conversations whose run showed every tool: the one behind "
           "search is left out, and counted", shown_all == {"default"}
           and "another tool exposure 1" in o.getvalue(), o.getvalue())
+    from pasarbench.swap import unnamed_twin
+    written_named = (tmp / "swap" / "Y" / "policy-translated" / "zh-MY.named.md").read_text(
+        encoding="utf-8")
+    written_plain = (tmp / "swap" / "Y" / "policy-translated" / "zh-MY.plain.md").read_text(
+        encoding="utf-8")
+    check("v71, WHAT_FAILED #53: 1x's policy without the tools named is the named translation "
+          "with its marks taken out -- a twin that differs in the marks alone, not a second "
+          "translation -- and each trace says so; the English twins come out the same way",
+          unnamed_twin(policy_text(named=True)) == (policy_text(), 9)
+          and unnamed_twin("须升级处理（工具：`escalate_to_human`），且")
+          == ("须升级处理，且", 1)
+          and written_plain == unnamed_twin(written_named)[0]
+          and unnamed_twin(written_named)[1] == 9
+          and {h["swap"]["twin"] for h in heads3} == {"unnamed"}, written_plain[:200])
+
+    # RUNBOOK 1y (v71): Malaysia's languages, or its orders.
+    from pasarbench.harness.prompts import NAMED_MARK as _MARK
+    from pasarbench.swap import CROSS_ARMS, cross_arm_messages, cross_unfit
+    traces3 = tmp / "traces3"
+
+    def cell3(tid, n):
+        oid = tasks[tid].hidden_facts["order_id"]
+        return _language_cell(traces3, "A", tid, [plan(tid, False)] * n,
+                              replies=(oid, "Oh, I didn't notice."))
+    for tid, n in (("DRE-MY", 3), ("DRE-MY.ms", 2), ("DRE-MY.zh-MY", 1), ("DRE-ID", 3),
+                   ("DRE-ID.id", 2), ("DRE-SG", 2), ("DRE-SG.zh-SG", 1), ("DRE-SG.sg-en", 1),
+                   ("DRE-VN", 1)):
+        cell3(tid, n)
+    p3 = tmp / "P3.jsonl"
+    with contextlib.redirect_stdout(io.StringIO()):
+        ls.main(["prefixes", str(traces3), "--model", "m", "--out", str(p3), "--per-group", "8"])
+    three = {x.pid: x for x in ls.load_prefixes(p3)}
+    my_en, my_ms = three["A.full.DRE-MY.r0"], three["A.full.DRE-MY.ms.r0"]
+    named_en = policy_text(named=True)
+    ctr = Translator(FakeTranslator(), tmp / "tr7.json")
+    c = {x: cross_arm_messages(my_en, x, ctr, named_en) for x in CROSS_ARMS["MY"]}
+    cm = {x: cross_arm_messages(my_ms, x, ctr, named_en) for x in CROSS_ARMS["MY"]}
+    words = [i for i, m in enumerate(my_en.messages) if m["role"] in ("user", "assistant")
+             and m["content"].strip()]
+    check("1y's arms: each market's conversations in the languages of two markets and in "
+          "English, every language other than English from English through the translator -- "
+          "Malay as 1t's back where it was recorded in Malay -- under the English policy with "
+          "the tools named; a market it does not cross, and Singlish, left out",
+          CROSS_ARMS == {"MY": ("ms", "id", "zh-MY", "zh-SG", "en"), "ID": ("id", "ms", "en"),
+                         "SG": ("zh-SG", "zh-MY", "en")}
+          and cross_unfit(three["A.full.DRE-VN.r0"]).startswith("market VN")
+          and cross_unfit(three["A.full.DRE-SG.sg-en.r0"]) == "recorded in sg-en"
+          and c["en"][1:] == my_en.messages[1:]
+          and all(c["id"][i]["content"].startswith("[Bahasa Indonesia] ") for i in words)
+          and all(c["zh-SG"][i]["content"].startswith("[Chinese (Singapore") for i in words)
+          and cm["ms"][1:] == arm_messages(my_ms, "back", ctr)[1:]
+          and cm["en"][1:] == arm_messages(my_ms, "swap", ctr)[1:]
+          and all(NAMED_MARK.format("escalate_to_human") in x[0]["content"]
+                  for x in (*c.values(), *cm.values()))
+          and _MARK == NAMED_MARK, str(c["id"][1])[:200])
+
+    class Neighbour(FakeAgent):
+        """Escalates in English, Indonesian and Singapore Chinese, never in
+        Malay or Malaysian Chinese -- whatever the order."""
+
+        def chat(self, messages, tools):
+            last = next(m.content for m in reversed(messages) if m.role == "user")
+            said = re.match(r"\[([^\]]+)\]", last)
+            if ((not said or said.group(1) in ("English", "Bahasa Indonesia")
+                 or said.group(1).startswith("Chinese (Singapore"))
+                    and not any(tc.name == "escalate_to_human" for m in messages
+                                for tc in m.tool_calls)):
+                order = json.loads(next(m.content for m in reversed(messages)
+                                        if m.role == "tool" and '"order"' in m.content)
+                                   )["order"]["order_id"]
+                return ModelResponse(tool_calls=[ToolCall("escalate_to_human", {
+                    "order_id": order, "category": "duplicate_refund",
+                    "reason": "already refunded"})], usage=Usage(1, 1))
+            return ModelResponse(content="Noted.", usage=Usage(1, 1))
+    run4 = argparse.Namespace(**{**vars(run), "prefixes": str(p3), "run_id": "Z",
+                                 "cache": str(tmp / "tr7.json"), "cross": True, "k": 1})
+    dry = io.StringIO()
+    with contextlib.redirect_stdout(dry):
+        ls.cmd_run(argparse.Namespace(**{**vars(run4), "dry_run": True, "arms": "en"}))
+    try:
+        ls.cmd_run(argparse.Namespace(**{**vars(run4), "dry_run": True, "arms": "th"}))
+        bad_arms = ""
+    except SystemExit as e:
+        bad_arms = str(e)
+    with contextlib.redirect_stdout(io.StringIO()):
+        ls.cmd_run(run4, agent_factory=lambda p: Neighbour(), translator_backend=FakeTranslator())
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out):
+        ls.main(["report", str(tmp / "swap" / "Z")])
+    text = out.getvalue()
+    heads4 = [json.loads(f.read_text().splitlines()[0])
+              for f in (tmp / "swap" / "Z").rglob("*.jsonl")]
+    h4 = next(h for h in heads4 if h["swap"]["pid"] == my_ms.pid and h["swap"]["arm"] == "id")
+    check("the 1y run: each prefix in its market's arms, each trace saying its language, its "
+          "market, whether that is the market's own, and the policy's tools named; the "
+          "conversations it does not cross counted; --arms runs a subset, of this run's arms",
+          len(heads4) == 6 * 5 + 5 * 3 + 3 * 3
+          and all(h["swap"]["design"] == "cross" and h["swap"]["experiment"] == "1y"
+                  and h["policy_mode"] == "preload-named" for h in heads4)
+          and {(h["swap"]["market"], h["swap"]["arm"]) for h in heads4}
+          == {(m, x) for m, xs in CROSS_ARMS.items() for x in xs}
+          and h4["swap"]["own_language"] is False and h4["swap"]["shown_sha1"]
+          == shown_digest(cross_arm_messages(my_ms, "id", ctr, named_en))
+          and "1y crosses 14 of the prefixes: left out 1 market VN, which 1y does not cross, "
+              "1 recorded in sg-en" in dry.getvalue()
+          and "the arms en only: 14 continuations" in dry.getvalue()
+          and "--arms takes this run's arms" in bad_arms
+          and (tmp / "swap" / "Z" / "arms.md").exists(), dry.getvalue() + bad_arms)
+    check("the 1y report: each market by language; the test on Malaysia's orders, the control "
+          "on its neighbours', and the reading the two make together, as fixed before the run",
+          re.search(r"^  MY +0/6 +0% +6/6 100% +0/6 +0% +6/6 100% +6/6 100%  \(6 prefixes\)$",
+                    text, re.M)
+          and "Malaysia's orders: +1.000; 6 prefixes higher, 0 lower, sign test p=0.031  ->  "
+              "LANGUAGE: higher in the neighbours' languages" in text
+          and "the neighbours' orders: -1.000; 0 prefixes higher, 8 lower, sign test p=0.008  "
+              "->  MALAYSIA'S LANGUAGES LOWER on the neighbours' orders too" in text
+          and "THE READING: THE LANGUAGES: Malaysia's floor goes with Malay and Malaysian "
+              "Chinese, whatever the order" in text, text)
+    flat = {"better": 2, "worse": 2, "p": 1.0}
+    check("…and the other readings: neither test, the test alone, the control alone",
+          ls._cross_reading(flat, flat).startswith("NOT THE LANGUAGES")
+          and ls._cross_reading({"better": 9, "worse": 0, "p": 0.004}, flat).startswith(
+              "MALAYSIA'S ORDERS IN ITS LANGUAGES")
+          and ls._cross_reading(flat, {"better": 0, "worse": 9, "p": 0.004}).startswith("BOTH")
+          and ls._cross_reading(None, flat).startswith("not readable"))
     # RESULTS.md section 9 (make_report.section_swap, v69): each run's reading
     # regenerated from its continuations, 1w's at the p its reading fixed.
     import importlib.util
@@ -2619,6 +2746,7 @@ def test_language_swap():
     shutil.copytree(tmp / "swap" / "V", rep / "V-policy")
     shutil.copytree(tmp / "swap" / "W-always", rep / "X-always")
     shutil.copytree(tmp / "swap" / "Y", rep / "Y-naming")
+    shutil.copytree(tmp / "swap" / "Z", rep / "Z-cross")
     sec, part = mr.section_swap(rep), None
     shutil.rmtree(rep / "V-policy")
     part = mr.section_swap(rep)
@@ -2633,7 +2761,9 @@ def test_language_swap():
           and "a test resolves at p" not in sec.split("### 1w.")[0]
           and "### 1x. The tools named, crossed with the policy's language (`" in sec
           and "NAMING: the policy in her language moves it more" in sec.split("### 1x.")[1]
-          and sec.count("```text") == 4 and mr.MISSING not in sec
+          and "### 1y. Malaysia's languages, or its orders (`" in sec
+          and "THE READING: THE LANGUAGES" in sec.split("### 1y.")[1]
+          and sec.count("```text") == 5 and mr.MISSING not in sec
           and mr.MISSING in part and "1v. A policy in her language" in part.split(mr.MISSING)[1]
           and "--policy --run-id V-policy" in part.split(mr.MISSING)[1]
           and "--naming" not in part.split(mr.MISSING)[1]
@@ -2641,13 +2771,15 @@ def test_language_swap():
 
     # v70: the swap's runs published beside the episodes (scripts/export_hf.py).
     exp = tmp / "exp"
-    for name in ("W", "V", "Y"):
+    for name in ("W", "V", "Y", "Z"):
         shutil.copytree(tmp / "swap" / name, exp / name)
     shutil.copy(tmp / "P.jsonl", exp / "P.jsonl")
     shutil.copy(p2, exp / "P2.jsonl")
+    shutil.copy(p3, exp / "P3.jsonl")
     (exp / "translations.json").write_text(json.dumps(
         {**json.loads((tmp / "tr2.json").read_text(encoding="utf-8")),
-         **json.loads((tmp / "tr3.json").read_text(encoding="utf-8"))}), encoding="utf-8")
+         **json.loads((tmp / "tr3.json").read_text(encoding="utf-8")),
+         **json.loads((tmp / "tr7.json").read_text(encoding="utf-8"))}), encoding="utf-8")
     for f in (exp / "W").rglob("*.jsonl"):     # as a run before v70 recorded it
         lines = f.read_text(encoding="utf-8").splitlines()
         head = json.loads(lines[0])
@@ -2660,9 +2792,10 @@ def test_language_swap():
         ex.main([str(traces), "--out", str(tmp / "hf"), "--swap", str(exp)])
     hf = tmp / "hf"
     sw = {n: [json.loads(l) for l in (hf / "swap" / f"{n}.jsonl").read_text(
-        encoding="utf-8").splitlines()] for n in ("W", "V", "Y")}
+        encoding="utf-8").splitlines()] for n in ("W", "V", "Y", "Z")}
     shown = {n: [json.loads(l) for l in (hf / "swap_prompts" / f"{n}.jsonl").read_text(
-        encoding="utf-8").splitlines()] for n in ("W", "V", "Y")}
+        encoding="utf-8").splitlines()] for n in ("W", "V", "Y", "Z")}
+    z = next(r for r in shown["Z"] if r["pid"] == my_ms.pid and r["arm"] == "zh-SG")
     y = next(r for r in shown["Y"] if r["pid"] == plain.pid and r["arm"] == "policy-named")
     manifest = [json.loads(l) for l in (hf / "runs.jsonl").read_text().splitlines()]
     card = (hf / "README.md").read_text(encoding="utf-8")
@@ -2679,22 +2812,26 @@ def test_language_swap():
           and all(r["source_run"] == r["pid"].split(".")[0] and r["source_cell"] == "full"
                   for rs in sw.values() for r in rs)
           and sum(r["escalated"] for r in sw["Y"]) == 12
-          and "90 continuations in 3 runs" in out.getvalue(),
+          and {r["experiment"] for r in sw["Z"]} == {"1y"} and len(sw["Z"]) == 54
+          and "144 continuations in 4 runs" in out.getvalue(),
           out.getvalue() + str(sw["Y"][0])[:300])
     check("…and one line per arm of each prefix: every message it was shown, rebuilt from the "
           "prefixes and the run's cache with no call made, checked against the digest a run "
           "records from v70; a list of every run's arms; a card that says which were checked",
-          [len(shown[n]) for n in ("W", "V", "Y")] == [18, 18, 36]
+          [len(shown[n]) for n in ("W", "V", "Y", "Z")] == [18, 18, 36, 54]
           and json.loads(y["messages"]) == x[(plain.pid, "policy-named")]
+          and json.loads(z["messages"]) == cross_arm_messages(my_ms, "zh-SG", ctr, named_en)
           and all(list(r) == list(ex.PROMPT_FIELDS) for rs in shown.values() for r in rs)
           and {(m["kind"], m["run"], m["cell"]) for m in manifest if m["kind"] == "swap"}
           == {("swap", "Y", a) for a in NAMING_ARMS} | {("swap", "V", a) for a in
                                                         ("local", "policy", "english")}
           | {("swap", "W", a) for a in ("orig", "swap", "back")}
+          | {("swap", "Z", a) for a in ("ms", "id", "zh-MY", "zh-SG", "en")}
           and "config_name: swap_prompts" in card and "data_files: swap/*.jsonl" in card
           and "| Y | 1x | m | policy-named | 6 | 6 (100%) | against its digest |" in card
           and "| W | 1t | m | orig | 12 | " in card and "rebuilt; no digest before v70 |" in card
-          and "continuations of the language swap in 3 runs" in card, card[-2500:])
+          and "continuations of the language swap in 4 runs" in card
+          and "the language, on the orders of three markets (1y)" in card, card[-2500:])
     f = next((exp / "Y" / "policy-named").glob("*.jsonl"))
     lines = f.read_text(encoding="utf-8").splitlines()
     head = json.loads(lines[0])
