@@ -2453,6 +2453,159 @@ def test_language_swap():
           "p=0.031  ->  English still higher" in gap
           and "recorded in another language (read): +0.000; 0 prefixes higher, 0 lower, sign "
               "test p=1.000  ->  INCONCLUSIVE" in gap, gap)
+    from pasarbench.swap import shown_digest
+    check("v70: each continuation records its prefixes file and a digest of every message it "
+          "was shown, so what is published beside it can be checked to be what it saw",
+          all(h["swap"]["prefixes"] == "P2.jsonl" and h["swap"]["experiment"] == "1v"
+              and len(h["swap"]["shown_sha1"]) == 16 for h in heads2)
+          and next(h for h in heads2 if h["swap"]["pid"] == named.pid
+                   and h["swap"]["arm"] == "local")["swap"]["shown_sha1"]
+          == shown_digest(policy_arm_messages(named, "local", pt)), str(heads2[0]["swap"]))
+
+    # RUNBOOK 1x (v70): 1v's arms, each with the tools named and not.
+    from pasarbench.harness.prompts import NAMED_MARK
+    from pasarbench.swap import NAMING_ARMS, naming_arm, naming_arm_messages, shown_messages
+    plain = two["A.full.DRE-MY.ms.r0"]
+    zh_both = {n: translate_policy(policy_text(named=n), "zh-MY", pt.policy)[0]
+               for n in (False, True)}
+    ms_both = {n: translate_policy(policy_text(named=n), "ms", pt.policy)[0]
+               for n in (False, True)}
+    x = {(p.pid, a): naming_arm_messages(p, a, pt, zh_both if p is named else ms_both)
+         for p in (named, plain) for a in NAMING_ARMS}
+
+    def unmarked(text):
+        return re.sub(r" \((?:tool|字|kata): `[a-z_]+`\)", "", text)
+    check("1x's six arms: 1v's three with the tools named in the policy and not, whatever the "
+          "prefix's own prompt had -- an arm and its twin differ in the marks that name the "
+          "tools and nothing else; the arm its own prompt had is 1v's",
+          NAMING_ARMS == ("local-plain", "policy-plain", "english-plain", "local-named",
+                          "policy-named", "english-named")
+          and naming_arm("policy-named") == ("policy", True)
+          and all(x[(p.pid, f"{b}-plain")][1:] == x[(p.pid, f"{b}-named")][1:]
+                  and x[(p.pid, f"{b}-plain")][0]["content"]
+                  == unmarked(x[(p.pid, f"{b}-named")][0]["content"])
+                  and x[(p.pid, f"{b}-plain")][0] != x[(p.pid, f"{b}-named")][0]
+                  for p in (named, plain) for b in ("local", "policy", "english"))
+          and x[(named.pid, "local-named")] == policy_arm_messages(named, "local", pt)
+          and x[(plain.pid, "local-plain")] == policy_arm_messages(plain, "local", pt)
+          and x[(named.pid, "policy-named")] == arms2["policy"]
+          and NAMED_MARK.format("escalate_to_human") in x[(plain.pid, "local-named")][0]["content"]
+          and "(kata: `escalate_to_human`)" in x[(plain.pid, "policy-named")][0]["content"]
+          and x[(plain.pid, "english-named")][1:] == policy_arm_messages(plain, "english", pt)[1:],
+          x[(plain.pid, "policy-named")][0]["content"][:200])
+    try:
+        naming_arm("policy")
+        bad_arm = False
+    except ValueError:
+        bad_arm = True
+    check("…an arm not 1x's is refused, and every arm of every design is rebuilt from its "
+          "trace's record alone -- what the dataset publishes beside it",
+          bad_arm
+          and shown_messages(named, {"design": "naming", "arm": "policy-plain"}, pt,
+                             lambda lang, n: zh_both[n]) == x[(named.pid, "policy-plain")]
+          and shown_messages(named, {"design": "policy", "arm": "policy"}, pt,
+                             lambda lang, n: zh_both[n]) == arms2["policy"]
+          and shown_messages(ms, {"arm": "swap"}, tr) == swap)
+
+    class Namer(FakeAgent):
+        """Escalates where the policy names the tool and is in the
+        conversation's language: her policy in hers, or English in English."""
+
+        def chat(self, messages, tools):
+            system = messages[0].content
+            last = next(m.content for m in reversed(messages) if m.role == "user")
+            if ("`escalate_to_human`)" in system
+                    and ("<!-- in " in system or last.startswith(("[English]", "[Singlish")))
+                    and not any(tc.name == "escalate_to_human" for m in messages
+                                for tc in m.tool_calls)):
+                order = json.loads(next(m.content for m in reversed(messages)
+                                        if m.role == "tool" and '"order"' in m.content)
+                                   )["order"]["order_id"]
+                return ModelResponse(tool_calls=[ToolCall("escalate_to_human", {
+                    "order_id": order, "category": "duplicate_refund",
+                    "reason": "already refunded"})], usage=Usage(1, 1))
+            return ModelResponse(content="Noted.", usage=Usage(1, 1))
+    run3 = argparse.Namespace(**{**vars(run), "prefixes": str(p2), "run_id": "Y",
+                                 "cache": str(tmp / "tr3.json"), "naming": True, "k": 1})
+    try:
+        ls.cmd_run(argparse.Namespace(**{**vars(run3), "policy": True}))
+        both_refused = ""
+    except SystemExit as e:
+        both_refused = str(e)
+    dry = io.StringIO()
+    with contextlib.redirect_stdout(dry):
+        ls.cmd_run(argparse.Namespace(**{**vars(run3), "dry_run": True}))
+    with contextlib.redirect_stdout(io.StringIO()):
+        ls.cmd_run(run3, agent_factory=lambda p: Namer(), translator_backend=PolicyTranslator())
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out):
+        ls.main(["report", str(tmp / "swap" / "Y")])
+    text = out.getvalue()
+    recs3 = [[json.loads(l) for l in f.read_text().splitlines()]
+             for f in (tmp / "swap" / "Y").rglob("*.jsonl")]
+    heads3 = [r[0] for r in recs3]
+    written3 = sorted(f.name for f in (tmp / "swap" / "Y" / "policy-translated").glob("*.md"))
+    h = next(h for h in heads3 if h["swap"]["pid"] == plain.pid
+             and h["swap"]["arm"] == "policy-named")
+    check("the 1x run: six arms a prefix, each trace saying its arm, whether the policy named "
+          "the tools and whether the prompt it was recorded with did -- its policy mode is "
+          "what the agent was shown -- with the digest of what it was shown; both texts in "
+          "every language translated and checked first; --policy and --naming not together",
+          len(heads3) == 6 * 6 and all(h["swap"]["design"] == "naming"
+                                       and h["swap"]["experiment"] == "1x" for h in heads3)
+          and all(h["policy_mode"] == ("preload-named" if h["swap"]["tools_named"]
+                                       else "preload") for h in heads3)
+          and {h["swap"]["recorded_tools_named"] for h in heads3 if h["swap"]["pid"]
+               == named.pid} == {True}
+          and h["swap"]["shown_sha1"] == shown_digest(x[(plain.pid, "policy-named")])
+          and all(f"{lang}.{v}.md" in written3 for lang in ("ms", "zh-MY", "vi", "zh-SG")
+                  for v in ("plain", "named"))
+          and "not both" in both_refused and "the tools shown: 6 default" in dry.getvalue(),
+          str((h["swap"], written3, both_refused)))
+    test1x = text.split("THE TEST")[1]
+    check("the 1x report: the six arms; then the test -- per prefix, the policy in her language "
+          "against in English with the tools named minus the same without -- over the "
+          "prefixes that show every tool, the room it had, and each comparison read with it",
+          "36 continuations of m from 6 prefixes" in text
+          and "it named the tools in 2 of 6. The tools shown: default in 6 prefixes." in text
+          and re.search(r"^  policy +0/6 +0% +6/6 100%$", text, re.M)
+          and "all prefixes: +1.000; 6 prefixes higher, 0 lower, sign test p=0.031  ->  "
+              "NAMING: the policy in her language moves it more with the tools named" in test1x
+          and "ROOM: the four arms in her language escalated in 25.0% of their runs" in test1x
+          and "the tools named: +1.000; 6 prefixes higher, 0 lower, sign test p=0.031  ->  "
+              "higher in her language" in test1x
+          and "the tools not named: +0.000; 0 prefixes higher, 0 lower, sign test p=1.000  ->  "
+              "INCONCLUSIVE" in test1x
+          and "    english: +1.000; 6 prefixes higher, 0 lower, sign test p=0.031  ->  "
+              "higher named" in test1x, text)
+    rows = [{"pid": f"p{i}", "arm": a, "escalated": e, "dup": e, "base_arm": a.split("-")[0],
+             "english_source": True, "local_language": "th", "calls": [],
+             "searched_nothing": 0, "exposure": "default", "recorded_tools_named": False}
+            for i in range(6) for a, e in (("local-plain", False), ("policy-plain", True),
+                                           ("english-plain", False), ("local-named", False),
+                                           ("policy-named", False), ("english-named", False))]
+    rows += [{**r, "pid": "s" + r["pid"], "exposure": "search-300",
+              "escalated": r["arm"] == "policy-named", "dup": r["arm"] == "policy-named"}
+             for r in rows]
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out):
+        ls._report_naming(rows)
+    text = out.getvalue()
+    check("…a verdict the other way named so, and prefixes behind search read apart, never in "
+          "the test (RUNBOOK 1x)",
+          "all prefixes: -1.000; 0 prefixes higher, 6 lower, sign test p=0.031  ->  NAMING, the "
+          "other way: it moves it more without them" in text.split("THE TEST")[1]
+          and "the prefixes with the tools search-300, read and never in the test" in text
+          and "  the test's comparison: +1.000; 6 prefixes higher" in text
+          and ls._interaction(rows[:12], "local-named", "policy-named", "local-plain",
+                              "policy-plain") is None, text)
+    with contextlib.redirect_stdout(io.StringIO()) as o:
+        ls.main(["prefixes", str(traces), "--model", "m", "--out", str(tmp / "Ydef.jsonl"),
+                 "--exposure", "default"])
+    shown_all = {ls.exposure_of(x) for x in ls.load_prefixes(tmp / "Ydef.jsonl")}
+    check("…and its prefixes, only conversations whose run showed every tool: the one behind "
+          "search is left out, and counted", shown_all == {"default"}
+          and "another tool exposure 1" in o.getvalue(), o.getvalue())
     # RESULTS.md section 9 (make_report.section_swap, v69): each run's reading
     # regenerated from its continuations, 1w's at the p its reading fixed.
     import importlib.util
@@ -2465,20 +2618,107 @@ def test_language_swap():
     shutil.copytree(tmp / "swap" / "W", rep / "W-swap")
     shutil.copytree(tmp / "swap" / "V", rep / "V-policy")
     shutil.copytree(tmp / "swap" / "W-always", rep / "X-always")
+    shutil.copytree(tmp / "swap" / "Y", rep / "Y-naming")
     sec, part = mr.section_swap(rep), None
     shutil.rmtree(rep / "V-policy")
     part = mr.section_swap(rep)
     check("RESULTS.md section 9 regenerates each run's reading from its continuations -- 1t's, "
-          "1v's, and 1w's at 0.05 over its three agents -- and names any run not there (v69)",
+          "1v's, 1w's at 0.05 over its three agents, and 1x's (v70) -- and names any run not "
+          "there (v69)",
           "### 1t. The language: one conversation, translated (`" in sec
           and "THE TEST: the same conversation in English" in sec
           and "### 1v. A policy in her language (`" in sec and "THE REPLICATION" in sec
           and "### 1w. The swap on three other agents (`" in sec
           and "a test resolves at p < 0.0167" in sec.split("### 1w.")[1]
           and "a test resolves at p" not in sec.split("### 1w.")[0]
-          and sec.count("```text") == 3 and mr.MISSING not in sec
+          and "### 1x. The tools named, crossed with the policy's language (`" in sec
+          and "NAMING: the policy in her language moves it more" in sec.split("### 1x.")[1]
+          and sec.count("```text") == 4 and mr.MISSING not in sec
           and mr.MISSING in part and "1v. A policy in her language" in part.split(mr.MISSING)[1]
+          and "--policy --run-id V-policy" in part.split(mr.MISSING)[1]
+          and "--naming" not in part.split(mr.MISSING)[1]
           and mr.section_swap(tmp / "none").startswith(mr.MISSING), sec[:600])
+
+    # v70: the swap's runs published beside the episodes (scripts/export_hf.py).
+    exp = tmp / "exp"
+    for name in ("W", "V", "Y"):
+        shutil.copytree(tmp / "swap" / name, exp / name)
+    shutil.copy(tmp / "P.jsonl", exp / "P.jsonl")
+    shutil.copy(p2, exp / "P2.jsonl")
+    (exp / "translations.json").write_text(json.dumps(
+        {**json.loads((tmp / "tr2.json").read_text(encoding="utf-8")),
+         **json.loads((tmp / "tr3.json").read_text(encoding="utf-8"))}), encoding="utf-8")
+    for f in (exp / "W").rglob("*.jsonl"):     # as a run before v70 recorded it
+        lines = f.read_text(encoding="utf-8").splitlines()
+        head = json.loads(lines[0])
+        for key in ("shown_sha1", "prefixes"):
+            head["swap"].pop(key)
+        f.write_text("\n".join([json.dumps(head)] + lines[1:]) + "\n", encoding="utf-8")
+    ex = _load_script("export_hf")
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out):
+        ex.main([str(traces), "--out", str(tmp / "hf"), "--swap", str(exp)])
+    hf = tmp / "hf"
+    sw = {n: [json.loads(l) for l in (hf / "swap" / f"{n}.jsonl").read_text(
+        encoding="utf-8").splitlines()] for n in ("W", "V", "Y")}
+    shown = {n: [json.loads(l) for l in (hf / "swap_prompts" / f"{n}.jsonl").read_text(
+        encoding="utf-8").splitlines()] for n in ("W", "V", "Y")}
+    y = next(r for r in shown["Y"] if r["pid"] == plain.pid and r["arm"] == "policy-named")
+    manifest = [json.loads(l) for l in (hf / "runs.jsonl").read_text().splitlines()]
+    card = (hf / "README.md").read_text(encoding="utf-8")
+    check("v70, the dataset: one line per continuation of each swap run -- its RUNBOOK "
+          "section, arm, languages, whether its policy named the tools, the recorded "
+          "conversation it continued and whether it escalated, beside its trace",
+          [len(sw[n]) for n in ("W", "V", "Y")] == [36, 18, 36]
+          and all(list(r) == list(ex.SWAP_FIELDS) for rs in sw.values() for r in rs)
+          and {r["experiment"] for r in sw["W"]} == {"1t"}
+          and {r["experiment"] for r in sw["V"]} == {"1v"}
+          and {r["experiment"] for r in sw["Y"]} == {"1x"}
+          and {(r["arm"], r["tools_named"]) for r in sw["Y"]}
+          == {(a, a.endswith("named")) for a in NAMING_ARMS}
+          and all(r["source_run"] == r["pid"].split(".")[0] and r["source_cell"] == "full"
+                  for rs in sw.values() for r in rs)
+          and sum(r["escalated"] for r in sw["Y"]) == 12
+          and "90 continuations in 3 runs" in out.getvalue(),
+          out.getvalue() + str(sw["Y"][0])[:300])
+    check("…and one line per arm of each prefix: every message it was shown, rebuilt from the "
+          "prefixes and the run's cache with no call made, checked against the digest a run "
+          "records from v70; a list of every run's arms; a card that says which were checked",
+          [len(shown[n]) for n in ("W", "V", "Y")] == [18, 18, 36]
+          and json.loads(y["messages"]) == x[(plain.pid, "policy-named")]
+          and all(list(r) == list(ex.PROMPT_FIELDS) for rs in shown.values() for r in rs)
+          and {(m["kind"], m["run"], m["cell"]) for m in manifest if m["kind"] == "swap"}
+          == {("swap", "Y", a) for a in NAMING_ARMS} | {("swap", "V", a) for a in
+                                                        ("local", "policy", "english")}
+          | {("swap", "W", a) for a in ("orig", "swap", "back")}
+          and "config_name: swap_prompts" in card and "data_files: swap/*.jsonl" in card
+          and "| Y | 1x | m | policy-named | 6 | 6 (100%) | against its digest |" in card
+          and "| W | 1t | m | orig | 12 | " in card and "rebuilt; no digest before v70 |" in card
+          and "continuations of the language swap in 3 runs" in card, card[-2500:])
+    f = next((exp / "Y" / "policy-named").glob("*.jsonl"))
+    lines = f.read_text(encoding="utf-8").splitlines()
+    head = json.loads(lines[0])
+    head["swap"]["shown_sha1"] = "0" * 16
+    f.write_text("\n".join([json.dumps(head)] + lines[1:]) + "\n", encoding="utf-8")
+    try:
+        with contextlib.redirect_stdout(io.StringIO()):
+            ex.main([str(traces), "--out", str(tmp / "hf3"), "--swap", str(exp), "--dry-run"])
+        tampered = ""
+    except SystemExit as e:
+        tampered = str(e)
+    shutil.rmtree(exp / "Y")
+    (exp / "translations.json").write_text("{}", encoding="utf-8")
+    try:
+        with contextlib.redirect_stdout(io.StringIO()):
+            ex.main([str(traces), "--out", str(tmp / "hf4"), "--swap", str(exp), "--dry-run"])
+        uncached = ""
+    except SystemExit as e:
+        uncached = str(e)
+    check("…and an arm that cannot be rebuilt as the run built it stops the export, named: one "
+          "whose digest differs, one whose translation the cache no longer holds",
+          "Y/policy-named/" in tampered and "not what the continuation was shown" in tampered
+          and "a translation the run's cache does not hold" in uncached
+          and not (tmp / "hf3").exists(), tampered + uncached)
     keys = {k: os.environ.pop(k) for k in list(os.environ)
             if k.endswith("_API_KEY") or k.startswith("PASARBENCH_")}
     try:
@@ -2917,7 +3157,7 @@ def test_export_hf():
     ex = _load_script("export_hf")
     out = io.StringIO()
     with contextlib.redirect_stdout(out):
-        ex.main([str(traces), "--out", str(tmp / "hf")])
+        ex.main([str(traces), "--out", str(tmp / "hf"), "--swap", ""])
     rows = [json.loads(l) for l in (tmp / "hf" / "data" / "A.jsonl").read_text(
         encoding="utf-8").splitlines()]
     check("one line per episode, its setup and verdict as columns beside the whole trace",
@@ -2935,6 +3175,7 @@ def test_export_hf():
     check("a list of the run cells, and a card with the configs the dataset viewer reads",
           [(r["run"], r["cell"], r["episodes"]) for r in runs] == [("A", "full", 2),
                                                                    ("B", "full", 1)]
+          and {r["kind"] for r in runs} == {"episodes"} and "config_name: swap" not in readme
           and readme.startswith("---\nlicense: mit") and "data_files: data/*.jsonl" in readme
           and "- vi" in readme and "3 episodes in 2 runs" in readme, readme[:400])
     leak = Path(cell) / "DRE-VN__r0.jsonl"
@@ -2942,7 +3183,7 @@ def test_export_hf():
         "Passed on.", "key sk-abcdefghijklmnopqrstu1234"), encoding="utf-8")
     try:
         with contextlib.redirect_stdout(io.StringIO()):
-            ex.main([str(traces), "--out", str(tmp / "hf2")])
+            ex.main([str(traces), "--out", str(tmp / "hf2"), "--swap", ""])
         refused = ""
     except SystemExit as e:
         refused = str(e)
