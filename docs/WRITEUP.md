@@ -409,6 +409,21 @@ these recordings. The rest stays with the conversation — her words and the
 agent's own earlier replies — which a run that swaps each alone would separate.
 <!-- RUNBOOK 1t, run on 2026-10-13, data/swap/W-swap, W.txt: 96 prefixes x 3 arms x 3 = 864 continuations of deepseek-v4-pro, translator qwen3.8-flash; reproduction 75/96; swap vs back, English minus the other language: +0.191, 47 vs 16, p=0.0001; recorded in English +0.194, 25 vs 10, p=0.017; recorded in another language +0.188, 22 vs 6, p=0.004; orig vs back +0.024, 25 vs 18, p=0.36; escalated, orig/swap/back: recorded in English 45/31/50%, recorded in another language 16/35/16%; English vs it: id 40/42%, ms 40/6%, th 25/21%, vi 65/46%, zh-MY 33/10%, zh-SG 52/15% -->
 
+In every one of those conversations the agent read its policy in English. So I
+translated the policy too — into each conversation's language, every piece
+checked for its codes, numbers and language before anything ran, a check that
+stopped it twice (WHAT_FAILED #51) — and ran the same 96 conversations, held in
+her language, under it. P10's escalation went from 22% of runs to 44%: more
+often in 47 conversations, less in 14 (p < 0.0001), the same way in both
+directions. With conversation and policy both in English it was 45%. On
+average, then, the gap is the policy being in another language than the
+conversation, not the conversation's language. Not everywhere: it closes where
+the prompt names the tool the rule calls — which is where the gap was — and in
+Malay and Malaysian Chinese it barely moves, far short of English under their
+own policy, while in Indonesian and Thai the agent now escalates more often
+than in English.
+<!-- RUNBOOK 1v, run on 2026-10-14, data/swap/V-policy, V.txt: 96 prefixes x 3 arms x 3 = 864 continuations of deepseek-v4-pro; escalated local/policy/english 62/127/130 of 288 (22/44/45%); replication english vs local +0.236, 48 vs 10, both directions (+0.347 28/2; +0.125 20/8 p=0.036); test policy vs local +0.226, 47 vs 14, p<0.0001 (+0.174 23/9 p=0.020; +0.278 24/5 p=0.0005); gap english vs policy +0.010, 28 vs 33, p=0.61; by direction +0.174 20/11 p=0.15 and -0.153 8/22 p=0.016; tools named (65): 19/56/51%, test +0.364 41/6; not named (31): 26/19/32%, test -0.065 6/8; by language local/policy/english: id 44/85/48, ms 4/17/35, th 19/44/29, vi 42/52/65, zh-MY 4/10/42, zh-SG 17/56/52; policy translated by qwen3.8-flash, third wording (v66); 7.7M prompt tokens, 90% cached, ~$1.10 off-peak -->
+
 ### Result 4: my fine-tune learned my verifier
 
 Then I trained on it. Qwen3.8-27B with LoRA, rejection-sampling fine-tuning:
@@ -674,7 +689,9 @@ One line each, a number, and the mechanism. Pick three.
 > local-language tasks fell below their English twin (p = 0.0001), and the
 > decision came the moment it read the refund. Held fixed there and only
 > translated, the same conversation got it more often in English, in both
-> directions (47 conversations against 16, p = 0.0001).
+> directions (47 conversations against 16, p = 0.0001); with the policy
+> translated too, the gap closed on average (22% to 44%, against 45% in
+> English).
 
 > **Ran GRPO under a reading fixed before it ran, and found its test's room was
 > the simulated customer's**: one iteration on Qwen3.8-27B gained 2.6 points on
@@ -955,10 +972,10 @@ three other agents could not test the language effect: two of them escalate a
 refund already paid in nearly every run, in every language, and the third,
 GLM, decides it differently from one run to the next, so holding the
 conversation fixed did not hold its decision fixed (RUNBOOK 1w; Grok, which
-escalated in none of its conversations, was left out). Next: the same
-conversations under a policy in her language (RUNBOOK 1v), whose translation,
-read before the run, had a section in Malay that its check had passed
-(WHAT_FAILED #51). Then serving cost.
+escalated in none of its conversations, was left out). And under a policy in
+her language the same conversations escalated, on average, as often as in
+English (RUNBOOK 1v, above) — once its translation had passed a check that
+first let a section in Malay through (WHAT_FAILED #51). Next: serving cost.
 <!-- RUNBOOK 1q, U-room, run on 2026-10-13: closing phases cut 0 of 469 (U-guard 27 of 456); of U-guard's 27, 25 ran, none wrote; rescues 3 (CCRTOM-MY.ms__r1, T14__r1, T14__r2), none a phase U-guard had cut; passed->failed 0, forbidden 0, refusals 4 each the same call again, another amount 1 (CCRTOM-ID.id__r1 IDR 37,000 after 700,000); pass^1 0.970 vs 0.973, 4 better 5 worse p=1.0. RUNBOOK 1u, C.txt: 626 replies, 261 kept, 47 dropped (15.3%) under quote check 1; refund already paid 4 alarms of 167, all the refund paid before, all outside English; English both 132, list only 4 (offers), reader only 0; outside English 25 alarms: 19 English sentences the list holds too, 1 Indonesian claim, 5 false alarms; under quote check 2, 2 dropped (0.6%) and 5 refund alarms -->
 
 ### One thing not to do
