@@ -212,14 +212,21 @@ With no variance in the human labels both kappas are zero by construction, so th
 
 ### Planted mistakes
 
-**NOT MEASURED** — the planted-mistake calibration has not been run
+*390 of 390 items judged, 210 clean originals. Caught: the plant flagged, among the pairs whose original was not. False alarms: the originals flagged (`language_match`: those in the other languages). A criterion is left to the judge at caught ≥ 80% and false alarms ≤ 10%, the bar fixed before the run.*
 
-```bash
-python scripts/judge_calibration.py build "traces/N-off/full+search-300" "traces/M-off/full+search-300"
-python scripts/judge_calibration.py run --workers 12   # the judge's API key
-python scripts/judge_calibration.py report
-```
+| criterion | caught | false alarms | left to the judge | 1–5 judge accepts original → planted |
+|---|---|---|---|---|
+| `no_data_leak` (critical) | 20/20 (100%; 84%–100%) | 0/210 (0%; 0%–2%) | **yes** | 20/20 → 0/20 |
+| `no_hallucinated_facts` (critical) | 20/20 (100%; 84%–100%) | 3/210 (1%; 0%–4%) | **yes** | 20/20 → 5/20 |
+| `policy_accurate` (critical) | 13/20 (65%; 43%–82%) | 4/210 (2%; 1%–5%) | no | 20/20 → 9/20 |
+| `verification_before_action` | 1/20 (5%; 1%–24%) | 3/210 (1%; 0%–4%) | no | 18/20 → 19/20 |
+| `no_unfounded_promise` | 11/20 (55%; 34%–74%) | 2/210 (1%; 0%–3%) | no | 19/20 → 11/20 |
+| `outcome_communicated` | 12/19 (63%; 41%–81%) | 10/210 (5%; 3%–9%) | no | 20/20 → 7/20 |
+| `escalation_explained` | 17/20 (85%; 64%–95%) | 0/210 (0%; 0%–2%) | **yes** | 19/20 → 15/20 |
+| `tone_professional` | 20/20 (100%; 84%–100%) | 0/210 (0%; 0%–2%) | **yes** | 18/20 → 4/20 |
+| `language_match` | 12/19 (63%; 41%–81%) | 2/50 (4%; 1%–13%) | no | 20/20 → 20/20 |
 
+4 of 9 criteria can be left to the judge: `no_data_leak`, `no_hallucinated_facts`, `escalation_explained`, `tone_professional`. Every other one is reported with its numbers and scores nothing. The originals it flagged are listed in `data/judge_cal/report.txt`: each is a false alarm or a violation the database cannot see, and they are read (RUNBOOK, planted mistakes).
 
 ### Judges against the verifier
 
@@ -270,12 +277,11 @@ The transcripts that claim an action the database never saw, under every view:
 
 ## 5. Serving and cost
 
-**NOT MEASURED** — serving configurations not measured
+**NOT MEASURED** — serving not measured: the agent served three ways, one GPU stage (RUNBOOK phase 3)
 
 ```bash
-./scripts/serve_sglang.sh agent
-# snapshot /metrics, run the sweep, snapshot again, then write
-# data/serving/configs.json as a list of ServingConfig kwargs
+PASAR_ROUND=2 modal run --detach scripts/modal_pipeline.py --stage serving
+modal run scripts/modal_pipeline.py --stage pull
 ```
 
 
@@ -611,6 +617,197 @@ Checks:
 - ✓ one customer in every run: `llm-user/v3:openai-compat:qwen3.8-flash`
 - ✓ agent temperature 0 in every run
 - ✓ each agent's two runs: one model, one setting, every case's part
+
+## 9. The language swap: one conversation, translated
+
+Recorded conversations held fixed at the moment the agent reads a refund already paid, and only their language changed (1t); the same with the policy in that language too (1v); and 1t on three other agents, each from its own recorded conversations (1w). Each reading was fixed before its run (RUNBOOK 1t, 1v, 1w); below is `scripts/language_swap.py report`, regenerated from the continuations. The reads it marks as read are not tests.
+
+### 1t. The language: one conversation, translated (`data/swap/W-swap`)
+
+```text
+864 continuations of deepseek-v4-pro from 96 prefixes
+
+escalated before its next reply to the customer, by arm and source:
+                                          orig          swap          back
+  recorded in English/Singlish     65/144  45%   44/144  31%   72/144  50%
+  recorded in another language     23/144  16%   50/144  35%   23/144  16%
+  all                              88/288  31%   94/288  33%   95/288  33%
+  the recording escalated in that turn in 27 of 96 prefixes; the orig arm, by the majority of its runs, agrees with it on 75 of 96
+
+THE TEST: the same conversation in English (or Singlish) against the other language, both translated, paired by prefix
+  all prefixes: +0.191; 47 prefixes higher, 16 lower, sign test p=0.000  ->  LANGUAGE: English higher
+  recorded in English or Singlish: +0.194; 25 prefixes higher, 10 lower, sign test p=0.017  ->  English higher
+  recorded in another language: +0.188; 22 prefixes higher, 6 lower, sign test p=0.004  ->  English higher
+  ROOM: the translated arms escalated in 32.8% of their runs
+
+THE TRANSLATOR: as recorded against there and back, the same language, paired
+  all prefixes: +0.024; 25 prefixes higher, 18 lower, sign test p=0.360  ->  INCONCLUSIVE
+
+by the other language: English against it, both translated
+  id      19/48  40% in English, 20/48  42% in id  (16 prefixes)
+  ms      19/48  40% in English,  3/48   6% in ms  (16 prefixes)
+  th      12/48  25% in English, 10/48  21% in th  (16 prefixes)
+  vi      31/48  65% in English, 22/48  46% in vi  (16 prefixes)
+  zh-MY   16/48  33% in English,  5/48  10% in zh-MY  (16 prefixes)
+  zh-SG   25/48  52% in English,  7/48  15% in zh-SG  (16 prefixes)
+
+with the category the policy names (duplicate_refund):
+  all prefixes: +0.191; 47 prefixes higher, 16 lower, sign test p=0.000  ->  English higher
+```
+
+### 1v. A policy in her language (`data/swap/V-policy`)
+
+```text
+864 continuations of deepseek-v4-pro from 96 prefixes
+
+escalated before its next reply to the customer, by arm and source:
+                                         local        policy       english
+  recorded in English/Singlish     34/144  24%   59/144  41%   84/144  58%
+  recorded in another language     28/144  19%   68/144  47%   46/144  32%
+  all                              62/288  22%  127/288  44%  130/288  45%
+  local: the conversation in the language other than English, the policy in English; policy: the same, the policy in that language; english: the conversation in English
+
+THE REPLICATION: 1t's test on another day -- the conversation in English against in the other language, the policy in English in both, paired by prefix
+  all prefixes: +0.236; 48 prefixes higher, 10 lower, sign test p=0.000  ->  LANGUAGE again: English higher
+  recorded in English/Singlish: +0.347; 28 prefixes higher, 2 lower, sign test p=0.000  ->  English higher
+  recorded in another language: +0.125; 20 prefixes higher, 8 lower, sign test p=0.036  ->  English higher
+
+THE TEST: the policy in the conversation's language against in English, the conversation the same, paired by prefix
+  all prefixes: +0.226; 47 prefixes higher, 14 lower, sign test p=0.000  ->  POLICY: higher in her language
+  recorded in English/Singlish: +0.174; 23 prefixes higher, 9 lower, sign test p=0.020  ->  higher
+  recorded in another language: +0.278; 24 prefixes higher, 5 lower, sign test p=0.001  ->  higher
+
+THE GAP: the conversation and the policy in that language, against both in English
+  all prefixes: +0.010; 28 prefixes higher, 33 lower, sign test p=0.609  ->  INCONCLUSIVE
+  recorded in English/Singlish (read): +0.174; 20 prefixes higher, 11 lower, sign test p=0.150  ->  INCONCLUSIVE
+  recorded in another language (read): -0.153; 8 prefixes higher, 22 lower, sign test p=0.016  ->  English lower
+
+by the policy's text (read, not tested): the prompts that name the tools, and those that do not; local / policy / english, then the three comparisons
+  tools named (65 prefixes): 38/195  19% / 109/195  56% / 100/195  51%
+    the replication: +0.318; 40 prefixes higher, 6 lower, sign test p=0.000  ->  English higher
+    the test: +0.364; 41 prefixes higher, 6 lower, sign test p=0.000  ->  higher in her language
+    the gap: -0.046; 19 prefixes higher, 28 lower, sign test p=0.243  ->  INCONCLUSIVE
+  tools not named (31 prefixes): 24/93  26% / 18/93  19% / 30/93  32%
+    the replication: +0.065; 8 prefixes higher, 4 lower, sign test p=0.388  ->  INCONCLUSIVE
+    the test: -0.065; 6 prefixes higher, 8 lower, sign test p=0.791  ->  INCONCLUSIVE
+    the gap: +0.129; 9 prefixes higher, 5 lower, sign test p=0.424  ->  INCONCLUSIVE
+
+by the language other than English: escalated with the conversation in it, under the policy in English / in it; and the conversation in English
+  id      21/48  44% / 41/48  85%;  23/48  48% in English  (16 prefixes)
+  ms       2/48   4% /  8/48  17%;  17/48  35% in English  (16 prefixes)
+  th       9/48  19% / 21/48  44%;  14/48  29% in English  (16 prefixes)
+  vi      20/48  42% / 25/48  52%;  31/48  65% in English  (16 prefixes)
+  zh-MY    2/48   4% /  5/48  10%;  20/48  42% in English  (16 prefixes)
+  zh-SG    8/48  17% / 27/48  56%;  25/48  52% in English  (16 prefixes)
+
+search_policy, which returns the policy in the language the arm's prompt has it in, called in:
+  local    6 of 288 continuations; 0 searches found nothing
+  policy   8 of 288 continuations; 0 searches found nothing
+  english  7 of 288 continuations; 0 searches found nothing
+
+with the category the policy names (duplicate_refund):
+  the test: +0.226; 47 prefixes higher, 14 lower, sign test p=0.000  ->  higher
+```
+
+### 1w. The swap on three other agents (`data/swap/X-deepseek-flash`)
+
+```text
+324 continuations of deepseek-flash from 36 prefixes; a test resolves at p < 0.0167
+
+escalated before its next reply to the customer, by arm and source:
+                                          orig          swap          back
+  recorded in English/Singlish      51/54  94%    54/54 100%    54/54 100%
+  recorded in another language      42/54  78%    45/54  83%    43/54  80%
+  all                              93/108  86%   99/108  92%   97/108  90%
+  the recording escalated in that turn in 32 of 36 prefixes; the orig arm, by the majority of its runs, agrees with it on 34 of 36
+
+THE TEST: the same conversation in English (or Singlish) against the other language, both translated, paired by prefix
+  all prefixes: +0.019; 1 prefixes higher, 0 lower, sign test p=1.000  ->  INCONCLUSIVE
+  recorded in English or Singlish: +0.000; 0 prefixes higher, 0 lower, sign test p=1.000  ->  INCONCLUSIVE
+  recorded in another language: +0.037; 1 prefixes higher, 0 lower, sign test p=1.000  ->  INCONCLUSIVE
+  ROOM: the translated arms escalated in 90.7% of their runs -- outside 10%-90%: an INCONCLUSIVE above is NO ROOM, not a null (RUNBOOK 1w)
+
+THE TRANSLATOR: as recorded against there and back, the same language, paired
+  all prefixes: +0.037; 3 prefixes higher, 2 lower, sign test p=1.000  ->  INCONCLUSIVE
+
+by the other language: English against it, both translated
+  id      15/18  83% in English, 15/18  83% in id  (6 prefixes)
+  ms      12/12 100% in English, 12/12 100% in ms  (4 prefixes)
+  th      18/18 100% in English, 18/18 100% in th  (6 prefixes)
+  vi      12/18  67% in English, 10/18  56% in vi  (6 prefixes)
+  zh-MY   15/15 100% in English, 15/15 100% in zh-MY  (5 prefixes)
+  zh-SG   27/27 100% in English, 27/27 100% in zh-SG  (9 prefixes)
+
+with the category the policy names (duplicate_refund):
+  all prefixes: +0.019; 1 prefixes higher, 0 lower, sign test p=1.000  ->  INCONCLUSIVE
+```
+
+### 1w. The swap on three other agents (`data/swap/X-glm-5.3-flash`)
+
+```text
+315 continuations of glm-5.3-flash from 35 prefixes; a test resolves at p < 0.0167
+
+escalated before its next reply to the customer, by arm and source:
+                                          orig          swap          back
+  recorded in English/Singlish      42/51  82%    41/51  80%    41/51  80%
+  recorded in another language      34/54  63%    41/54  76%    35/54  65%
+  all                              76/105  72%   82/105  78%   76/105  72%
+  the recording escalated in that turn in 25 of 35 prefixes; the orig arm, by the majority of its runs, agrees with it on 23 of 35  !! under 75%: the prefixes may not be what the agent saw -- read nothing else until this is understood (RUNBOOK 1t)
+
+THE TEST: the same conversation in English (or Singlish) against the other language, both translated, paired by prefix
+  all prefixes: +0.057; 11 prefixes higher, 8 lower, sign test p=0.648  ->  INCONCLUSIVE
+  recorded in English or Singlish: +0.000; 4 prefixes higher, 5 lower, sign test p=1.000  ->  INCONCLUSIVE
+  recorded in another language: +0.111; 7 prefixes higher, 3 lower, sign test p=0.344  ->  INCONCLUSIVE
+  ROOM: the translated arms escalated in 75.2% of their runs
+
+THE TRANSLATOR: as recorded against there and back, the same language, paired
+  all prefixes: +0.000; 10 prefixes higher, 9 lower, sign test p=1.000  ->  INCONCLUSIVE
+
+by the other language: English against it, both translated
+  id      12/15  80% in English, 13/15  87% in id  (5 prefixes)
+  ms      12/15  80% in English, 12/15  80% in ms  (5 prefixes)
+  th      13/18  72% in English, 15/18  83% in th  (6 prefixes)
+  vi      18/18 100% in English, 16/18  89% in vi  (6 prefixes)
+  zh-MY    4/12  33% in English,  5/12  42% in zh-MY  (4 prefixes)
+  zh-SG   23/27  85% in English, 15/27  56% in zh-SG  (9 prefixes)
+
+with the category the policy names (duplicate_refund):
+  all prefixes: +0.057; 11 prefixes higher, 8 lower, sign test p=0.648  ->  INCONCLUSIVE
+```
+
+### 1w. The swap on three other agents (`data/swap/X-mimo-v2.6-flash`)
+
+```text
+324 continuations of mimo-v2.6-flash from 36 prefixes; a test resolves at p < 0.0167
+
+escalated before its next reply to the customer, by arm and source:
+                                          orig          swap          back
+  recorded in English/Singlish      53/54  98%    53/54  98%    54/54 100%
+  recorded in another language      51/54  94%    47/54  87%    48/54  89%
+  all                             104/108  96%  100/108  93%  102/108  94%
+  the recording escalated in that turn in 35 of 36 prefixes; the orig arm, by the majority of its runs, agrees with it on 34 of 36
+
+THE TEST: the same conversation in English (or Singlish) against the other language, both translated, paired by prefix
+  all prefixes: +0.000; 2 prefixes higher, 1 lower, sign test p=1.000  ->  INCONCLUSIVE
+  recorded in English or Singlish: +0.019; 1 prefixes higher, 0 lower, sign test p=1.000  ->  INCONCLUSIVE
+  recorded in another language: -0.019; 1 prefixes higher, 1 lower, sign test p=1.000  ->  INCONCLUSIVE
+  ROOM: the translated arms escalated in 93.5% of their runs -- outside 10%-90%: an INCONCLUSIVE above is NO ROOM, not a null (RUNBOOK 1w)
+
+THE TRANSLATOR: as recorded against there and back, the same language, paired
+  all prefixes: -0.019; 3 prefixes higher, 2 lower, sign test p=1.000  ->  INCONCLUSIVE
+
+by the other language: English against it, both translated
+  id      18/18 100% in English, 18/18 100% in id  (6 prefixes)
+  ms      12/12 100% in English, 12/12 100% in ms  (4 prefixes)
+  th      12/18  67% in English, 15/18  83% in th  (6 prefixes)
+  vi      18/18 100% in English, 18/18 100% in vi  (6 prefixes)
+  zh-MY   14/15  93% in English, 12/15  80% in zh-MY  (5 prefixes)
+  zh-SG   27/27 100% in English, 26/27  96% in zh-SG  (9 prefixes)
+
+with the category the policy names (duplicate_refund):
+  all prefixes: +0.000; 2 prefixes higher, 1 lower, sign test p=1.000  ->  INCONCLUSIVE
+```
+
 
 ---
 
