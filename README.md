@@ -242,9 +242,18 @@ re-scored by replaying their tool calls (`scripts/rescore.py`).
   versions to be two translations, not one text and its names
   ([WHAT_FAILED #53](docs/WHAT_FAILED.md)). With the name, 12 Malaysian
   conversations escalated in English in 35 of 36 runs and in Malay in half; 12
-  others, in English in 39% and in Malaysian Chinese in 17%. Whether that floor
-  is Malaysia's languages or its orders is RUNBOOK 1y, built with its reading
-  fixed ([RUNBOOK 1x, 1y](docs/RUNBOOK.md)).
+  others, in English in 39% and in Malaysian Chinese in 17%
+  ([RUNBOOK 1x](docs/RUNBOOK.md)).
+- **Malaysia's floor is its languages, not its orders.** Each market's
+  conversations put into its neighbours' languages, under a reading written
+  before the run: on Malaysia's orders, Indonesian and Singapore Chinese
+  escalated more than Malay and Malaysian Chinese (14 conversations against 1,
+  p = 0.001), and on Indonesia's and Singapore's orders Malaysia's languages
+  escalated less (14 against 3, p = 0.013). It is Malay against Indonesian —
+  22% against 57% on Malaysia's orders, 27% against 60% on Indonesia's, two
+  languages that share most of their words — and Chinese, low in Singapore's
+  variety as in Malaysia's. In Indonesian or English, Malaysia's orders
+  escalated as often as Indonesia's ([RUNBOOK 1y](docs/RUNBOOK.md)).
 
 ---
 
@@ -254,8 +263,8 @@ re-scored by replaying their tool calls (`scripts/rescore.py`).
 |---|---|
 | Environment: 277 tasks, 16 traps, 6 markets, 8 languages, checks on database state | done |
 | Harness: context strategies, tool exposure, simulated customer, replay, claim guardrail, closing check and its guard | done |
-| API experiments, RUNBOOK 1a–1x: 43 runs of API agents, 15,050 episodes in `traces/`; 4,275 continuations of recorded conversations (1t, 1v, 1w, 1x) | done |
-| The recorded traces as a Hugging Face dataset (`scripts/export_hf.py`) | published on the Hub (v44, 34 runs); v70 packs the language swap beside the episodes — every continuation, and every message each arm showed the agent, rebuilt and checked against its digest — 57 runs and the swap's continuations to 1x, 4,275 |
+| API experiments, RUNBOOK 1a–1y: 43 runs of API agents, 15,050 episodes in `traces/`; 4,905 continuations of recorded conversations (1t, 1v, 1w, 1x, 1y) | done |
+| The recorded traces as a Hugging Face dataset (`scripts/export_hf.py`) | published on the Hub (v44, 34 runs); v70 packs the language swap beside the episodes — every continuation, and every message each arm showed the agent, rebuilt and checked against its digest — 57 runs and the swap's continuations to 1y, 4,905 |
 | Judge calibration | labels nearly all "satisfied" (WHAT_FAILED #24); planted mistakes run: 4 of 9 criteria can be left to the judge, identity verification caught 1 in 20 |
 | Post-training round 1: RFT on Qwen3.8-27B | done: no gain once the checker was fixed |
 | Post-training round 2: a fine-tune balanced by trap; GRPO | round 2 done: no aggregate change, the leak moved (WHAT_FAILED #44); GRPO, one iteration: INCONCLUSIVE on the 62 newer tasks (+0.026, p = 0.55) and on the held-out fold, and +0.000 once the voucher trap's escalations after a declined voucher are read as the policy reads them (#46); on its own 61 training tasks, measured afterwards: NOT SHOWN (0.912 → 0.920, p = 0.71) |
@@ -263,7 +272,7 @@ re-scored by replaying their tool calls (`scripts/rescore.py`).
 | A model that reads the claims in any language, in place of the English list (RUNBOOK 1u) | calibrated (2026-10-13) on 626 recorded replies: not used — it took the refund paid before for a payment, 4 times, all outside English; the list stays and the live run is not run. Its quote check counted markdown as invention (WHAT_FAILED #50, fixed in v61) |
 | A policy in her language: the same 96 conversations, the policy translated into the conversation's language (RUNBOOK 1v) | run (2026-10-14): POLICY — her language's escalations went from 22% to 44% under the translated policy, 47 conversations against 14, p < 0.0001, both directions; level with English (45%) on average, so the gap closes as far as this run sees — where the prompt names the tool, and not in Malay or Malaysian Chinese. The translation was stopped twice before it ran: a section in Malay that every check passed, then every prohibition set in bold ([WHAT_FAILED #51](docs/WHAT_FAILED.md)) |
 | The tools named in the policy, crossed with its language, where every tool is shown (RUNBOOK 1x) | run (2026-10-14): INCONCLUSIVE — naming did not change what the translated policy does (+0.08, 34 conversations against 24, p = 0.24); the name raised the escalation in every arm, in English 45% → 64% (37 against 12, p < 0.001); its translated twins were two translations (WHAT_FAILED #53) |
-| Malaysia's languages, or its orders: each market's conversations in its neighbours' languages (RUNBOOK 1y) | built (v71), not run: Malaysia's 24 conversations in Malay, Indonesian and both Chinese, Indonesia's 16 and Singapore's 14 in theirs and Malaysia's, 630 continuations (under $1 off-peak); the reading fixed before the run |
+| Malaysia's languages, or its orders: each market's conversations in its neighbours' languages (RUNBOOK 1y) | run (2026-10-15): THE LANGUAGES — on Malaysia's orders the neighbours' languages higher (14 conversations against 1, p = 0.001), on theirs Malaysia's languages lower (14 against 3, p = 0.013); Malay 22–27% against Indonesian 57–60% on the same orders, both Chinese low |
 | The swap on three other agents, each from its own recorded conversations (RUNBOOK 1w) | run (2026-10-13): not seen beyond DeepSeek-V4-Pro, and not testable here — DeepSeek-V4.1-Flash and MiMo escalate in over 90% of runs in every language (NO ROOM), GLM's decision splits from run to run (its reproduction 23 of 35: not read); Grok left out before the run |
 | A hard edition of combined cases; a multi-model baseline | hard edition built (v48): 36 cases outside the suite, `--suite edition3`, their reading fixed (RUNBOOK 1s; on round 2's models, phase 4); its customer, customer 3, checked (WHAT_FAILED #43); on round 2's models: room (base 0.861), RFT and GRPO INCONCLUSIVE, hard in one case; on five API models (2026-10-13): not harder than its parts for any, and it separates no two the parts do not (RESULTS §8) — one command adds a model (`scripts/add_model.py`, v55; `--check` for which keys and models work, v56) |
 | Serving cost: the agent served three ways — the policy in the prompt with SGLang's radix cache on and off, and looked up instead (RUNBOOK phase 3) | built (v68): one GPU stage, ~1 h of a B200, each bar's quality verdict before any speed or cost claim, the cache's hits split into a conversation's first request (shared — flattered by this suite's six customers) and its later ones; not yet run |
