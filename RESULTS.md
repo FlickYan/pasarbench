@@ -620,7 +620,7 @@ Checks:
 
 ## 9. The language swap: one conversation, translated
 
-Recorded conversations held fixed at the moment the agent reads a refund already paid, and only their language changed (1t); the same with the policy in that language too (1v); and 1t on three other agents, each from its own recorded conversations (1w). Each reading was fixed before its run (RUNBOOK 1t, 1v, 1w); below is `scripts/language_swap.py report`, regenerated from the continuations. The reads it marks as read are not tests.
+Recorded conversations held fixed at the moment the agent reads a refund already paid, and only their language changed (1t); the same with the policy in that language too (1v); 1t on three other agents, each from its own recorded conversations (1w); 1v's arms with the tools named in the policy and not, where every tool is shown (1x); and the conversations of three markets in the languages of two (1y). Each reading was fixed before its run (RUNBOOK 1t, 1v, 1w, 1x, 1y); below is `scripts/language_swap.py report`, regenerated from the continuations. The reads it marks as read are not tests.
 
 ### 1t. The language: one conversation, translated (`data/swap/W-swap`)
 
@@ -806,6 +806,111 @@ by the other language: English against it, both translated
 
 with the category the policy names (duplicate_refund):
   all prefixes: +0.000; 2 prefixes higher, 1 lower, sign test p=1.000  ->  INCONCLUSIVE
+```
+
+### 1x. The tools named, crossed with the policy's language (`data/swap/Y-naming`)
+
+```text
+1584 continuations of deepseek-v4-pro from 88 prefixes
+
+escalated before its next reply to the customer, by arm, the tools not named in the policy / named:
+                 not named         named
+  local       103/264  39%  126/264  48%
+  policy      114/264  43%  158/264  60%
+  english     120/264  45%  169/264  64%
+  local: her language, the policy in English; policy: her language, the policy in it; english: the conversation in English. Every prefix in every arm, whatever its own prompt had: it named the tools in 0 of 88. The tools shown: default in 88 prefixes.
+
+THE TEST: naming the tools and the policy's language -- per prefix, the policy in her language against in English with the tools named, minus the same without them; sign test over the prefixes that show every tool (default)
+  all prefixes: +0.080; 34 prefixes higher, 24 lower, sign test p=0.237  ->  INCONCLUSIVE
+  ROOM: the four arms in her language escalated in 47.4% of their runs
+
+the prefixes that show every tool, each line a sign test read with the test:
+  the policy in her language against in English:
+      the tools named: +0.121; 29 prefixes higher, 17 lower, sign test p=0.104  ->  INCONCLUSIVE
+      the tools not named: +0.042; 24 prefixes higher, 21 lower, sign test p=0.766  ->  INCONCLUSIVE
+  1t's gap: the conversation in English against in hers:
+      the tools named: +0.163; 40 prefixes higher, 17 lower, sign test p=0.003  ->  English higher
+      the tools not named: +0.064; 28 prefixes higher, 18 lower, sign test p=0.184  ->  INCONCLUSIVE
+  what is left of it: both in English against both in hers:
+      the tools named: +0.042; 31 prefixes higher, 32 lower, sign test p=1.000  ->  INCONCLUSIVE
+      the tools not named: +0.023; 28 prefixes higher, 26 lower, sign test p=0.892  ->  INCONCLUSIVE
+  naming the tools, named against not:
+      local: +0.087; 27 prefixes higher, 11 lower, sign test p=0.014  ->  higher named
+      policy: +0.167; 35 prefixes higher, 12 lower, sign test p=0.001  ->  higher named
+      english: +0.186; 37 prefixes higher, 12 lower, sign test p=0.000  ->  higher named
+
+THE TEST by direction (read):
+  recorded in English/Singlish: +0.008; 16 prefixes higher, 14 lower, sign test p=0.856  ->  INCONCLUSIVE
+  recorded in another language: +0.139; 18 prefixes higher, 10 lower, sign test p=0.185  ->  INCONCLUSIVE
+
+by the language other than English (read): local / policy / english, the tools not named; then named
+  id      35/48  73% / 40/48  83% / 34/48  71%;  33/48  69% / 44/48  92% / 30/48  62%  (16 prefixes)
+  ms      10/36  28% / 15/36  42% / 14/36  39%;  18/36  50% / 10/36  28% / 35/36  97%  (12 prefixes)
+  th      9/48  19% / 28/48  58% / 11/48  23%;  21/48  44% / 29/48  60% / 27/48  56%  (16 prefixes)
+  vi      38/48  79% / 17/48  35% / 41/48  85%;  32/48  67% / 39/48  81% / 41/48  85%  (16 prefixes)
+  zh-MY   0/36   0% / 1/36   3% / 8/36  22%;  6/36  17% / 1/36   3% / 14/36  39%  (12 prefixes)
+  zh-SG   11/48  23% / 13/48  27% / 12/48  25%;  16/48  33% / 35/48  73% / 22/48  46%  (16 prefixes)
+
+search_policy, which returns the policy in the language the arm's prompt has it in, called in:
+  local-plain    0 of 264 continuations; 0 searches found nothing
+  policy-plain   0 of 264 continuations; 0 searches found nothing
+  english-plain  0 of 264 continuations; 0 searches found nothing
+  local-named    0 of 264 continuations; 0 searches found nothing
+  policy-named   0 of 264 continuations; 0 searches found nothing
+  english-named  0 of 264 continuations; 0 searches found nothing
+
+with the category the policy names (duplicate_refund):
+  the test: +0.080; 34 prefixes higher, 24 lower, sign test p=0.237  ->  INCONCLUSIVE
+```
+
+### 1y. Malaysia's languages, or its orders (`data/swap/Z-cross`)
+
+```text
+630 continuations of deepseek-v4-pro from 54 prefixes
+
+escalated before its next reply to the customer, by the order's market and the conversation's language -- the English policy, the tools named:
+                      ms            id         zh-MY         zh-SG            en
+  MY          16/72  22%    41/72  57%     6/72   8%     6/72   8%    50/72  69%  (24 prefixes)
+  ID          13/48  27%    29/48  60%                                27/48  56%  (16 prefixes)
+  SG                                       9/42  21%    11/42  26%    18/42  43%  (14 prefixes)
+  every arm in a language other than English went from English through the translator; English: as recorded, or 1t's translation into it
+
+THE TEST: on Malaysia's orders, its neighbours' languages against its own -- per prefix, Indonesian and Singapore Chinese against Malay and Malaysian Chinese, sign test
+  Malaysia's orders: +0.174; 14 prefixes higher, 1 lower, sign test p=0.001  ->  LANGUAGE: higher in the neighbours' languages
+THE CONTROL: on the neighbours' orders, Malaysia's language against the market's own -- Malay against Indonesian on Indonesia's, Malaysian against Singapore Chinese on Singapore's
+  the neighbours' orders: -0.200; 3 prefixes higher, 14 lower, sign test p=0.013  ->  MALAYSIA'S LANGUAGES LOWER on the neighbours' orders too
+THE READING: THE LANGUAGES: Malaysia's floor goes with Malay and Malaysian Chinese, whatever the order
+  ROOM: the arms in languages other than English escalated in 28.0% of their runs
+
+each pair alone (read):
+  Indonesian against Malay, Malaysia's orders: +0.347; 14 prefixes higher, 1 lower, sign test p=0.001  ->  higher in Indonesian
+  Indonesian against Malay, Indonesia's orders: +0.333; 12 prefixes higher, 2 lower, sign test p=0.013  ->  higher in Indonesian
+  Singapore against Malaysian Chinese, Malaysia's orders: +0.000; 3 prefixes higher, 4 lower, sign test p=1.000  ->  INCONCLUSIVE
+  Singapore against Malaysian Chinese, Singapore's orders: +0.048; 2 prefixes higher, 1 lower, sign test p=1.000  ->  INCONCLUSIVE
+
+English against each market's own languages (read):
+  MY, English against ms: +0.472; 16 prefixes higher, 1 lower, sign test p=0.000  ->  English higher
+  MY, English against zh-MY: +0.611; 19 prefixes higher, 0 lower, sign test p=0.000  ->  English higher
+  ID, English against id: -0.042; 3 prefixes higher, 4 lower, sign test p=1.000  ->  INCONCLUSIVE
+  SG, English against zh-SG: +0.167; 7 prefixes higher, 4 lower, sign test p=0.549  ->  INCONCLUSIVE
+
+the orders (read, not tested: different conversations) -- each language on Malaysia's orders and on its neighbour's:
+  ms     Malaysia's 16/72  22%   ID's 13/48  27%
+  id     Malaysia's 41/72  57%   ID's 29/48  60%
+  zh-MY  Malaysia's  6/72   8%   SG's  9/42  21%
+  zh-SG  Malaysia's  6/72   8%   SG's 11/42  26%
+  en     Malaysia's 50/72  69%   ID's 27/48  56%
+  en     Malaysia's 50/72  69%   SG's 18/42  43%
+
+THE TEST by how Malaysia's conversations were recorded (read):
+  recorded in en: +0.250; 6 prefixes higher, 0 lower, sign test p=0.031  ->  higher in the neighbours' languages
+  recorded in ms: +0.208; 6 prefixes higher, 1 lower, sign test p=0.125  ->  INCONCLUSIVE
+  recorded in zh-MY: +0.062; 2 prefixes higher, 0 lower, sign test p=0.500  ->  INCONCLUSIVE
+
+search_policy called in ms 0, id 0, zh-MY 0, zh-SG 0, en 0 continuations
+
+with the category the policy names (duplicate_refund):
+  the test: +0.174; 14 prefixes higher, 1 lower, sign test p=0.001  ->  higher in the neighbours' languages
 ```
 
 
