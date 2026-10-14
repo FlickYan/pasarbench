@@ -2090,6 +2090,37 @@ stressed, it stressed every prohibition.
 
 ---
 
+## 52. A split read by the policy's text was mostly the tools' exposure
+
+**What happened.** v67's report of 1v reads its result apart by whether the
+prompt named the tools, read and not tested, and the run on 2026-10-14 showed a
+clean split: where the prompt named them (65 prefixes), her language escalated
+in 19% of runs under the English policy and 56% under hers; where it did not
+(31), 26% and 19%. The RUNBOOK, README, WRITEUP and blog said the translated
+policy closes the gap "where the prompt names the tool the rule calls". It
+checked one other difference — the named prompts are the later runs', so the
+split was read within the first edition alone, and held — and not the one that
+mattered. Read again for v70: the 31 prompts without the names were two kinds.
+21 came from runs that showed the agent every tool, where her policy did not
+help (37% to 27%); 10 hid the tools behind search, where nothing was escalated
+in any arm, 1 run of 30 in each — with no name, the agent has no tool it knows
+to look for, in any language (1g). The split was mostly the exposure, and the
+question it seemed to answer — does a translated rule need the tool named? — is
+open where every tool is shown.
+
+**Fix.** The README, WRITEUP and blog say what the split is. RUNBOOK 1x asks
+the question within each conversation: 1v's arms each with the tools named and
+not, on the 88 conversations whose run showed every tool, its reading fixed
+before the run, prefixes behind search read apart and never in the test. The
+report prints the tools each prefix was shown beside every read of 1x.
+
+**Lesson.** A split read after the fact is between two groups that differ in
+more than the one thing it is named for. Before naming it, list what else
+differs between them — the run, the edition, the tools shown — and read the
+split within each; here the third was one line of the traces' headers away.
+
+---
+
 ## What this list is for
 
 Two things.
