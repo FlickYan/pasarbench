@@ -49,8 +49,16 @@ rest tools behind search, where it found none to call in any arm. One more:
         three arms, each with the tools named in the policy and not --
         NAMING_ARMS, "local-plain" to "english-named" -- on conversations
         that show the agent every tool. Within each arm only the marks that
-        name the tools differ; local against policy is 1v's test, with the
-        tools named and without.
+        name the tools differ -- in the policy arm from v71, whose twin
+        without them is the named translation with its marks taken out
+        (`unnamed_twin`; WHAT_FAILED #53); local against policy is 1v's test,
+        with the tools named and without.
+    1y  Malaysia's languages, or its orders (v71). The conversations of three
+        markets each in the languages of two (CROSS_ARMS), through English,
+        under the English policy with the tools named: Malaysia's in Malay,
+        Indonesian, Malaysian and Singapore Chinese, Indonesia's in Indonesian
+        and Malay, Singapore's in its Chinese and Malaysia's; each in English
+        too.
 """
 
 from __future__ import annotations
@@ -514,25 +522,95 @@ def naming_arm_messages(prefix: Prefix, arm: str, translate: Callable[[str, str]
     return msgs
 
 
+# A mark that names a tool, as a translation writes it: "(tool: `x`)",
+# "（工具：`x`）", "(alat: `x`)" -- a word or two, a colon, the tool in backticks.
+_TRANSLATED_MARK = re.compile(r"\s*[（(][^()（）`\n]{0,24}[:：]\s*`(escalate_to_human|get_shipment|"
+                              r"issue_goodwill_voucher)`[)）]")
+
+
+def unnamed_twin(named: str) -> tuple[str, int]:
+    """The policy with the tools named, its marks taken out: the twin that
+    differs from it in the marks alone (1x, v71) -- where translating the
+    policy without them a second time gave other words too (WHAT_FAILED #53).
+    Returns the text and how many marks came out."""
+    return _TRANSLATED_MARK.subn("", named)
+
+
 def shown_messages(prefix: Prefix, swap: dict[str, Any], translate: Callable[[str, str], str],
                    policy_for: Callable[[str, bool], str] | None = None
                    ) -> list[dict[str, Any]]:
     """What one continuation was shown, rebuilt from its prefix and its
-    trace's record of the arm (the header's "swap"): 1t's and 1w's arms, 1v's
-    and 1x's. `policy_for(language, named)` gives the policy in a language --
-    the run's own translation; only a policy arm asks for it."""
+    trace's record of the arm (the header's "swap"): 1t's and 1w's arms, 1v's,
+    1x's and 1y's. `policy_for(language, named)` gives the policy in a language
+    -- the run's own translation; only a policy arm asks for it."""
+    from .harness.prompts import policy_text
     arm, design = swap.get("arm"), swap.get("design")
     local = local_language(prefix)
+    if design == "cross":
+        return cross_arm_messages(prefix, arm, translate,
+                                  policy_text(named=bool(swap.get("tools_named"))))
     if design == "naming":
         base, named = naming_arm(arm)
-        return naming_arm_messages(prefix, arm, translate,
-                                   {named: policy_for(local, named)} if base == "policy"
-                                   else None)
+        if base != "policy":
+            return naming_arm_messages(prefix, arm, translate)
+        if not named and swap.get("twin") == "unnamed":
+            text = unnamed_twin(policy_for(local, True))[0]
+        else:
+            text = policy_for(local, named)
+        return naming_arm_messages(prefix, arm, translate, {named: text})
     if design == "policy":
         named = (prefix.head.get("policy_mode") or "preload") == "preload-named"
         return policy_arm_messages(prefix, arm, translate,
                                    policy_for(local, named) if arm == "policy" else None)
     return arm_messages(prefix, arm, translate)
+
+
+# 1y (v71): Malaysia's languages, or its orders? Each conversation of three
+# markets in the languages of two -- Malaysia's in Malay and Indonesian and in
+# Malaysian and Singapore Chinese, Indonesia's in Indonesian and Malay,
+# Singapore's in its Chinese and Malaysia's -- and in English.
+CROSS_ARMS = {"MY": ("ms", "id", "zh-MY", "zh-SG", "en"),
+              "ID": ("id", "ms", "en"),
+              "SG": ("zh-SG", "zh-MY", "en")}
+OWN_LANGUAGES = {"MY": ("ms", "zh-MY"), "ID": ("id",), "SG": ("zh-SG",)}
+
+
+def cross_unfit(prefix: Prefix) -> str:
+    """Why a prefix is not one of 1y's, or "": a market it does not cross, or
+    a conversation recorded in neither English nor its market's languages
+    (Singlish: its English arm would not be English)."""
+    if prefix.market not in CROSS_ARMS:
+        return f"market {prefix.market}, which 1y does not cross"
+    if prefix.language != "en" and prefix.language not in OWN_LANGUAGES[prefix.market]:
+        return f"recorded in {prefix.language}"
+    return ""
+
+
+def cross_arm_messages(prefix: Prefix, language: str, translate: Callable[[str, str], str],
+                       policy: str | None = None) -> list[dict[str, Any]]:
+    """1y's arm in `language`. Every arm goes through English: the
+    conversation in English -- as recorded, or 1t's translation into it -- and
+    from English into the arm's language, its own included, so that every arm
+    in a language other than English has been through the translator the same
+    way (1t's `swap` and `back`, where an arm is one of those). The system
+    prompt carries `policy` in place of the English its prompt had, if given;
+    1y gives the English policy with the tools named."""
+    if language not in {x for arms in CROSS_ARMS.values() for x in arms}:
+        raise ValueError(f"1y has no arm in {language!r}")
+    why = cross_unfit(prefix) or (policy_unchangeable(prefix) if policy else "")
+    if why:
+        raise ValueError(f"{prefix.pid}: {why}")
+    english = arm_messages(prefix, "orig" if prefix.language == "en" else "swap", translate)
+    msgs = []
+    for m in english:
+        m = dict(m)
+        if language != "en" and translatable(m):
+            m["content"] = translate(m["content"], language)
+        msgs.append(m)
+    if policy:
+        msgs[0] = {**msgs[0], "content": msgs[0]["content"].replace(prefix_policy(prefix),
+                                                                    policy)}
+    return msgs
 
 
 def shown_digest(messages: list[dict[str, Any]]) -> str:
