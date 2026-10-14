@@ -2712,6 +2712,44 @@ stay far short of English under their own policy. One agent, one rule, one
 translator, policies no native speaker has signed: whether another agent shows
 the same, and why Malay and Malaysian Chinese do not, is not tested.
 
+**Read after the run (v70; the recorded continuations, no API spend).** Two
+reads, each changing what comes next.
+
+- **The tools named, or the tools shown.** The 31 prompts that did not name the
+  tools were two kinds. 21 came from runs that showed the agent every tool
+  (P2-ref, V-dsk-parts): there her language escalated in 37% of runs under the
+  English policy, 27% under her own, 46% in English — her policy did not help.
+  10 hid the tools behind search (K-preload, J-preload, L2-off), and nothing was
+  escalated in any arm, 1 run of 30 in each: a policy that does not name
+  `escalate_to_human` leaves the agent no tool it knows to look for (1g), in any
+  language. So the split read above is mostly the tools' exposure; the open
+  question is where every tool is shown — does naming the tool in a translated
+  rule make it work there? 1x asks it, within each conversation.
+- **Malaysia's two languages.** Read: in Malay and Malaysian Chinese the agent
+  reads the refund, tells her it was paid on 9 November and to check her card
+  statement — now and then asks for her phone's last four digits first — and
+  stops, the explanation P10 says is not enough; the same conversations in
+  English get "Because a refund has already been processed for this order, I've
+  escalated your case". What it is not: P10's translation — Malay's and
+  Malaysian Chinese's say what Indonesian and Singapore Chinese say, and those
+  moved (44% to 85%, 17% to 56%); the naming — with the tools named, Malaysia's
+  went from 6% to 14% under her policy against 50% in English, the others' from
+  26% to 78%; an identity check before the lookup, rare in both and not where
+  the gap is; the opening, one English template in every market. Nor are
+  Singapore's and Malaysia's Chinese conversations the same text: the translator
+  wrote Singapore's in its mix — "我还没收到refund，please帮我refund", English
+  words for the refund and the order — and Malaysia's in plain Chinese.
+  Recorded in Malay or Malaysian Chinese, no prefix escalated in that turn (0 of
+  16). And in English too: in the runs that showed every tool, the same English
+  words — "I still haven't got my money back. Please refund me." and the order
+  number — got the escalation in that turn for 8 of 8 Indonesian orders (IDR
+  737,000), 7 of 8 Vietnamese, 1 of 8 Thai and 0 of 8 Malaysian (MYR 200.00):
+  "Could you let me know what issue you're experiencing with the refund?"
+  (`prefixes --exposure default`, 1x). Whether Malaysia's
+  floor is its languages or its orders is not separated by any run so far; one
+  that would puts Malaysia's conversations in Indonesian and Singapore Chinese,
+  and Indonesia's and Singapore's in Malay and Malaysian Chinese.
+
 ### 1w. Is it DeepSeek-V4-Pro's? The swap on three other agents (API only, no GPU)
 
 1s recorded the duplicate refund for four more agents — DeepSeek-V4.1-Flash,
@@ -2819,6 +2857,82 @@ third decides it differently from one run to the next. That the gap is
 DeepSeek-V4-Pro's alone is not shown either. The test needs an agent that
 hesitates at P10, as DeepSeek-V4-Pro does, and decides the same way twice.
 
+### 1x. Does a translated policy need the tool named in it? (API only, no GPU)
+
+1v found the policy in her language raised P10's escalation where the prompt
+named the tools, and not where it did not. Read after the run (1v, v70), the
+prompts without the names were two kinds: 10 hid the tools behind search, where
+nothing was escalated in any arm — no name, no tool to look for (1g) — and 21
+showed the agent every tool, where the policy in her language did not help
+(37% to 27%). The second is the open question: with every tool in plain sight,
+does naming the tool in a translated rule make it work? v70 asks it within each
+conversation (`language_swap.py run --naming`).
+
+**The prefixes.** Every rebuildable duplicate-refund conversation of
+deepseek-v4-pro whose run showed every tool — 101, from P2-ref and V-dsk-parts,
+none with the tools named in its prompt — chosen as 1t chose them, at most 8 a
+group: 88 (Malaysia's two languages recorded in English have 4 each). `check`
+continues each with a probe before any spend: all 88 are shown what the
+recording's next step was.
+
+**The arms.** 1v's three — `local`, her language under the English policy;
+`policy`, her language under the policy in it; `english`, the conversation in
+English — each twice: the policy as written (`-plain`) and with the tools named
+(`-named`: 1g's marks, P10's "Escalate (tool: `escalate_to_human`)" among them,
+translated with the rest in the policy arm). An arm and its twin differ in those
+marks and nothing else; the three `-plain` arms are 1v's arms on these
+prefixes. `search_policy` answers as in 1v. Each trace's policy mode is what
+the agent was shown, beside what its prompt was recorded with, and a digest of
+every message it was shown.
+
+**The translation.** The policy's 12 texts, six languages with the tools named
+and not, are 1v's third translation, already in the cache, and are checked again
+before any continuation: nothing runs while a piece fails. The conversations'
+307 messages are translated both ways by the same translator — 1t's
+translations, already in the cache, where a prefix is one of 1t's — for cents.
+
+```bash
+set -a; . ./.env; set +a
+python scripts/language_swap.py prefixes traces --exposure default --out data/swap/Y-prefixes.jsonl
+python scripts/language_swap.py check data/swap/Y-prefixes.jsonl
+python scripts/language_swap.py run data/swap/Y-prefixes.jsonl --naming --run-id Y-naming --dry-run
+python scripts/language_swap.py run data/swap/Y-prefixes.jsonl --naming --run-id Y-naming
+python scripts/language_swap.py report data/swap/Y-naming > Y.txt
+```
+
+1,584 continuations (88 prefixes, six arms, k = 3). At 1v's use, 8,800 prompt
+tokens a continuation whether the run showed every tool or searched for them,
+some 14 million prompt tokens of deepseek-v4-pro, most from the cache, and 0.4
+million completion: about $2 off-peak, twice that at peak.
+
+**The reading, fixed before the run** (2026-10-14):
+
+- **The test (primary).** Per prefix, the policy in her language against in
+  English with the tools named, minus the same without them —
+  (`policy-named` − `local-named`) − (`policy-plain` − `local-plain`), each
+  arm's rate over its k runs — and a sign test over the 88 prefixes: NAMING at
+  p < 0.05 if more are above zero than below — naming the tool is part of what
+  makes a translated policy work, every tool shown or not. NAMING, the other way,
+  if fewer. INCONCLUSIVE otherwise: no sign that naming changes what a
+  translated policy does where every tool is shown, and 1v's split is read as
+  the tools' exposure — behind search a name is needed to find the tool at all.
+- **Read with it,** each a sign test, none required to resolve: the policy in
+  her language against in English with the tools named, and without (the second
+  is 1v's own result on these prefixes again); 1t's gap with the tools named and
+  without; what is left of it with both in her language; and naming in each arm
+  — in `english` too: does the name alone move it in English?
+- **Room.** If the four arms in her language escalate in 10% of their runs or
+  fewer, or in 90% or more, an INCONCLUSIVE is NO ROOM, not a null.
+- **Every verdict** points the way its sign test does, more prefixes one way
+  than the other.
+- **Secondary, read.** By direction; by language — Malaysia's two above all,
+  where 1v's policy did not move it and where, in these runs, the English
+  conversations were not escalated either (1v, read after); search_policy; the
+  category.
+- **Not tested.** Tools behind search (1g, and 1v's ten prompts); any agent
+  but deepseek-v4-pro; the instructions around the policy and the tools' own
+  words, English in every arm; whether the translations are good policy.
+
 ### Publishing the traces (v44)
 
 Every recorded run as a Hugging Face dataset: one JSON line per episode, its
@@ -2827,7 +2941,7 @@ a list of the runs and a dataset card written from what was exported.
 
 ```bash
 python scripts/export_hf.py traces --dry-run          # counts, and the checks below
-python scripts/export_hf.py traces --out hf-dataset   # ~160 MB; hf-dataset/ is gitignored
+python scripts/export_hf.py traces --out hf-dataset   # a new folder; hf-dataset*/ is gitignored
 pip install -U huggingface_hub
 hf auth login                                         # your token, typed there and nowhere else
 hf upload <your-hf-name>/pasarbench-traces hf-dataset . --repo-type dataset
@@ -2839,6 +2953,21 @@ for API keys, access tokens and home-directory paths, and stops on the first,
 naming the file. Email addresses are replaced with `[email]`: in the runs to 1q,
 two, one of them an address the simulated customer made up. A later run goes up
 the same way, into the same dataset, as a new commit.
+
+**The language swap too (v70).** `data/swap` goes up beside the episodes, in
+two configs: `swap`, one line per continuation — its RUNBOOK section, arm,
+languages, whether its policy named the tools, the recorded conversation it
+continued (in `episodes`), whether it escalated, and its trace — and
+`swap_prompts`, one line per arm of each prefix: every message the agent was
+shown. A trace keeps what the agent did, not what it was shown, so those are
+rebuilt from the prefixes and the run's translation cache as the run built
+them, no call made: from v70 each continuation records a digest of its
+messages, and the export checks it; for the runs before, a translated policy is
+checked against the text the run wrote beside its traces. An arm that cannot be
+rebuilt — a translation the cache lost, a digest that differs — stops the
+export, named. On 2026-10-14, the first with it: 22,191 episodes in 57 runs, and
+1t, 1v and 1w's 2,691 continuations and 897 arms, every one rebuilt; 60
+addresses replaced in the swap's, all in a profile lookup's payload; 282 MB.
 
 ---
 
