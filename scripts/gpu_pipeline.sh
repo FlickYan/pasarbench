@@ -10,6 +10,7 @@
 #   PASAR_ROUND=2 bash scripts/gpu_pipeline.sh customer3   # customer 3 against 2 (v47)
 #   PASAR_ROUND=2 bash scripts/gpu_pipeline.sh edition3    # the hard edition (v48)
 #   PASAR_ROUND=2 bash scripts/gpu_pipeline.sh grpo-measure   # GRPO on its own tasks (v52)
+#   bash scripts/gpu_pipeline.sh serving  # phase 3: the agent served three ways (v68)
 #
 # PASAR_ROUND=2 runs the same stages again as round 2 (v44): the second
 # fine-tune, its data balanced by trap (WHAT_FAILED #31), under today's customer
@@ -697,6 +698,55 @@ EOF
     echo "The hard edition ran. Read logs/${LP}edition3.txt (RUNBOOK 1s)."
     ;;
 
+  serving)
+    # Phase 3 (RUNBOOK): what serving the agent costs, three ways -- the policy
+    # in the prompt with SGLang's radix cache on, as every run so far; no
+    # policy in the prompt, the agent looking rules up (jit); and the policy in
+    # the prompt with the agent's radix cache off. The base agent and the
+    # customer, both started afresh for each bar, so every bar's agent gets the
+    # memory plan of the first; only the agent's flags change (AGENT_ARGS: the
+    # customer keeps her cache, and the load the agent is measured under is the
+    # same). The no-cache bar is last: if its server will not start with the
+    # flag, the other two are measured. A bar is measured whole -- run the
+    # stage again after a failure, and measured bars are kept while the one cut
+    # short starts over. The report is rewritten after each bar.
+    SERVE_K="${PASAR_SERVE_K:-1}"
+    SERVE_SAMPLE="${PASAR_SERVE_SAMPLE:-0}"
+    PRICE="$($PY scripts/gpu_plan.py price)"
+    report_serving() {
+      $PY scripts/serving_bars.py report --prefix "$P" --usd-per-hour "$PRICE" \
+        > "logs/${LP}serving.md" || echo "!! the serving report failed; the bars are on disk"
+    }
+    layout
+    PLAN="$($PY scripts/serving_bars.py plan)"
+    failed=""
+    # The plan on its own descriptor: the servers started in the loop inherit
+    # the loop's standard input, and must not be handed the plan's lines.
+    while IFS= read -r line <&3; do
+      bar="${line%%$'\t'*}"; flags="${line#*$'\t'}"
+      if $PY scripts/serving_bars.py done --bar "$bar" --prefix "$P" -k "$SERVE_K" \
+          --sample "$SERVE_SAMPLE"; then
+        echo "== $bar: measured already (data/serving/$P-serve-$bar.json)"
+        continue
+      fi
+      echo "== $bar${flags:+ (the agent with $flags)}"
+      export AGENT_ARGS="$flags"
+      serve agent
+      $PY scripts/serving_bars.py run --bar "$bar" --prefix "$P" -k "$SERVE_K" \
+        --sample "$SERVE_SAMPLE" --customer "$CUSTOMER" 2>&1 | tee -a "logs/${LP}serving.log" \
+        || failed="$failed $bar"
+      report_serving
+    done 3<<< "$PLAN"
+    unset AGENT_ARGS
+    stop
+    report_serving
+    echo
+    if [ -n "$failed" ]; then
+      echo "!! not measured:$failed -- run the stage again; logs/${LP}serving.log says why"
+    fi
+    echo "Serving measured. Read logs/${LP}serving.md (RUNBOOK phase 3)."
+    ;;
+
   settings)
     echo "agent $AGENT_MODEL | customer $SIM_MODEL | round $ROUND: runs $P-*, adapters checkpoints/$RFT-A and -B"
     echo "PASAR_K=$K PASAR_COLLECT_K=$COLLECT_K PASAR_EPOCHS=$EPOCHS PASAR_TRAIN_MAX_LEN=$TRAIN_MAX_LEN PASAR_CUSTOMER=$PASAR_CUSTOMER PASAR_PER_TRAP=$PER_TRAP" \
@@ -709,7 +759,7 @@ EOF
     ;;
 
   *)
-    echo "usage: bash scripts/gpu_pipeline.sh smoke | stage1 | stage2 | grpo | grpo-measure | customer3 | edition3 | settings" >&2
+    echo "usage: bash scripts/gpu_pipeline.sh smoke | stage1 | stage2 | grpo | grpo-measure | customer3 | edition3 | serving | settings" >&2
     exit 1
     ;;
 esac
