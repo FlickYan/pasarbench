@@ -2121,6 +2121,37 @@ split within each; here the third was one line of the traces' headers away.
 
 ---
 
+## 53. 1x's twins in her language were two translations, not one text and its marks
+
+**What happened.** RUNBOOK 1x runs 1v's three arms each with the tools named in
+the policy and without, and its reading, fixed before the run, said an arm and
+its twin differ in the marks that name the tools and nothing else. For the
+English policy that holds by construction: the named text is the plain one with
+the marks put in. For the policy in her language it did not: the run asked the
+translator for each text on its own, and got two translations. Run on
+2026-10-14, each named translation, its marks taken out, was 93% to 98% like
+the plain one, and P10 read differently in all six languages — Vietnamese's
+named text kept the verb in English, "Hãy escalate", where its plain one says
+"Chuyển tuyến", and Vietnamese under its own policy escalated in 35% of runs
+plain and 81% named. The `policy` arm's naming, and the test that uses it,
+carried two translations' differences as well as the name. The tests' stand-in
+translator changes a text word by word, so its two translations were the same
+but for the marks, and no test could see it (#51's lesson, in another form).
+
+**Fix.** Under `--naming` the text without the tools named is now the named
+translation with its marks taken out (`swap.unnamed_twin`), checked as the
+plain policy's translation, with as many marks taken out as the English has;
+each trace records it (`"twin": "unnamed"`), and the dataset export rebuilds
+each arm the way its run made it. 1x's run is read with its `local` and
+`english` arms as the clean comparison of naming, and its `policy` arm as two
+translations.
+
+**Lesson.** A variant made by asking a model twice is two samples, not one text
+and its variant. Make the variant from the one text, and test with a stand-in
+that would differ between two calls, as the model does.
+
+---
+
 ## What this list is for
 
 Two things.
