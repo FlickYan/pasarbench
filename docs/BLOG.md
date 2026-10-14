@@ -352,7 +352,14 @@ average, the gap was the policy being in a different language from the
 conversation. Not everywhere: it closed only where the prompt named the tool
 the rule calls, which is where the gap had been; in Indonesian and Thai the
 agent now escalated more often than in English, and in Malay and Malaysian
-Chinese it barely moved.
+Chinese it barely moved. Reading it again afterwards, the prompts that didn't
+name the tool were mostly from runs that showed the agent every tool, where her
+policy didn't help; the rest hid the tools behind search, where without the
+name nothing got escalated in any language. Whether the name is what makes a
+translated rule work when every tool is in sight is the next run. And
+Malaysia's floor may not be its languages at all: in the runs that showed every
+tool, the same English words got the escalation for 8 of 8 Indonesian orders and
+none of 8 Malaysian ones.
 
 ## Result 4: my fine-tune learned my verifier
 
@@ -527,7 +534,7 @@ doing it twice.
 - **Read a translation for its language before its meaning.** My check of a
   translated policy counted every code, number and heading of a section that
   had come back in Malay instead of Chinese, and passed it.
-- **Write down what failed.** The project's failure log has 51 entries; most
+- **Write down what failed.** The project's failure log has 52 entries; most
   were found by refusing a number that couldn't be right.
 
 ## Limits
@@ -550,5 +557,5 @@ run twice, and the second's photo-trap numbers are the simulated customer's: tol
 she had no photos, she sent them anyway once she could not leave. GRPO ran one
 iteration, judged on tasks whose room was partly that customer's choice.
 
-The code, the trace generators, and all 51 failures are in the repo:
+The code, the trace generators, and all 52 failures are in the repo:
 [github.com/FlickYan/pasarbench](https://github.com/FlickYan/pasarbench).
