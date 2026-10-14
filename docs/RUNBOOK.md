@@ -2880,8 +2880,9 @@ recording's next step was.
 English — each twice: the policy as written (`-plain`) and with the tools named
 (`-named`: 1g's marks, P10's "Escalate (tool: `escalate_to_human`)" among them,
 translated with the rest in the policy arm). An arm and its twin differ in those
-marks and nothing else; the three `-plain` arms are 1v's arms on these
-prefixes. `search_policy` answers as in 1v. Each trace's policy mode is what
+marks and nothing else (in the policy arm, as run, not so: its twins were two
+translations — below, and WHAT_FAILED #53); the three `-plain` arms are 1v's
+arms on these prefixes. `search_policy` answers as in 1v. Each trace's policy mode is what
 the agent was shown, beside what its prompt was recorded with, and a digest of
 every message it was shown.
 
@@ -2933,6 +2934,159 @@ million completion: about $2 off-peak, twice that at peak.
   but deepseek-v4-pro; the instructions around the policy and the tools' own
   words, English in every arm; whether the translations are good policy.
 
+**Run on 2026-10-14** (`data/swap/Y-naming`, `Y.txt`; 17 minutes, at the peak
+rate): **INCONCLUSIVE — no sign that naming the tool changes what a translated
+policy does where every tool is shown.** By the reading, 1v's split is read as
+the tools' exposure. Every continuation finished, none ended by an API error,
+and recounted from the traces every number is the report's; every trace's policy
+mode is what its arm showed, and the dataset export rebuilt all 528 arms against
+their digests.
+
+| escalated, of 264 runs an arm | the tools not named | named |
+|---|---|---|
+| `local`: her language, the policy in English | 103, 39% | 126, 48% |
+| `policy`: her language, the policy in it | 114, 43% | 158, 60% |
+| `english`: English, the policy in English | 120, 45% | 169, 64% |
+
+- **The test.** (`policy-named` − `local-named`) − (`policy-plain` −
+  `local-plain`): +0.080, 34 prefixes above zero and 24 below, p = 0.24 —
+  INCONCLUSIVE, with room (the four arms in her language escalated in 47% of
+  their runs).
+- **Read with it.** The policy in her language against in English: with the
+  tools named +0.121 (29 prefixes and 17, p = 0.10), without them +0.042 (24
+  and 21, p = 0.77) — neither resolves; 1v's 21 prompts that showed every tool
+  had gone from 37% to 27%. 1t's gap: with the tools named +0.163, English
+  higher (40 and 17, p = 0.003); without them +0.064 (p = 0.18). What is left
+  of it with both in her language: nothing that resolves, named or not.
+- **Naming, in each arm** (read; the finding): named against not, the
+  escalation rose in every arm — `local` +0.087 (27 prefixes and 11,
+  p = 0.014), `english` +0.186 (37 and 12, p < 0.001), `policy` +0.167 (35 and
+  12, p = 0.001). With every tool already in the list, a name in the rule still
+  raised P10's escalation: in English from 45% to 64%. It raised English more
+  than her language, so 1t's gap is wider with the name than without.
+- **The policy arm's twins were two translations** (WHAT_FAILED #53). The
+  reading says an arm and its twin differ in the marks alone; that holds for
+  the English policy, and not for the policy in her language, which the run
+  translated twice, once with the tools named and once without. Its marks taken
+  out, each named translation is 93% to 98% like the plain one, and P10 reads
+  differently in all six languages: Vietnamese's named text keeps the verb in
+  English, "Hãy escalate", where the plain one says "Chuyển tuyến" — and
+  Vietnamese under its own policy escalated in 35% of runs plain and 81% named,
+  where under the English policy it was 79% and 67%. So the `policy` arm's
+  naming, and the test that uses it, carry two translations' differences as
+  well as the name; the `local` and `english` arms' do not. v71 makes the twin
+  from the named translation, its marks taken out.
+- **By direction** (read): recorded in English +0.008 (16 and 14); recorded in
+  another language +0.139 (18 and 10, p = 0.19).
+- **By language** (read; `local` / `policy` / `english`, the tools not named,
+  then named): Indonesian 73 / 83 / 71%, then 69 / 92 / 62%. Malay 28 / 42 /
+  39%, then 50 / 28 / 97%. Thai 19 / 58 / 23%, then 44 / 60 / 56%. Vietnamese
+  79 / 35 / 85%, then 67 / 81 / 85%. Malaysian Chinese 0 / 3 / 22%, then 17 / 3 /
+  39%. Singapore Chinese 23 / 27 / 25%, then 33 / 73 / 46%. With the tool named,
+  the Malay group's conversations escalated in English in 35 of 36 runs, in
+  Malay in half, under the Malay policy in 28% — Malaysia's floor stays where
+  the language is Malaysia's. In English without the name the markets split as
+  their recordings did: Indonesia 71%, Vietnam 85%; Malaysia 22% to 39%,
+  Thailand 23%, Singapore 25%.
+- **search_policy** was never called; **every escalation** was a
+  `duplicate_refund`.
+- **What it used.** 2,866 steps; 14.6 million prompt tokens of
+  deepseek-v4-pro, 96% from the cache, and 0.43 million completion — about
+  twice 1v's, at the peak rate; the policy's translations came from the cache,
+  and the conversations new to 1t were translated for cents.
+
+**What it means.** On these 88 conversations, whose runs showed the agent every
+tool, a policy in her language did not raise P10's escalation detectably, with
+the tool named or without, and naming did not change what the translated policy
+does. 1v's effect was where its runs hid the tools behind search and its
+prompts named them — other runs' conversations too, so the tools' exposure and
+the conversations' source are not separated (#52's lesson, once more). What
+the run did find is the name itself: written into the rule beside the action,
+it raised the escalation in every arm, English most, with the tool already in
+plain sight — a fix 1g found for a tool the agent could not find works on one
+it can. And with it, Malaysia's conversations escalate far more in English than
+in Malay or Malaysian Chinese; whether that floor is the languages or
+Malaysia's orders, 1y asks.
+
+### 1y. Malaysia's languages, or its orders? (API only, no GPU)
+
+Malaysia's two languages stay far below English in every run that has read
+them: 1r's recordings (7% and 2%), 1t, 1v under her own policy, 1x with the
+tool named. Two things have stayed with them: the language, and the order —
+Malaysia's orders, in its currency and market. In 1x's English arms without
+the name, Malaysia's orders escalated far less than Indonesia's and Vietnam's,
+as in the recordings (1v, read after); with the name, 12 Malaysian
+conversations escalated in English in 35 of 36 runs and in Malay in half, 12
+others in English in 39% and in Malaysian Chinese in 17%. v71 crosses the two:
+each conversation of three markets in the languages of two
+(`language_swap.py run --cross`).
+
+**The prefixes.** 1x's, from the three markets that share a language with
+Malaysia: Malaysia's 24 (8 recorded in English, 8 in Malay, 8 in Malaysian
+Chinese), Indonesia's 16 (8 in English, 8 in Indonesian) and Singapore's 14
+(6 in English, 8 in Singapore Chinese; its 2 in Singlish are left out, their
+English arm would not be English). Every run showed the agent every tool.
+
+**The arms.** Each conversation in the languages of two markets, and in
+English: Malaysia's in Malay, Indonesian, Malaysian Chinese and Singapore
+Chinese; Indonesia's in Indonesian and Malay; Singapore's in Singapore and
+Malaysian Chinese. Every arm goes through English: the conversation in English
+— as recorded, or 1t's translation into it — and from English into the arm's
+language, its own included, so every arm in a language other than English has
+been through the translator the same way (1t's `swap` and `back`, where an arm
+is one of those). The order, the world, the tools and their payloads are the
+conversation's own in every arm. The policy is English in every arm, with the
+tools named — 1x's `local-named` and `english-named` text, where Malaysia's
+conversations in English escalated and there was room in its languages. The
+suite asks for Singapore Chinese "heavily code-mixed with English" and for
+Malaysian Chinese in Malaysia's Mandarin register, so the two Chinese arms
+differ in that too; `arms.md` puts each conversation's words in its languages
+side by side, to read before the results.
+
+```bash
+set -a; . ./.env; set +a
+python scripts/language_swap.py run data/swap/Y-prefixes.jsonl --cross --run-id Z-cross --dry-run
+python scripts/language_swap.py run data/swap/Y-prefixes.jsonl --cross --run-id Z-cross
+python scripts/language_swap.py report data/swap/Z-cross > Z.txt
+```
+
+630 continuations (Malaysia's 24 in five arms, Indonesia's 16 and Singapore's
+14 in three, k = 3): some 6 million prompt tokens at 1x's use, most from the
+cache — under a dollar off-peak — and 80 translations not yet in the cache, for
+cents (the conversations share most of their words: one opening, one order
+number a market).
+
+**The reading, fixed before the run** (2026-10-14):
+
+- **The test (primary).** On Malaysia's orders, its neighbours' languages
+  against its own: per prefix, the mean of Indonesian and Singapore Chinese
+  against the mean of Malay and Malaysian Chinese, each arm's rate over its k
+  runs; a sign test over the 24. LANGUAGE if higher in the neighbours'
+  languages at p < 0.05; the other way if lower.
+- **The control.** On the neighbours' orders, Malaysia's language against the
+  market's own: Malay against Indonesian on Indonesia's 16, Malaysian against
+  Singapore Chinese on Singapore's 14, one sign test over the 30. Lower in
+  Malaysia's languages at p < 0.05, or higher, or INCONCLUSIVE.
+- **The reading of the two.** The test higher and the control lower: THE
+  LANGUAGES — Malaysia's floor goes with Malay and Malaysian Chinese, whatever
+  the order. Neither resolving: NOT THE LANGUAGES, as far as this run sees, and
+  the orders are read from each language's rate on Malaysia's orders against
+  its neighbour's (different conversations, not paired). The test alone:
+  MALAYSIA'S ORDERS IN ITS LANGUAGES — they rise in the neighbours' languages,
+  the neighbours' do not fall in Malaysia's. The control alone: BOTH — Malaysia's
+  languages lower the neighbours' orders, and Malaysia's stay low in the
+  neighbours' languages. A test the other way is reported as that, line by line.
+- **Room.** If the arms in languages other than English escalate in 10% of
+  their runs or fewer, or in 90% or more, an INCONCLUSIVE is NO ROOM.
+- **Every verdict** points the way its sign test does.
+- **Secondary, read.** Each pair alone on each market's orders; English
+  against each market's own languages; the test by how Malaysia's conversations
+  were recorded; search_policy; the category.
+- **Not tested.** A policy in her language (English in every arm, with the
+  tools named); the policy without the names; tools behind search; any agent
+  but deepseek-v4-pro; Thai and Vietnamese; whether the varieties as the
+  translator writes them are how people in each market write.
+
 ### Publishing the traces (v44)
 
 Every recorded run as a Hugging Face dataset: one JSON line per episode, its
@@ -2968,6 +3122,7 @@ rebuilt — a translation the cache lost, a digest that differs — stops the
 export, named. On 2026-10-14, the first with it: 22,191 episodes in 57 runs, and
 1t, 1v and 1w's 2,691 continuations and 897 arms, every one rebuilt; 60
 addresses replaced in the swap's, all in a profile lookup's payload; 282 MB.
+With 1x: 4,275 continuations and 1,425 arms, 1x's 528 each against its digest.
 
 ---
 
