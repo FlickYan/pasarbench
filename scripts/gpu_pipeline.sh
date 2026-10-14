@@ -733,8 +733,8 @@ EOF
       export AGENT_ARGS="$flags"
       serve agent
       $PY scripts/serving_bars.py run --bar "$bar" --prefix "$P" -k "$SERVE_K" \
-        --sample "$SERVE_SAMPLE" --customer "$CUSTOMER" 2>&1 | tee -a "logs/${LP}serving.log" \
-        || failed="$failed $bar"
+        --sample "$SERVE_SAMPLE" --customer "$CUSTOMER" --usd-per-hour "$PRICE" 2>&1 \
+        | tee -a "logs/${LP}serving.log" || failed="$failed $bar"
       report_serving
     done 3<<< "$PLAN"
     unset AGENT_ARGS
