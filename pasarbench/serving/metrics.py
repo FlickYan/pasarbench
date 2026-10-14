@@ -19,11 +19,15 @@ produce a number that looks fine and is not.
    comparison. `warmup_then_measure` makes the cold/warm split explicit rather
    than leaving it to whoever reads the numbers later.
 
-3. MISREADING PREFIX CACHE HITS ON A SEQUENTIAL RUN.
-   Episodes in this benchmark share a ~2.2k-token policy prefix, so running
-   them back to back gives a spectacular hit rate that says almost nothing
-   about production, where requests from different tenants interleave. Report
-   the run pattern alongside the number, and ideally measure both.
+3. MISREADING PREFIX CACHE HITS.
+   Episodes in this benchmark share their system prompt, ~2.2k tokens of
+   policy included, within a market: 199 of the 215 tasks have one of six
+   customers, and the prompt names her before the policy. So a run's hit rate
+   says little about production, where every customer differs and a new
+   conversation finds only the lines above her id. Report the run pattern
+   alongside the number, and split a conversation's first request (shared
+   with others) from its later ones (its own history): scripts/serving_bars.py
+   does (RUNBOOK phase 3).
 
 Histogram quantiles are computed from Prometheus buckets by linear
 interpolation, the same way `histogram_quantile()` does it server-side. The
