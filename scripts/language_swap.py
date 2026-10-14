@@ -30,6 +30,10 @@ changed and nothing else, and the agent asked again (pasarbench/swap.py).
     python scripts/language_swap.py run data/swap/Y-prefixes.jsonl --naming --run-id Y-naming
     python scripts/language_swap.py report data/swap/Y-naming
 
+    # 1y: Malaysia's languages or its orders -- 1x's prefixes of three markets
+    python scripts/language_swap.py run data/swap/Y-prefixes.jsonl --cross --run-id Z-cross
+    python scripts/language_swap.py report data/swap/Z-cross
+
 Keys come from the environment, as the sweep's do, each by the provider its
 endpoint is on: the agent's from its provider's variable -- DEEPSEEK_API_KEY,
 ZAI_API_KEY, MIMO_API_KEY, XAI_API_KEY (or PASARBENCH_API_KEY) -- the
@@ -274,21 +278,38 @@ def _policies(prefixes: list, tr, workers: int = 8,
     asked for side by side, then read from the cache): {(language, named):
     text} for the system prompts, {language: sections} for search_policy, and
     [(language, variant, piece, what it lost)] -- a run starts only if that is
-    empty."""
+    empty. With `both` (1x), from v71 the text without the tools named is not
+    translated on its own: it is the named translation with its marks taken
+    out, checked as the plain policy's translation, so that the two differ in
+    the marks alone (WHAT_FAILED #53)."""
     from pasarbench.harness.prompts import policy_text
-    from pasarbench.swap import POLICY_BREAK, translate_policy
+    from pasarbench.swap import POLICY_BREAK, policy_missing, translate_policy, unnamed_twin
     from pasarbench.tools import policy_sections
     need = _policy_needs(prefixes, both)
-    pieces = {(c.strip(), lang) for lang, named in need
+    asked = [(lang, named) for lang, named in need if named or not both]
+    pieces = {(c.strip(), lang) for lang, named in asked
               for c in policy_text(named=named).split(POLICY_BREAK) if c.strip()}
     with ThreadPoolExecutor(max_workers=max(1, workers)) as pool:
         for f in as_completed([pool.submit(tr.policy, c, lang) for c, lang in pieces]):
             f.result()
     texts, bad = {}, []
-    for lang, named in need:
+    for lang, named in asked:
         text, lost = translate_policy(policy_text(named=named), lang, tr.policy)
         texts[(lang, named)] = text
         bad += [(lang, "named" if named else "plain", i, x) for i, x in lost]
+    if both:
+        want = unnamed_twin(policy_text(named=True))[1]
+        for lang in sorted({lang for lang, _ in need}):
+            twin, n = unnamed_twin(texts[(lang, True)])
+            texts[(lang, False)] = twin
+            if n != want:
+                bad.append((lang, "plain", -1, [f"{n} marks taken out of the text with the "
+                                                f"tools named, where the English has {want}"]))
+            for i, (e, t) in enumerate(zip(policy_text().split(POLICY_BREAK),
+                                           twin.split(POLICY_BREAK))):
+                lost = policy_missing(e.strip(), t.strip(), lang) if e.strip() else []
+                if lost:
+                    bad.append((lang, "plain", i, lost))
     english = [re.match(r"P\d+", h).group() for h, _ in policy_sections(policy_text())]
     sections = {}
     for lang in sorted({lang for lang, _ in need}):
@@ -306,7 +327,8 @@ def _write_policies(texts: dict, root: Path) -> Path:
     by side -- the section the run is about, read before it runs: as the
     plain text has it (what search_policy returns, and the prompt where the
     tools are not named) and, where a prompt names the tools, as that text has
-    it -- a translation of its own (v65; until then the plain one alone)."""
+    it -- a translation of its own (v65; until then the plain one alone), or,
+    under 1x from v71, the plain one is that with its marks taken out."""
     from pasarbench.harness.prompts import policy_text
     from pasarbench.tools import policy_sections
     out = root / "policy-translated"
@@ -362,10 +384,12 @@ def cmd_run(a, agent_factory=None, translator_backend=None) -> int:
     checked -- then run the arms."""
     from pasarbench.harness.backends import OpenAICompatBackend
     from pasarbench.harness.exposure import build_exposure
+    from pasarbench.harness.prompts import policy_text
     from pasarbench.rescore import all_tasks
-    from pasarbench.swap import (ARMS, NAMING_ARMS, POLICY_ARMS, arm_language, arm_messages,
-                                 continue_agent, local_language, naming_arm,
-                                 naming_arm_messages, policy_arm_language, policy_arm_messages,
+    from pasarbench.swap import (ARMS, CROSS_ARMS, NAMING_ARMS, OWN_LANGUAGES, POLICY_ARMS,
+                                 arm_language, arm_messages, continue_agent, cross_arm_messages,
+                                 cross_unfit, local_language, naming_arm, naming_arm_messages,
+                                 policy_arm_language, policy_arm_messages, policy_unchangeable,
                                  shown_digest)
     from pasarbench.sweep import ALL_SOLUTIONS
     from pasarbench.tasks import task_digest
@@ -386,20 +410,49 @@ def cmd_run(a, agent_factory=None, translator_backend=None) -> int:
     model = models.pop()
     policy = bool(getattr(a, "policy", False))
     naming = bool(getattr(a, "naming", False))
-    if policy and naming:
-        raise SystemExit("--policy or --naming, not both: --naming runs 1v's three arms, "
-                         "each with the tools named and not (RUNBOOK 1x)")
+    cross = bool(getattr(a, "cross", False))
+    if policy + naming + cross > 1:
+        raise SystemExit("one of --policy, --naming and --cross: --naming runs 1v's three "
+                         "arms, each with the tools named and not (RUNBOOK 1x)")
     arms = NAMING_ARMS if naming else POLICY_ARMS if policy else ARMS
-    jobs = [(p, arm, k) for p in prefixes for arm in arms for k in range(a.k)]
+    if cross:
+        # RUNBOOK 1y: Malaysia's, Indonesia's and Singapore's conversations,
+        # recorded in English or in their market's languages.
+        left = Counter(why for p in prefixes for why in [cross_unfit(p)] if why)
+        prefixes = [p for p in prefixes if not cross_unfit(p)]
+        print(f"1y crosses {len(prefixes)} of the prefixes"
+              + (": left out " + ", ".join(f"{n} {w}" for w, n in sorted(left.items()))
+                 if left else ""))
+        if not prefixes:
+            raise SystemExit("no prefix of Malaysia, Indonesia or Singapore to cross")
+        stuck = [f"{p.pid}: {why}" for p in prefixes for why in [policy_unchangeable(p)] if why]
+        if stuck:
+            raise SystemExit(f"{len(stuck)} prefixes cannot have their policy's tools named "
+                             f"(RUNBOOK 1y):\n  " + "\n  ".join(stuck[:20]))
+
+    def arms_of(p):
+        return CROSS_ARMS[p.market] if cross else arms
+    every = sorted({x for p in prefixes for x in arms_of(p)})
+    only = [x for x in (getattr(a, "arms", "") or "").split(",") if x]
+    if any(x not in every for x in only):
+        raise SystemExit(f"--arms takes this run's arms: {', '.join(every)}")
+    jobs = [(p, arm, k) for p in prefixes for arm in arms_of(p) if not only or arm in only
+            for k in range(a.k)]
     root = Path(a.out_root)
     todo = [j for j in jobs if not _finished(root / a.run_id / j[1] / f"{j[0].pid}__r{j[2]}.jsonl")]
     texts = sum(1 for p in prefixes for m in p.messages if (m.get("content") or "").strip()
                 and m["role"] in ("user", "assistant"))
     chars = {p.pid: sum(len(m.get("content") or "") for m in p.messages) for p in prefixes}
     approx = sum(2 * chars[p.pid] // 4 for p, _, _ in todo)
-    print(f"{len(prefixes)} prefixes x {len(arms)} arms x k={a.k}: {len(jobs)} continuations "
-          f"of {model}, {len(todo)} still to run; {texts} messages to translate both ways "
-          f"with {a.translator_model}. Roughly {approx / 1e6:.1f}M prompt tokens for the agent "
+    shape = (" + ".join(f"{m} {sum(p.market == m for p in prefixes)} x {len(CROSS_ARMS[m])}"
+                        for m in CROSS_ARMS if any(p.market == m for p in prefixes))
+             + " prefixes x arms" if cross else f"{len(prefixes)} prefixes x {len(arms)} arms")
+    print(f"{shape} x k={a.k}" + (f", the arms {', '.join(only)} only" if only else "")
+          + f": {len(jobs)} continuations of {model}, {len(todo)} still to run; {texts} messages "
+          f"to translate with {a.translator_model}" + (", each into English and from English "
+                                                       "into the arms' languages" if cross else
+                                                       " both ways")
+          + f". Roughly {approx / 1e6:.1f}M prompt tokens for the agent "
           f"(4 characters a token, two steps a continuation, tool schemas not counted)")
     if policy or naming:
         need = _policy_needs(prefixes, naming)
@@ -423,12 +476,20 @@ def cmd_run(a, agent_factory=None, translator_backend=None) -> int:
                 f.result()
         if policy or naming:
             policies, sections, bad = _policies(prefixes, tr, a.workers, naming)
+        if cross:
+            with ThreadPoolExecutor(max_workers=max(1, a.workers)) as pool:
+                for f in as_completed([pool.submit(cross_arm_messages, p, x, tr)
+                                       for p in prefixes for x in arms_of(p)]):
+                    f.result()
     finally:
         tr.save()
     print(f"translated: {len(tr.cache)} texts in the cache ({a.cache})")
+    named_english = policy_text(named=True)
 
     def messages_for(p, arm):
         local = local_language(p)
+        if cross:
+            return cross_arm_messages(p, arm, tr, named_english)
         if naming:
             return naming_arm_messages(p, arm, tr, {n: policies[(local, n)]
                                                     for n in (False, True)})
@@ -436,7 +497,14 @@ def cmd_run(a, agent_factory=None, translator_backend=None) -> int:
             named = (p.head.get("policy_mode") or "preload") == "preload-named"
             return policy_arm_messages(p, arm, tr, policies.get((local, named)))
         return arm_messages(p, arm, tr)
-    if policy or naming:
+    if cross:
+        for p in prefixes:
+            for arm in arms_of(p):
+                messages_for(p, arm)
+        shown = write_cross_arms(prefixes, tr, root / a.run_id / "arms.md")
+        print(f"every prefix's words in each of its languages, to read before the results: "
+              f"{shown}")
+    elif policy or naming:
         _print_policy_check(policies, bad)
         where = _write_policies(policies, root / a.run_id)
         if bad:
@@ -474,10 +542,21 @@ def cmd_run(a, agent_factory=None, translator_backend=None) -> int:
         local = local_language(p)
         named = (p.head.get("policy_mode") or "preload") == "preload-named"
         msgs, mode = messages_for(p, arm), None
-        if naming:
+        if cross:
+            extra = {"design": "cross", "experiment": "1y", "pid": p.pid, "arm": arm,
+                     "language": arm, "market": p.market,
+                     "own_language": arm in OWN_LANGUAGES[p.market],
+                     "local_language": local, "policy_language": "en", "tools_named": True,
+                     "recorded_tools_named": named, "source_language": p.language,
+                     "target": p.target, "source": p.source,
+                     "translator": None if arm == "en" and p.language == "en" else tr.model,
+                     "prefix_steps": p.steps, "recorded_escalated": p.escalated}
+            shown = nullcontext()
+            mode = "preload-named"
+        elif naming:
             base, shown_named = naming_arm(arm)
             extra = {"design": "naming", "experiment": "1x", "pid": p.pid, "arm": arm,
-                     "base_arm": base, "tools_named": shown_named,
+                     "base_arm": base, "tools_named": shown_named, "twin": "unnamed",
                      "recorded_tools_named": named,
                      "language": policy_arm_language(p, base), "local_language": local,
                      "policy_language": local if base == "policy" else "en",
@@ -599,6 +678,28 @@ def write_arms(prefixes: list, tr, path: Path) -> Path:
     return path
 
 
+def write_cross_arms(prefixes: list, tr, path: Path) -> Path:
+    """1y: each prefix's words in each of its languages, side by side, to read
+    before the results -- translations no native speaker has reviewed."""
+    from pasarbench.swap import CROSS_ARMS, cross_arm_messages, translatable
+    lines = ["# 1y: every prefix's words in each of its languages", ""]
+    for p in prefixes:
+        arms = {x: cross_arm_messages(p, x, tr) for x in CROSS_ARMS[p.market]}
+        lines += [f"## {p.pid}", "",
+                  f"{p.task_id}, market {p.market}, recorded in {p.language}; escalated in that "
+                  f"turn as recorded: {p.escalated}", ""]
+        for i, m in enumerate(p.messages):
+            if not translatable(m):
+                continue
+            lines.append(f"- **{m['role']}**")
+            for x, msgs in arms.items():
+                lines.append(f"  - {x}: {' '.join(msgs[i]['content'].split())}")
+        lines.append("")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("\n".join(lines), encoding="utf-8")
+    return path
+
+
 # --------------------------------------------------------------------------
 # report
 
@@ -689,6 +790,8 @@ def _report(a) -> int:
           f"from {len(pids)} prefixes" + (f" ({len(broken)} ended by a server or API error, "
                                           f"left out: run again)" if broken else "")
           + (f"; a test resolves at p < {ALPHA}" if ALPHA != 0.05 else ""))
+    if any(r.get("design") == "cross" for r in rows):
+        return _report_cross(rows)
     if any(r.get("design") == "naming" for r in rows):
         return _report_naming(rows)
     if any(r.get("design") == "policy" for r in rows):
@@ -946,6 +1049,137 @@ def _report_naming(rows: list[dict]) -> int:
     return 0
 
 
+def _contrast(rows: list[dict], base_of, other_of, key: str = "escalated") -> dict | None:
+    """Per prefix, the mean of the arms `other_of(market)` names minus the mean
+    of those `base_of(market)` names -- each arm's mean over its runs -- and a
+    sign test over the prefixes where that is not zero; prefixes with every
+    arm named only."""
+    from pasarbench.diagnose import _sign_p
+    by: dict[str, dict[str, list]] = defaultdict(lambda: defaultdict(list))
+    market = {}
+    for r in rows:
+        by[r["pid"]][r["arm"]].append(bool(r[key]))
+        market[r["pid"]] = r["market"]
+    diffs = []
+    for pid, arms in by.items():
+        base, other = base_of(market[pid]) or (), other_of(market[pid]) or ()
+        if not base or not other or not all(arms.get(x) for x in (*base, *other)):
+            continue
+
+        def mean(xs):
+            return sum(sum(arms[x]) / len(arms[x]) for x in xs) / len(xs)
+        diffs.append(mean(other) - mean(base))
+    if len(diffs) < 5:
+        return None
+    better = sum(d > 1e-9 for d in diffs)
+    worse = sum(d < -1e-9 for d in diffs)
+    return {"n": len(diffs), "diff": sum(diffs) / len(diffs), "better": better,
+            "worse": worse, "p": _sign_p(worse, better)}
+
+
+# RUNBOOK 1y: the test and its control, as fixed before the run.
+CROSS_TEST = ({"MY": ("ms", "zh-MY")}.get, {"MY": ("id", "zh-SG")}.get)
+CROSS_CONTROL = ({"ID": ("id",), "SG": ("zh-SG",)}.get, {"ID": ("ms",), "SG": ("zh-MY",)}.get)
+
+
+def _cross_reading(test: dict | None, control: dict | None) -> str:
+    """1y's reading of its two tests together (RUNBOOK 1y)."""
+    def way(g):
+        return None if g["p"] >= ALPHA else ("up" if g["better"] > g["worse"] else "down")
+    if test is None or control is None:
+        return "not readable: a test had fewer than 5 prefixes"
+    t, c = way(test), way(control)
+    if t == "up" and c == "down":
+        return ("THE LANGUAGES: Malaysia's floor goes with Malay and Malaysian Chinese, "
+                "whatever the order")
+    if t is None and c is None:
+        return ("NOT THE LANGUAGES, as far as this run sees: Malaysia's orders stay where they "
+                "are in its neighbours' languages, and the neighbours' in Malaysia's -- the "
+                "orders are read below")
+    if t == "up" and c is None:
+        return ("MALAYSIA'S ORDERS IN ITS LANGUAGES: Malaysia's orders rise in its neighbours' "
+                "languages; the neighbours' do not fall in Malaysia's")
+    if t is None and c == "down":
+        return ("BOTH: Malaysia's languages lower the neighbours' orders, and Malaysia's stay "
+                "low in the neighbours' languages")
+    return "THE OTHER WAY: read each line"
+
+
+def _report_cross(rows: list[dict]) -> int:
+    """1y's reading (RUNBOOK 1y): whether Malaysia's floor is its languages or
+    its orders -- each market's conversations in the languages of two."""
+    from pasarbench.swap import CROSS_ARMS
+
+    def arm(name):
+        return lambda r: r["arm"] == name
+    languages = ("ms", "id", "zh-MY", "zh-SG", "en")
+    print("\nescalated before its next reply to the customer, by the order's market and the "
+          "conversation's language -- the English policy, the tools named:")
+    print(f"  {'':8s} " + " ".join(f"{x:>13s}" for x in languages))
+    for m in CROSS_ARMS:
+        mine = [r for r in rows if r["market"] == m]
+        if mine:
+            print(f"  {m:8s} " + " ".join(f"{_rate([r for r in mine if r['arm'] == x]):>13s}"
+                                          if x in CROSS_ARMS[m] else f"{'':>13s}"
+                                          for x in languages)
+                  + f"  ({len({r['pid'] for r in mine})} prefixes)")
+    print("  every arm in a language other than English went from English through the "
+          "translator; English: as recorded, or 1t's translation into it")
+    test = _contrast(rows, *CROSS_TEST)
+    control = _contrast(rows, *CROSS_CONTROL)
+    print("\nTHE TEST: on Malaysia's orders, its neighbours' languages against its own -- per "
+          "prefix, Indonesian and Singapore Chinese against Malay and Malaysian Chinese, sign "
+          "test")
+    print(_line("Malaysia's orders", test, "LANGUAGE: higher in the neighbours' languages",
+                "the other way: lower in the neighbours' languages"))
+    print("THE CONTROL: on the neighbours' orders, Malaysia's language against the market's "
+          "own -- Malay against Indonesian on Indonesia's, Malaysian against Singapore Chinese "
+          "on Singapore's")
+    print(_line("the neighbours' orders", control,
+                "the other way: higher in Malaysia's languages",
+                "MALAYSIA'S LANGUAGES LOWER on the neighbours' orders too"))
+    print(f"THE READING: {_cross_reading(test, control)}")
+    moved = [r for r in rows if r["arm"] != "en"]
+    print(_room(sum(r["escalated"] for r in moved) / len(moved) if moved else 0.0)
+          .replace("translated arms", "arms in languages other than English"))
+    print("\neach pair alone (read):")
+    for label, m, first, second, more, fewer in (
+            ("Indonesian against Malay, Malaysia's orders", "MY", "ms", "id",
+             "higher in Indonesian", "lower in Indonesian"),
+            ("Indonesian against Malay, Indonesia's orders", "ID", "ms", "id",
+             "higher in Indonesian", "lower in Indonesian"),
+            ("Singapore against Malaysian Chinese, Malaysia's orders", "MY", "zh-MY", "zh-SG",
+             "higher in Singapore Chinese", "lower in Singapore Chinese"),
+            ("Singapore against Malaysian Chinese, Singapore's orders", "SG", "zh-MY", "zh-SG",
+             "higher in Singapore Chinese", "lower in Singapore Chinese")):
+        mine = [r for r in rows if r["market"] == m]
+        print(_line(label, _paired(mine, arm(first), arm(second)), more, fewer))
+    print("\nEnglish against each market's own languages (read):")
+    for m, own in (("MY", ("ms", "zh-MY")), ("ID", ("id",)), ("SG", ("zh-SG",))):
+        mine = [r for r in rows if r["market"] == m]
+        for x in own:
+            print(_line(f"{m}, English against {x}", _paired(mine, arm(x), arm("en")),
+                        "English higher", "English lower"))
+    print("\nthe orders (read, not tested: different conversations) -- each language on "
+          "Malaysia's orders and on its neighbour's:")
+    for x, other in (("ms", "ID"), ("id", "ID"), ("zh-MY", "SG"), ("zh-SG", "SG"),
+                     ("en", "ID"), ("en", "SG")):
+        print(f"  {x:6s} Malaysia's {_rate([r for r in rows if r['market'] == 'MY' and r['arm'] == x]):>10s}"
+              f"   {other}'s {_rate([r for r in rows if r['market'] == other and r['arm'] == x]):>10s}")
+    print("\nTHE TEST by how Malaysia's conversations were recorded (read):")
+    for src in ("en", "ms", "zh-MY"):
+        mine = [r for r in rows if r["market"] == "MY" and r["source_language"] == src]
+        print(_line(f"recorded in {src}", _contrast(mine, *CROSS_TEST),
+                    "higher in the neighbours' languages", "lower in the neighbours' languages"))
+    print("\nsearch_policy called in " + ", ".join(
+        f"{x} {sum('search_policy' in r['calls'] for r in rows if r['arm'] == x)}"
+        for x in languages) + " continuations")
+    print("\nwith the category the policy names (duplicate_refund):")
+    print(_line("the test", _contrast(rows, *CROSS_TEST, key="dup"),
+                "higher in the neighbours' languages", "lower in the neighbours' languages"))
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -989,6 +1223,12 @@ def main(argv: list[str] | None = None) -> int:
     r.add_argument("--naming", action="store_true",
                    help="RUNBOOK 1x: 1v's three arms, each with the tools named in the policy "
                         "and not")
+    r.add_argument("--cross", action="store_true",
+                   help="RUNBOOK 1y: Malaysia's, Indonesia's and Singapore's conversations in "
+                        "the languages of two markets each, under the English policy with the "
+                        "tools named")
+    r.add_argument("--arms", default="",
+                   help="only these of the run's arms, comma-separated")
     r.set_defaults(fn=cmd_run)
 
     po = sub.add_parser("policy", help="1v, before any agent runs: the policy translated "
