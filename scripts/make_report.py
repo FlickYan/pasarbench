@@ -1059,7 +1059,7 @@ def section_serving() -> str:
         "modal run scripts/modal_pipeline.py --stage pull")
 
 
-# RUNBOOK 1t, 1v, 1w and 1x: the run directories under data/swap, the p below
+# RUNBOOK 1t, 1v, 1w, 1x and 1y: the run directories under data/swap, the p below
 # which each reading's tests resolve (1w's: 0.05 over its three agents), and
 # the commands that make each run.
 SWAP_RUNS = (
@@ -1079,12 +1079,14 @@ SWAP_RUNS = (
      "python scripts/language_swap.py prefixes traces --exposure default "
      "--out data/swap/Y-prefixes.jsonl\n"
      "python scripts/language_swap.py check data/swap/Y-prefixes.jsonl\n"
-     "python scripts/language_swap.py run data/swap/Y-prefixes.jsonl --naming --run-id Y-naming"))
+     "python scripts/language_swap.py run data/swap/Y-prefixes.jsonl --naming --run-id Y-naming"),
+    ("1y. Malaysia's languages, or its orders", "Z-cross", 0.05,
+     "python scripts/language_swap.py run data/swap/Y-prefixes.jsonl --cross --run-id Z-cross"))
 SWAP_CMDS = "\n".join(cmds for *_, cmds in SWAP_RUNS)
 
 
 def section_swap(root: Path = Path("data/swap")) -> str:
-    """RUNBOOK 1t, 1v, 1w and 1x: each run's reading as `language_swap.py
+    """RUNBOOK 1t, 1v, 1w, 1x and 1y: each run's reading as `language_swap.py
     report` gives it, regenerated from its continuations under data/swap, at
     the p its reading fixed."""
     import contextlib
@@ -1103,14 +1105,15 @@ def section_swap(root: Path = Path("data/swap")) -> str:
             parts.append(f"### {title} (`{d.as_posix()}`)\n\n```text\n"
                          f"{buf.getvalue().strip()}\n```\n")
     if not parts:
-        return _missing("the language swap not run (RUNBOOK 1t, 1v, 1w, 1x)", SWAP_CMDS)
+        return _missing("the language swap not run (RUNBOOK 1t, 1v, 1w, 1x, 1y)", SWAP_CMDS)
     lead = ("Recorded conversations held fixed at the moment the agent reads a refund already "
             "paid, and only their language changed (1t); the same with the policy in that "
             "language too (1v); 1t on three other agents, each from its own recorded "
-            "conversations (1w); and 1v's arms with the tools named in the policy and not, "
-            "where every tool is shown (1x). Each reading was fixed before its run (RUNBOOK "
-            "1t, 1v, 1w, 1x); below is `scripts/language_swap.py report`, regenerated from the "
-            "continuations. The reads it marks as read are not tests.\n\n")
+            "conversations (1w); 1v's arms with the tools named in the policy and not, where "
+            "every tool is shown (1x); and the conversations of three markets in the languages "
+            "of two (1y). Each reading was fixed before its run (RUNBOOK 1t, 1v, 1w, 1x, 1y); "
+            "below is `scripts/language_swap.py report`, regenerated from the continuations. "
+            "The reads it marks as read are not tests.\n\n")
     tail = "".join(_missing(title, cmds) for title, pattern, _, cmds in SWAP_RUNS
                    if not any(d.is_dir() for d in root.glob(pattern)))
     return lead + "\n".join(parts) + ("\n" + tail if tail else "")
