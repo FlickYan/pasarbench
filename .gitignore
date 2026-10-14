@@ -17,7 +17,7 @@ tests_failed.log
 traces/
 data/
 checkpoints/
-hf-dataset/
+hf-dataset*/
 *.jsonl
 !tests/**/*.jsonl
 
