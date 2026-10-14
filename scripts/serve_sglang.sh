@@ -16,7 +16,9 @@
 # AGENT_GPU, SIM_GPU, PORT, SIM_PORT and HOST; SGLANG_ARGS is appended to the
 # command of every server (on two cards, SGLANG_ARGS="--mem-fraction-static
 # 0.8" after an OOM; on one card use PASAR_RESERVE_GB instead, which the two
-# servers' fractions are worked out from).
+# servers' fractions are worked out from), and AGENT_ARGS to the agent's alone
+# -- phase 3 turns the agent's radix cache off and leaves the customer's on, so
+# the load the agent is measured under is the same in every bar (v68).
 # DRY_RUN=1 prints the command instead of starting it.
 #
 # Servers listen on 127.0.0.1 without an API key: every client runs on this
@@ -103,6 +105,8 @@ fi
 export SGLANG_ENABLE_JIT_DEEPGEMM="${SGLANG_ENABLE_JIT_DEEPGEMM:-0}"
 # shellcheck disable=SC2206
 extra=(${SGLANG_ARGS:-})
+# shellcheck disable=SC2206
+agent_extra=(${AGENT_ARGS:-})
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 share=()
@@ -144,7 +148,8 @@ esac
 
 case "$MODE" in
   agent)
-    run "${agent[@]}" ${share[@]+"${share[@]}"} ${extra[@]+"${extra[@]}"}
+    run "${agent[@]}" ${share[@]+"${share[@]}"} ${extra[@]+"${extra[@]}"} \
+      ${agent_extra[@]+"${agent_extra[@]}"}
     ;;
   rft)
     # Both fold adapters from one server. A request names one as
@@ -158,7 +163,7 @@ case "$MODE" in
     done
     run "${agent[@]}" --enable-lora --max-loras-per-batch 2 \
       --lora-paths "pasar-$name-A=checkpoints/$name-A" "pasar-$name-B=checkpoints/$name-B" \
-      ${share[@]+"${share[@]}"} ${extra[@]+"${extra[@]}"}
+      ${share[@]+"${share[@]}"} ${extra[@]+"${extra[@]}"} ${agent_extra[@]+"${agent_extra[@]}"}
     ;;
   lora)
     # One adapter, served as pasar-<its directory's name>: the policy GRPO is
@@ -168,7 +173,8 @@ case "$MODE" in
       echo "no adapter in ${LORA:-(LORA is not set)}" >&2; exit 1
     fi
     run "${agent[@]}" --enable-lora --max-loras-per-batch 1 \
-      --lora-paths "pasar-$(basename "$LORA")=$LORA" ${share[@]+"${share[@]}"} ${extra[@]+"${extra[@]}"}
+      --lora-paths "pasar-$(basename "$LORA")=$LORA" ${share[@]+"${share[@]}"} ${extra[@]+"${extra[@]}"} \
+      ${agent_extra[@]+"${agent_extra[@]}"}
     ;;
   probe)
     # A small random adapter built from the agent's config (train_rft.py
@@ -176,14 +182,15 @@ case "$MODE" in
     # this model before stage 1 and hours of training depend on it.
     [ -f checkpoints/probe/adapter_config.json ] || { echo "no adapter in checkpoints/probe" >&2; exit 1; }
     run "${agent[@]}" --enable-lora --max-loras-per-batch 1 \
-      --lora-paths pasar-probe=checkpoints/probe ${share[@]+"${share[@]}"} ${extra[@]+"${extra[@]}"}
+      --lora-paths pasar-probe=checkpoints/probe ${share[@]+"${share[@]}"} ${extra[@]+"${extra[@]}"} \
+      ${agent_extra[@]+"${agent_extra[@]}"}
     ;;
   agent-fp8)
     # H100 has native FP8. Report BOTH throughput AND pass^k: a quantisation
     # that speeds things up and drops task success is not a win, and on a
     # policy-following task the loss shows up in the traps before perplexity.
     run "${agent[@]}" --quantization fp8 --kv-cache-dtype fp8_e4m3 ${share[@]+"${share[@]}"} \
-      ${extra[@]+"${extra[@]}"}
+      ${extra[@]+"${extra[@]}"} ${agent_extra[@]+"${agent_extra[@]}"}
     ;;
   sim)
     # Short turns, no tools, thinking off (Gemma 4's template default: the
