@@ -1256,8 +1256,8 @@ def test_serve_scripts():
         (work / "checkpoints" / f"rft-{f}" / "adapter_config.json").write_text("{}")
     env = {k: v for k, v in os.environ.items()
            if k not in ("SIM_MODEL", "SIM_TOKENIZER", "AGENT_MODEL", "SGLANG_ARGS",
-                        "TOOL_PARSER", "SHARE_GPU", "MEM_FRACTION", "AGENT_GPU", "SIM_GPU",
-                        "PASAR_GPU_INFO", "PASAR_LAYOUT", "PASAR_AGENT_POOL_GB")}
+                        "AGENT_ARGS", "TOOL_PARSER", "SHARE_GPU", "MEM_FRACTION", "AGENT_GPU",
+                        "SIM_GPU", "PASAR_GPU_INFO", "PASAR_LAYOUT", "PASAR_AGENT_POOL_GB")}
 
     def cmd(mode, **extra):
         r = subprocess.run(["bash", str(root / "scripts" / "serve_sglang.sh"), mode],
@@ -1281,6 +1281,12 @@ def test_serve_scripts():
           f"--model-path {SIM_DEFAULT}" in sim and "CUDA_VISIBLE_DEVICES=1" in sim
           and "--port 8001" in sim and "--tokenizer-path google/gemma-4-31B-it" in sim
           and "--reasoning-parser gemma4" in sim, sim)
+    off = {m: cmd(m, AGENT_ARGS="--disable-radix-cache") for m in ("agent", "rft", "sim")}
+    check("AGENT_ARGS reaches the agent's server alone: phase 3 turns its radix cache off "
+          "and leaves the customer's on, so the agent is measured under the same load (v68)",
+          "--disable-radix-cache" in off["agent"] and "--disable-radix-cache" in off["rft"]
+          and "--disable-radix-cache" not in off["sim"]
+          and "--disable-radix-cache" not in agent, str(off))
     other = cmd("sim", SIM_MODEL="meta-llama/Llama-3.3-70B-Instruct")
     check("another customer gets its own tokenizer and no Gemma parser",
           "--tokenizer-path meta-llama/Llama-3.3-70B-Instruct" in other
@@ -1702,7 +1708,7 @@ def test_grpo_scripts():
           and '"grpo", "customer3", "edition3",' in modal_src
           and "PASAR_ROUND=2 modal run" in modal_src
           and 'STAGES = ("smoke", "stage1", "stage2", "grpo", "customer3", "edition3",'
-              ' "grpo-measure")' in nb
+              ' "grpo-measure",\n          "serving")' in nb
           and "pn.run('grpo', round=2)" in nb)
     # The reward's reading of the voucher trap (WHAT_FAILED #46): one a run,
     # round 2's the checks it began with.
@@ -2676,6 +2682,72 @@ def test_push_script():
           code != 0 and ".env.local" in out and on_github()[0] == head, out[-800:])
 
 
+def test_serving_stage():
+    print("\n=== phase 3's stage: the agent served three ways (v68) ===")
+    import re
+    import shutil
+    root = Path(__file__).resolve().parent.parent
+    if not shutil.which("bash"):
+        skip("the serving stage", "no bash")
+        return
+    pipe = (root / "scripts" / "gpu_pipeline.sh").read_text()
+    stage = pipe[pipe.index("\n  serving)\n") + 1:pipe.index("\n    ;;\n\n  settings)")]
+    body = stage.split("\n", 1)[1]
+    work = Path(tempfile.mkdtemp())
+    (work / "logs").mkdir()
+    # Python stood in for: the plan is the real one; a bar the first is
+    # measured already, the second runs, the third fails; the report is a line.
+    stub = work / "py"
+    stub.write_text(f"""#!/usr/bin/env bash
+case "$1 $2" in
+  "scripts/gpu_plan.py price") echo 6.88 ;;
+  "scripts/serving_bars.py plan") exec "{sys.executable}" "{root}/scripts/serving_bars.py" plan ;;
+  "scripts/serving_bars.py done") [ "$4" = preload-radix ] ;;
+  "scripts/serving_bars.py run") echo "RUN $4 [$AGENT_ARGS] $*"; [ "$4" != preload-noradix ] ;;
+  "scripts/serving_bars.py report") echo "REPORT $*" ;;
+  *) echo "unexpected: $*" >&2; exit 9 ;;
+esac
+""")
+    stub.chmod(0o755)
+    prelude = (f'set -euo pipefail\nPY="{stub}"\nP=P2\nLP=r2-\nCUSTOMER=2\n'
+               'layout() { echo LAYOUT; }\nserve() { echo "SERVE $1 [$AGENT_ARGS]"; }\n'
+               'stop() { echo STOP; }\n')
+    r = subprocess.run(["bash", "-c", prelude + body], cwd=work, capture_output=True, text=True,
+                       env={k: v for k, v in os.environ.items() if k != "AGENT_ARGS"})
+    out = r.stdout
+    lines = [l for l in out.splitlines() if l.startswith(("==", "SERVE", "RUN", "STOP", "!!"))]
+    check("the stage reads the bars from serving_bars.py's plan, keeps a bar measured already, "
+          "and starts both servers afresh for each other bar with the agent's flags the bar's",
+          lines[:6] == ["== preload-radix: measured already (data/serving/P2-serve-preload-radix"
+                        ".json)", "== jit-radix", "SERVE agent []",
+                        "RUN jit-radix [] scripts/serving_bars.py run --bar jit-radix "
+                        "--prefix P2 -k 1 --sample 0 --customer 2",
+                        "== preload-noradix (the agent with --disable-radix-cache)",
+                        "SERVE agent [--disable-radix-cache]"], "\n".join(lines))
+    check("…goes on to the report when a bar fails, names the bar, and stops the servers",
+          r.returncode == 0 and "RUN preload-noradix [--disable-radix-cache]" in out
+          and "!! not measured: preload-noradix" in out and "STOP" in out
+          and "Serving measured. Read logs/r2-serving.md" in out, out + r.stderr)
+    rep = (work / "logs" / "r2-serving.md").read_text()
+    check("…and writes the report after every bar it measures, at the card's price",
+          rep.startswith("REPORT scripts/serving_bars.py report --prefix P2 --usd-per-hour 6.88")
+          and (work / "logs" / "r2-serving.log").exists(), rep)
+    check("PASAR_SERVE_K and PASAR_SERVE_SAMPLE set the conversations a bar, and the stage "
+          "is in the pipeline's usage",
+          'SERVE_K="${PASAR_SERVE_K:-1}"' in stage and 'SERVE_SAMPLE="${PASAR_SERVE_SAMPLE:-0}"'
+          in stage and "| serving | settings" in pipe)
+    modal_src = (root / "scripts" / "modal_pipeline.py").read_text()
+    nb = (root / "scripts" / "pasar_notebook.py").read_text()
+    results = re.search(r"RESULTS = \[(.*?)\]", modal_src, re.S).group(1)
+    passed_on = modal_src.split("PASSED_ON = (")[1].split(")")[0]
+    check("a Modal job and a notebook run it in either round, `pull` brings back its records "
+          "and conversations, and its knobs travel to the job",
+          '"grpo-measure", "serving"):' in modal_src and '"serving")' in nb
+          and all(f'"{x}"' in results for x in ("data/serving", "traces/P-serve-*",
+                                                "traces/P2-serve-*"))
+          and '"PASAR_SERVE_K"' in passed_on and '"PASAR_SERVE_SAMPLE"' in passed_on)
+
+
 def main() -> int:
     test_split()
     test_family_guard()
@@ -2686,6 +2758,7 @@ def main() -> int:
     test_served_models()
     test_serve_scripts()
     test_grpo_scripts()
+    test_serving_stage()
     test_gpu_plan()
     test_markup_audit()
     test_wrappers()
