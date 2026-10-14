@@ -84,6 +84,7 @@ machine exists.
 | smoke | both models served, 16 episodes, LoRA serving check, training check | 0.8–1.2 h | $6–8 | $7–11 |
 | stage 1 | 1,075 baseline + 1,720 collection episodes, examples built | 3–8 h | $21–56 | $27–72 |
 | stage 2 | two LoRA runs on Qwen3.8-27B, 1,075 evaluation episodes | 6–12 h | $42–84 | $54–108 |
+| serving (phase 3, optional) | both models served three times, 3 × 215 conversations | ~1 h | ~$7 | ~$9 |
 
 On an H200 expect 1.5–2x the hours at ~$5.20/h. The ranges are wide on
 purpose: the smoke stage prints a projection from your actual throughput, with
@@ -298,6 +299,30 @@ grpo-measure`, then `--stage pull`. About 25 minutes of one B200 (~$3). Its
 rollouts stay on the Volume, as GRPO's do; the comparison and the stats come
 back with `pull`. Its reading on 2026-10-12: NOT SHOWN (RUNBOOK phase 4, GRPO,
 the learning curve's second point).
+
+## Serving — phase 3, optional (v68)
+
+What serving the agent costs, three ways, on one card (RUNBOOK phase 3; its
+reading is fixed there): the base agent and the customer, the 215 tasks at the
+sweeps' concurrency, three times — the policy in the prompt with SGLang's
+radix cache on, as every run so far; the policy looked up instead (`jit`); and
+the policy in the prompt with the agent's radix cache off. The base model only;
+any order with the other stages.
+
+```python
+pn.run("serving", round=2)                        # or pn.launch("serving", round=2)
+pn.read("logs/r2-serving.md", head=120)
+pn.pack()
+```
+
+As a Modal job: `PASAR_ROUND=2 modal run --detach scripts/modal_pipeline.py --stage
+serving`, then `--stage pull`. About an hour of one B200 (~$7): both servers
+start three times, and each bar is 215 conversations after three warm-up ones.
+`PASAR_SERVE_SAMPLE=1` tries it on 16 tasks a bar first (~20 minutes, mostly
+servers starting); `PASAR_SERVE_K=2` doubles each bar. A bar cut short starts
+over when the stage runs again, and bars measured are kept. If the agent's
+server will not start without its radix cache, the stage stops at that last
+bar, the other two measured and the report written.
 
 ---
 
