@@ -40,6 +40,17 @@ payloads, the order of the messages and the world are the same in all three.
         against policy is the test: only the policy's words differ.
     1w  other agents: 1t's three arms on each agent's own recorded
         conversations -- the prefixes are any agent model's.
+
+1v's effect lay where the prompt named the tools; read after it ran (v70),
+the prompts without them were mostly ones that show the agent every tool, the
+rest tools behind search, where it found none to call in any arm. One more:
+
+    1x  the tools named, crossed with the policy's language (v70). 1v's
+        three arms, each with the tools named in the policy and not --
+        NAMING_ARMS, "local-plain" to "english-named" -- on conversations
+        that show the agent every tool. Within each arm only the marks that
+        name the tools differ; local against policy is 1v's test, with the
+        tools named and without.
 """
 
 from __future__ import annotations
@@ -63,6 +74,7 @@ ESCALATE = "escalate_to_human"
 ENGLISH = ("en", "sg-en")
 ARMS = ("orig", "swap", "back")
 POLICY_ARMS = ("local", "policy", "english")
+NAMING_ARMS = tuple(f"{arm}-{naming}" for naming in ("plain", "named") for arm in POLICY_ARMS)
 
 
 @dataclass
@@ -469,6 +481,68 @@ def policy_arm_messages(prefix: Prefix, arm: str, translate: Callable[[str, str]
     return msgs
 
 
+def naming_arm(arm: str) -> tuple[str, bool]:
+    """A 1x arm as (1v's arm, whether the policy names the tools)."""
+    if arm not in NAMING_ARMS:
+        raise ValueError(f"arm is one of {NAMING_ARMS}, not {arm!r}")
+    base, naming = arm.rsplit("-", 1)
+    return base, naming == "named"
+
+
+def naming_arm_messages(prefix: Prefix, arm: str, translate: Callable[[str, str], str],
+                        policies: dict[bool, str] | None = None) -> list[dict[str, Any]]:
+    """1x's arms: 1v's three, each with the tools named in the policy or not,
+    whatever the prefix's own prompt had. `policies` maps named (True, False)
+    to the policy in the conversation's language other than English; a policy
+    arm needs its own. The English arms carry the English policy with the
+    tools named or not; an arm and its twin differ in the marks that name the
+    tools -- " (tool: `escalate_to_human`)" in P10 -- and nothing else."""
+    from .harness.prompts import policy_text
+    base, named = naming_arm(arm)
+    why = policy_unchangeable(prefix)
+    if why:
+        raise ValueError(f"{prefix.pid}: {why}")
+    if base == "policy":
+        text = (policies or {}).get(named)
+        if not text:
+            raise ValueError("a policy arm needs the policy in its language, the tools "
+                             + ("named" if named else "not named"))
+        return policy_arm_messages(prefix, "policy", translate, text)
+    msgs = policy_arm_messages(prefix, base, translate)
+    msgs[0] = {**msgs[0], "content": msgs[0]["content"].replace(prefix_policy(prefix),
+                                                                policy_text(named=named))}
+    return msgs
+
+
+def shown_messages(prefix: Prefix, swap: dict[str, Any], translate: Callable[[str, str], str],
+                   policy_for: Callable[[str, bool], str] | None = None
+                   ) -> list[dict[str, Any]]:
+    """What one continuation was shown, rebuilt from its prefix and its
+    trace's record of the arm (the header's "swap"): 1t's and 1w's arms, 1v's
+    and 1x's. `policy_for(language, named)` gives the policy in a language --
+    the run's own translation; only a policy arm asks for it."""
+    arm, design = swap.get("arm"), swap.get("design")
+    local = local_language(prefix)
+    if design == "naming":
+        base, named = naming_arm(arm)
+        return naming_arm_messages(prefix, arm, translate,
+                                   {named: policy_for(local, named)} if base == "policy"
+                                   else None)
+    if design == "policy":
+        named = (prefix.head.get("policy_mode") or "preload") == "preload-named"
+        return policy_arm_messages(prefix, arm, translate,
+                                   policy_for(local, named) if arm == "policy" else None)
+    return arm_messages(prefix, arm, translate)
+
+
+def shown_digest(messages: list[dict[str, Any]]) -> str:
+    """A short digest of the messages a continuation was shown: recorded with
+    each run from v70, so the conversation published beside it can be checked
+    to be the one the agent saw."""
+    return hashlib.sha1(json.dumps(messages, ensure_ascii=False, sort_keys=True,
+                                   default=str).encode("utf-8")).hexdigest()[:16]
+
+
 def policy_unchangeable(prefix: Prefix) -> str:
     """Why the policy a prefix's agent read cannot be put in another language
     by changing its prompt, or "" if it can: a mode with no policy in the
@@ -504,12 +578,14 @@ class Outcome:
 
 def continue_agent(prefix: Prefix, messages: list[dict[str, Any]], task, backend, *,
                    trace=None, run_index: int | None = None, max_steps: int = 8,
-                   exposure=None) -> Outcome:
+                   exposure=None, policy_mode: str | None = None) -> Outcome:
     """The agent from the end of the prefix until it next speaks to the
     customer -- no customer reply, no closing phase: the decision 1r measured
     is the one it makes in this turn. The world is the prefix's, the tools the
     source run's (its exposure; with tool search, what it had found so far is
-    rebuilt from the world's action log), and the policy mode its own."""
+    rebuilt from the world's action log), and the policy mode its own -- or,
+    where an arm names the tools its prompt did not (1x), the arm's: the trace
+    says what the agent was shown."""
     from .harness.loop import run_episode
     from .harness.simulator import SilentUser
     from .harness.types import Budget, EpisodeState, Message, Usage
@@ -523,7 +599,8 @@ def continue_agent(prefix: Prefix, messages: list[dict[str, Any]], task, backend
                     max_tokens=10**9, max_wall_seconds=600.0,
                     max_user_turns=prefix.turns + 1)
     res = run_episode(task, db, backend, simulator=SilentUser(), budget=budget,
-                      trace=trace, policy_mode=prefix.head.get("policy_mode") or "preload",
+                      trace=trace,
+                      policy_mode=policy_mode or prefix.head.get("policy_mode") or "preload",
                       state=state, exposure=exposure, run_index=run_index)
     esc = [(tc, tr) for st in res.steps for tc, tr in zip(st.tool_calls, st.tool_results)
            if tc["name"] == ESCALATE and tr.get("ok")]
