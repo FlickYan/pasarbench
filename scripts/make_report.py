@@ -20,7 +20,9 @@ without misleading them.
 Inputs, all optional:
     traces/<run>/summary.json     from pasarbench.sweep
     data/labels/human_round*.jsonl + data/labels/judge_*.jsonl
-    data/serving/configs.json     list of ServingConfig kwargs
+    data/serving/<run>.json       phase 3's bars, with their /metrics snapshots
+                                  (scripts/serving_bars.py; RUNBOOK phase 3)
+    data/swap/<run>/              the language swap's continuations (1t, 1v, 1w)
 
 ONE CHECKER FOR EVERY NUMBER. Traces record the verdict the checker of the day
 gave each episode. When a check is corrected, those verdicts no longer mean the
@@ -635,12 +637,23 @@ def section_planted(path: Path = Path("data/judge_cal/report.json")) -> str:
     s = _load_json(path)
     head = "\n\n### Planted mistakes\n\n"
     if not s or "criteria" not in s:
+        # Only the steps not yet taken: the set built again would sample
+        # other copies, and the judge run again is spent again.
+        report = "python scripts/judge_calibration.py report"
+        run = "python scripts/judge_calibration.py run --workers 12   # the judge's API key\n"
+        judged, built = path.parent / "judged.jsonl", path.parent / "set.jsonl"
+        if judged.exists():
+            return head + _missing(
+                f"the planted mistakes are judged (`{judged.as_posix()}`) but not read "
+                "into a report: one command, no API call", report)
+        if built.exists():
+            return head + _missing(
+                f"the planted set is built (`{built.as_posix()}`) but not judged",
+                run + report)
         return head + _missing(
             "the planted-mistake calibration has not been run",
             "python scripts/judge_calibration.py build \"traces/N-off/full+search-300\" "
-            "\"traces/M-off/full+search-300\"\n"
-            "python scripts/judge_calibration.py run --workers 12   # the judge's API key\n"
-            "python scripts/judge_calibration.py report")
+            "\"traces/M-off/full+search-300\"\n" + run + report)
 
     def rate(k: int, n: int) -> str:
         if not n:
@@ -1022,16 +1035,74 @@ def section_judge_vs_verifier(traces: Path = Path("traces")) -> str:
             "depends on what it is shown.\n\n" + note + markdown(runs))
 
 
+def _scripts_on_path() -> None:
+    here = str(Path(__file__).resolve().parent)
+    if here not in sys.path:
+        sys.path.insert(0, here)
+
+
 def section_serving() -> str:
-    from pasarbench.serving.cost import ServingConfig, compare, markdown
-    cfgs = _load_json(Path("data/serving/configs.json"))
-    if not cfgs:
-        return _missing(
-            "serving configurations not measured",
-            "./scripts/serve_sglang.sh agent\n"
-            "# snapshot /metrics, run the sweep, snapshot again, then write\n"
-            "# data/serving/configs.json as a list of ServingConfig kwargs")
-    return markdown(compare([ServingConfig(**c) for c in cfgs]))
+    """Phase 3's stage (RUNBOOK phase 3): its report, regenerated from each
+    bar's /metrics snapshots and conversations (scripts/serving_bars.py), at
+    the card price the bars recorded -- round 2's bars before round 1's."""
+    _scripts_on_path()
+    import serving_bars
+    for prefix in ("P2", "P"):
+        if any(serving_bars.files(prefix, b)["bar"].exists() for b in serving_bars.ORDER):
+            lines = serving_bars.report(prefix).splitlines()
+            # Its title is this section's; every heading under it one level down.
+            return "\n".join(("#" + l if l.startswith("#") else l)
+                             for l in lines[1:]).strip() + "\n"
+    return _missing(
+        "serving not measured: the agent served three ways, one GPU stage (RUNBOOK phase 3)",
+        "PASAR_ROUND=2 modal run --detach scripts/modal_pipeline.py --stage serving\n"
+        "modal run scripts/modal_pipeline.py --stage pull")
+
+
+# RUNBOOK 1t, 1v and 1w: the run directories under data/swap, and the p below
+# which each reading's tests resolve (1w's: 0.05 over its three agents).
+SWAP_RUNS = (("1t. The language: one conversation, translated", "W-swap", 0.05),
+             ("1v. A policy in her language", "V-policy", 0.05),
+             ("1w. The swap on three other agents", "X-*", 0.0167))
+SWAP_CMDS = ("python scripts/language_swap.py prefixes traces --out data/swap/W-prefixes.jsonl\n"
+             "python scripts/language_swap.py run data/swap/W-prefixes.jsonl          # 1t\n"
+             "python scripts/language_swap.py policy data/swap/W-prefixes.jsonl\n"
+             "python scripts/language_swap.py run data/swap/W-prefixes.jsonl --policy --run-id "
+             "V-policy   # 1v\n# 1w: RUNBOOK 1w, one run an agent")
+
+
+def section_swap(root: Path = Path("data/swap")) -> str:
+    """RUNBOOK 1t, 1v and 1w: each run's reading as `language_swap.py report`
+    gives it, regenerated from its continuations under data/swap, at the p its
+    reading fixed."""
+    import contextlib
+    import io
+    from argparse import Namespace
+    _scripts_on_path()
+    import language_swap
+    parts = []
+    for title, pattern, alpha in SWAP_RUNS:
+        runs = sorted(d for d in root.glob(pattern)
+                      if d.is_dir() and any(d.rglob("*.jsonl")))
+        for d in runs:
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                language_swap.cmd_report(Namespace(run_dir=str(d), alpha=alpha))
+            parts.append(f"### {title} (`{d.as_posix()}`)\n\n```text\n"
+                         f"{buf.getvalue().strip()}\n```\n")
+    if not parts:
+        return _missing("the language swap not run (RUNBOOK 1t, 1v, 1w)", SWAP_CMDS)
+    lead = ("Recorded conversations held fixed at the moment the agent reads a refund already "
+            "paid, and only their language changed (1t); the same with the policy in that "
+            "language too (1v); and 1t on three other agents, each from its own recorded "
+            "conversations (1w). Each reading was fixed before its run (RUNBOOK 1t, 1v, 1w); "
+            "below is `scripts/language_swap.py report`, regenerated from the continuations. "
+            "The reads it marks as read are not tests.\n\n")
+    missing = [title for title, pattern, _ in SWAP_RUNS
+               if not any(d.is_dir() for d in root.glob(pattern))]
+    tail = (f"\n{MISSING} — " + "; ".join(missing) + f"\n\n```bash\n{SWAP_CMDS}\n```\n"
+            if missing else "")
+    return lead + "\n".join(parts) + tail
 
 
 REFERENCE_CMD = (
@@ -2050,6 +2121,10 @@ is shown inline. **Do not fill these in by hand** — re-run and regenerate.
 
 {hard}
 
+## 9. The language swap: one conversation, translated
+
+{swap}
+
 ---
 
 ## Reporting rules this project holds itself to
@@ -2125,6 +2200,7 @@ def main() -> None:
         "rescoring": ("7. Re-scoring", section_rescoring(Path(args.traces))),
         "hard": ("8. The hard edition on several labs' models",
                  section_hard_edition(Path(args.traces))),
+        "swap": ("9. The language swap", section_swap()),
     }
     body = TEMPLATE.format(missing=MISSING, suite=section_suite(), scoring=scoring,
                            noise=section_noise(Path(args.traces), args.noise_pair),
