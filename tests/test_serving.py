@@ -358,6 +358,7 @@ def test_serving_bars():
     print("\n=== the serving stage's bars (scripts/serving_bars.py; RUNBOOK phase 3) ===")
     import contextlib
     import importlib
+    import importlib.util
     import io
     import json
     import os
@@ -393,8 +394,19 @@ def test_serving_bars():
                 "warmup": 3, "conversations": 20, "expected": 20, "server_errors": 0,
                 "sweep_exit": 0, "wall_seconds": 600.0, "started": "x",
                 "agent_model": "Qwen/Qwen3.8-27B", "sim_model": "gemma", "customer": 2,
-                "gpu": "NVIDIA B200", "complete": True}))
-        md = sb.report("P", 6.88, 2.5)
+                "gpu": "NVIDIA B200", "usd_per_hour": 6.88, "complete": True}))
+        md = sb.report("P")
+        mspec = importlib.util.spec_from_file_location("make_report",
+                                                       root / "scripts" / "make_report.py")
+        mr = importlib.util.module_from_spec(mspec)
+        mspec.loader.exec_module(mr)
+        sect = mr.section_serving()
+        check("the report is regenerated from the files alone, at the card price the bars "
+              "recorded -- and RESULTS.md section 5 is it, a heading level down (v69)",
+              "The card at $6.88/h" in md and "$6.88/h" in sect
+              and sect.lstrip().startswith("`Qwen/Qwen3.8-27B` served by SGLang")
+              and "\n### What the server did" in sect and "\n#### Verdicts" in sect
+              and "\n## " not in sect, sect[:400])
         server = md.split("## What the server did")[1].split("## What the agent did")[0]
         agent = md.split("## What the agent did")[1]
         check("the report reads each bar's counters over the bar alone: the hit rate is the "
@@ -469,7 +481,7 @@ def test_serving_bars():
         sb._gpu = lambda: "TEST GPU"
         args = Namespace(bar="jit-radix", prefix="P2", k=1, sample=0, workers=24, customer=2,
                          model="m", base_url="u", sim_model="s", sim_url="v", extra_body="{}",
-                         agent_url=sb.AGENT_URL, dry_run=False)
+                         agent_url=sb.AGENT_URL, usd_per_hour=7.5, dry_run=False)
         try:
             stale = sb.files("P2", "jit-radix")["cell"] / "stale__r0.jsonl"
             stale.parent.mkdir(parents=True)
@@ -489,6 +501,7 @@ def test_serving_bars():
                   and not (Path("traces") / "P2-serve-warm-jit-radix").exists()
                   and jf["before"].exists() and jf["after"].exists()
                   and meta["complete"] and meta["gpu"] == "TEST GPU"
+                  and meta["usd_per_hour"] == 7.5
                   and meta["agent_args"] == "" and sb.measured("P2", "jit-radix", 1),
                   str((sweeps, meta)))
             sb.server_radix = lambda url=sb.AGENT_URL: True
@@ -528,6 +541,13 @@ def test_serving_bars():
         out = io.StringIO()
         with contextlib.redirect_stdout(out):
             sb.cmd_run(Namespace(**{**vars(args), "dry_run": True}))
+        cwd_files = list(Path(".").rglob("*.json"))
+        for f_ in cwd_files:
+            if f_.parent.name == "serving":
+                f_.unlink()
+        check("…and with no bar on disk, section 5 says so and names the stage that fills it",
+              mr.section_serving().startswith(mr.MISSING)
+              and "--stage serving" in mr.section_serving(), mr.section_serving()[:300])
         check("…and its dry run prints the two sweeps the pipeline's baseline would, the "
               "policy mode the bar's",
               out.getvalue().count("-m pasarbench.sweep") == 2
