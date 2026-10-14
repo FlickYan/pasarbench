@@ -2315,7 +2315,7 @@ her language closes the gap is still open, and so is whether any other agent
 shows it. The runs that would say: deepseek-v4-pro on the same 96 under a
 policy in the conversation's language (1v), and other agents from their own
 recorded conversations — 1s recorded the duplicate refund for four more; 1w
-runs three of them.
+runs three of them. (1v: on average, it does; 1w: not testable on those three.)
 
 ### 1u. Can a model read the claims the English list cannot? (API only, no GPU)
 
@@ -2607,9 +2607,108 @@ capitals and asks for bold on the words the English sets in bold, and on no
 others; the check still allows a capital's stress in bold, as the first
 translation set it twice.
 
-```bash
-python scripts/language_swap.py policy data/swap/W-prefixes.jsonl --run-id V-policy
-```
+**The third translation, 2026-10-14 (v66's wording): passed.** Every piece in
+its language, every code, number and section number kept, and the bold where the
+English has it — one more, "之前" for the English's BEFORE in Singapore Chinese's
+P3.2, the stress the check allows. Read before the run: P10 in all twelve texts,
+the tools named and not, says what the English says — escalate a refund already
+paid even when she accepts the explanation; a duplicate is a sign of fraud or a
+system error, and is recorded; resolving the conversation does not replace it.
+In all six languages the preamble keeps the rule that lets P10 overrule the
+rest: of two rules in conflict, the higher section number wins. Noted, not
+stopped on: Vietnamese with the tools named keeps P10's heading and verb in
+English ("Escalation", "Hãy escalate…"), as Vietnamese business writing often
+does — 9 of the 96 prompts; Vietnamese and Malaysian Chinese without the tools
+named say "no other recording action" (hành động ghi nhận, 记录操作) for "no
+other write action"; Malay without them calls the time window a "tetingkap", a
+window on a screen.
+
+**Run on 2026-10-14** (`data/swap/V-policy`, `V.txt`; eight minutes, off-peak):
+**POLICY — the policy in her language raised P10's escalation, in both
+directions; and the gap closed, as far as this run can see.** Every continuation
+finished, none ended by an API error, and recounted from the traces every
+number is the report's — the reads by direction and by the policy's text too,
+which `report` prints since v67. `local` and `english` are 1t's two arms again,
+on the same inputs: 22% and 45% here, 23% and 42% there.
+
+| | `local`: her language, the policy in English | `policy`: her language, the policy in it | `english`: English, the policy in English |
+|---|---|---|---|
+| recorded in English or Singlish (48 prefixes) | 34/144, 24% | 59/144, 41% | 84/144, 58% |
+| recorded in another language (48) | 28/144, 19% | 68/144, 47% | 46/144, 32% |
+| all (96) | 62/288, 22% | 127/288, 44% | 130/288, 45% |
+
+- **The replication.** `english` against `local`: +0.236, 48 prefixes higher in
+  English and 10 lower, p < 0.0001 — **LANGUAGE again**, and in each direction:
+  recorded in English +0.347 (28 and 2), recorded in another language +0.125
+  (20 and 8, p = 0.036).
+- **The test.** `policy` against `local`: +0.226, 47 prefixes higher with the
+  policy in her language and 14 lower, p < 0.0001 — **POLICY, higher in her
+  language**. Each direction alone resolves too: recorded in English +0.174 (23
+  and 9, p = 0.020), recorded in another language +0.278 (24 and 5, p = 0.0005).
+- **The gap.** `policy` against `english`: 44% against 45%, 33 prefixes higher
+  with both in her language and 28 with both in English, p = 0.61 —
+  INCONCLUSIVE, so by the reading: **a policy in her language closes the gap,
+  as far as this run can see.**
+- **By direction** (read, not tested), the average is not each direction's:
+  first held in English, English stays higher (58% against 41%, 20 prefixes and
+  11, p = 0.15); first held in another language, both in her language go past
+  both in English (47% against 32%, 22 and 8, p = 0.016). The replication's own
+  split moved by 15 points between 1t and this run on the same inputs (recorded
+  in English +0.194, then +0.347), so 48 prefixes a direction cannot say
+  whether this is more than the day.
+- **By the policy's text** (read, not tested, not foreseen): the effect lives
+  where the prompt names the tools — 65 of the 96, "Escalate (tool:
+  `escalate_to_human`)" in P10, the fix 1g and 1h confirmed. There, her
+  language escalated in 19% of runs under the English policy, in 56% under her
+  own, in 51% in English: the replication +0.32 (40 prefixes against 6), the
+  test +0.36 (41 against 6), the gap −0.05 (19 against 28). Where the prompt
+  does not name them (31), there was no gap and the policy in her language did
+  not move it: 26%, 19%, 32% (the replication +0.06, 8 against 4; the test
+  −0.06, 6 against 8). The named prompts are also the later runs', the whole
+  second edition among them; within the first edition alone the split holds
+  (named, 18 prefixes: the test +0.43, 11 against 1; not named, 29: −0.07, 6
+  against 8). 1h's pair, the same tasks under both prompts: not named, 1 of 24
+  runs escalated in her language, 1 under her policy, 0 in English — nothing to
+  move; named, 7, 19 and 14.
+- **By language** (secondary, not tested; 48 runs an arm), her language under
+  the English policy / under hers; in English: Indonesian 44% / 85%; 48%. Thai
+  19% / 44%; 29%. Singapore Chinese 17% / 56%; 52%. Vietnamese 42% / 52%; 65%.
+  Malay 4% / 17%; 35%. Malaysian Chinese 4% / 10%; 42%. Past English in
+  Indonesian and Thai, level in Singapore Chinese, short of it in Vietnamese and
+  Malay; in Malaysian Chinese it barely moved. Even where the prompt names the
+  tools, Malaysia's two languages stay far below the same conversations in
+  English: Malay 5 of 33 runs under her policy against 16, Malaysian Chinese 4
+  against 17.
+- **search_policy** was called in 6, 8 and 7 of each arm's 288 continuations,
+  and never found nothing: what the agent acted on was the policy in its prompt.
+- **The category.** Every escalation, in every arm, was a `duplicate_refund`;
+  the numbers are the same under it.
+- **Read.** Where the policy in her language did not move it — Malay, Malaysian
+  Chinese — the agent tells her the refund was paid on 9 November and to watch
+  her statement: P10's failure, in her language. Where it moved most, the
+  Indonesian replies say the case has been recorded for the investigation team
+  ("mencatat kasus", "tim investigasi") — the translated P10's own words,
+  "dicatat untuk investigasi".
+- **The translations.** Vietnamese with the tools named, which keeps "escalate"
+  in English, escalated in 20 of 27 runs under it; Vietnamese without them,
+  "Chuyển tuyến", in 5 of 21, where the English policy had 13 — different
+  prefixes, too few to say what the word did.
+- **What it used.** 1,836 steps; 7.7 million prompt tokens of deepseek-v4-pro,
+  90% from the cache, and 0.24 million completion — about $1.10 at the off-peak
+  rate it ran in; the policy translated three times by qwen3.8-flash, for cents.
+
+**What it means.** Held at the moment it reads a refund already paid, in a
+conversation in her language, deepseek-v4-pro applies P10 twice as often under
+a policy in her language as under the English one — 22% to 44% — and, on
+average over these 96, as often as when both are in English. As far as this run
+can see, the gap 1t measured is the policy and the conversation being in
+different languages, not the conversation's language alone: an agent that keeps
+its policy in English pays for it in the other languages, and translating it
+bought that back here. It did so where the prompt names the tool the rule calls
+— where there was a gap to close — and not in Malaysia's two languages, which
+stay far short of English under their own policy. One agent, one rule, one
+translator, policies no native speaker has signed: whether another agent shows
+the same, and why Malay and Malaysian Chinese do not, is not tested.
 
 ### 1w. Is it DeepSeek-V4-Pro's? The swap on three other agents (API only, no GPU)
 
