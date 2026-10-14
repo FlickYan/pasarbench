@@ -228,8 +228,10 @@ spending your credits.
 
 DeepSeek also reports `prompt_cache_hit_tokens` in `usage`, which the backend
 now records as `Usage.cached_tokens`. The ~2.2k-token policy prefix is identical
-on every call, so **you get a prefix-caching measurement from the API with no
-GPU** — part of Phase 3, early and free.
+on every call of a market's conversations, so **you get a prefix-caching
+measurement from the API with no GPU** — part of Phase 3, early and free. (Of a
+market's conversations only: 199 of the 215 tasks share six customers, one a
+market, and the prompt names her before the policy — phase 3.)
 
 **Anthropic** — `--backend anthropic --model <id>`, key in `ANTHROPIC_API_KEY`.
 
@@ -2953,26 +2955,88 @@ read as satisfied; RESULTS §4):
 
 ---
 
-# Phase 3 — serving (optional, same node)
+# Phase 3 — serving (optional, one GPU stage, ~1 h)
 
-With the agent served for Phase 4 (`./scripts/serve_sglang.sh agent`), three
-bars on the same tasks and harness:
+What serving the agent costs, three ways (v68). One stage does all of it on
+phase 4's machine — the base agent and the customer, served as every GPU run
+serves them — and `pull` brings it back:
 
-1. radix cache on (SGLang's default) + `--policy-mode preload`
-2. `SGLANG_ARGS=--disable-radix-cache` + `--policy-mode preload`
-3. radix cache on + `--policy-mode jit`
-
-Snapshot `/metrics` before and after each, **warm up 3 episodes first**, and
-diff counters rather than reading gauges: `sglang:cache_hit_rate` is a gauge of
-recent traffic, and `MetricsDiff.prefix_cache_hit_rate()` divides the change in
-`sglang:cached_tokens_total` by the change in `sglang:prompt_tokens_total`. Then:
-
-```python
-from pasarbench.serving import serving_verdict, per_trap_guard, three_bar_report
+```bash
+PASAR_ROUND=2 modal run --detach scripts/modal_pipeline.py --stage serving   # or pn.run("serving", round=2)
+modal run scripts/modal_pipeline.py --stage pull
+# read logs/r2-serving.md
 ```
 
-No speed claim ships without a `serving_verdict`. At this suite size
-INCONCLUSIVE is a frequent and honest answer.
+The bars (`python scripts/serving_bars.py plan`), in the order they run:
+
+| bar | the policy | the agent's radix cache |
+|---|---|---|
+| `preload-radix` | in every prompt | on, as in every run so far |
+| `jit-radix` | not in the prompt: the agent looks rules up (`search_policy`) | on |
+| `preload-noradix` | in every prompt | off (`AGENT_ARGS=--disable-radix-cache`; the customer keeps hers) |
+
+For each: both servers started afresh, so every bar's agent gets the same
+memory plan; three warm-up conversations from outside the suite, with customers
+of their own, thrown away; the agent server's `/metrics`; the 215 tasks at
+temperature 0, 24 conversations at once — interleaved, as a server's queue is;
+`/metrics` again. A bar is measured whole: run again, a bar cut short starts
+over and measured bars are kept. The no-cache bar is last: if SGLang will not
+start this hybrid model without its radix cache, the stage stops there with the
+other two measured and the report written. About an hour of one B200 (~$7);
+`PASAR_SERVE_K=2` doubles each bar, and `PASAR_SERVE_SAMPLE=1` tries the stage
+on 16 tasks first. Round 2's settings give it today's customer.
+
+**What the cache can and cannot show here.** 199 of the 215 tasks share six
+customers, one a market, and the system prompt names the customer before the
+policy. So in this suite a conversation's first request finds its market's
+whole system prompt, policy included, in the cache — DeepSeek's did, 2,944 of a
+first request's 3,064 tokens in `R-check` (median), and SGLang's 4,736 of 4,775
+in round 2's baseline (`P2-base`, five runs of each task among them) — where in
+a queue of different customers it would find only the lines above her id. The
+report splits the cached tokens into those of a conversation's first request
+(shared between conversations: this suite's number, not a production one) and
+those of its later requests (a conversation reusing its own history, as
+anywhere).
+Phase 1's "identical on every call" is true within a market, and only because
+of that.
+
+**The reading, fixed before the run** (2026-10-14):
+
+- **Speed and cache, read, not tested.** Each bar's hit rate as the server counts
+  it (`sglang:cached_tokens_total` over `sglang:prompt_tokens_total`, both
+  diffed over the bar); the share of its hits on a conversation's first
+  request, and the hits from a conversation's own history over all its prompt
+  tokens — what a queue of different customers would keep; TTFT p50 and p99
+  from the histogram's diff (bucket-limited, and said so); output tokens a
+  second over the bar's wall time; prompt tokens a conversation; minutes.
+- **Quality before any speed or cost claim.** Each bar against `preload-radix`:
+  `serving_verdict` at a margin of 0.02 — WIN, NEUTRAL, REJECT or INCONCLUSIVE,
+  as `serving/report.py` defines them — and beside it the tasks paired, sign
+  test. At one conversation a task the margin needs thousands an arm, so
+  INCONCLUSIVE is the expected verdict for the radix cache, and the reading says
+  so rather than calling the bars equal; a REJECT, the whole interval below
+  −0.02, is a finding.
+- **By trap**, `per_trap_guard` at 0.10: with 13–16 tasks a trap and one
+  conversation each, a flag to read those conversations, not a finding.
+- **Cost per resolved conversation**: the card's price (`gpu_plan.py price`)
+  over each bar's wall time, and a human contact at serving/cost.py's
+  illustrative $2.50 for each escalation, 1.6 times that for each failure. The
+  card served the customer too: its cost is an upper bound on the agent's. A
+  bar cheapest in GPU time but not per resolution is the inversion the README
+  describes, and is named.
+- **Expected, written down so it can be wrong**: with the radix cache, a hit
+  rate well above zero, most of it from later requests, and a lower TTFT;
+  without it, none; `jit`, fewer prompt tokens a request but more requests,
+  and a lower pass^1 — it has to know which rule to look up.
+- **Not tested**: a production queue's cross-conversation hits; FP8
+  (`serve_sglang.sh agent-fp8`, not a bar here); any other model; the
+  fine-tunes.
+
+`scripts/serving_bars.py` does what the stage measures with
+`pasarbench.serving`: counters diffed rather than gauges read (a counter that
+went backwards means the server restarted, and the bar is discarded), the
+warm-up kept out, the run pattern stated. No speed claim ships without a
+`serving_verdict`.
 
 ---
 
@@ -3617,7 +3681,7 @@ Phase 4  on 1x B200 (Modal or Lambda, GPU_GUIDE.md):   ~10-20 hours
          grpo, from round 2's adapters (v45)            ~4-6 hours
          customer3, then edition3 (v47, v48)            ~2 hours
 Phase 1  the hard edition against its parts (1s)       per agent, 225 episodes
-Phase 3  serving comparison on the same node           optional
+Phase 3  serving, one stage on the same node (v68)      optional, ~1 h
 ```
 
 Regenerate after every phase:
