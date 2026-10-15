@@ -18,6 +18,13 @@ has set already is kept.
     python scripts/add_model.py ... --dry-run      # the plan; nothing is sent
     python scripts/add_model.py --check            # which keys work, which models
 
+OpenCode Go (v73), a subscription that serves many labs' models behind one
+key, each in the API it is served in -- /chat/completions, Anthropic's
+/messages or OpenAI's /responses -- with the plan's usage limit in view:
+
+    python scripts/add_model.py --check --provider opencode-go
+    python scripts/add_model.py --provider opencode-go --model claude-haiku-5-5
+
 Before the runs it has the model look an order up with its tools and answer
 from what the tool returned -- two short requests -- so a wrong key, a wrong
 model name, a model that takes no tools or a provider that wants something this
@@ -73,6 +80,9 @@ PROVIDERS: dict[str, tuple[str, str | None, str, str]] = {
     "groq": ("Groq", "https://api.groq.com/openai/v1", "openai", ""),
     "deepseek": ("DeepSeek", "https://api.deepseek.com/v1", "openai",
                  '{"thinking":{"type":"disabled"}}'),
+    # One key, many labs; the API, and the settings, are each model's (GO_MODELS).
+    "opencode-go": ("OpenCode Go (subscription: Kimi, MiniMax, Claude, GPT, Grok, ...)",
+                    "https://opencode.ai/inference/go/v1", "openai", ""),
     "other": ("another OpenAI-compatible endpoint", None, "openai", ""),
 }
 # What --check tries on each provider: its newest fast models, as their own
@@ -85,6 +95,12 @@ CANDIDATES: dict[str, tuple[str, ...]] = {
     "mimo": ("mimo-v2.6-flash",),
     "xai": ("grok-4.3", "grok-4.20-0309-non-reasoning"),
     "deepseek": ("deepseek-v4-pro", "deepseek-flash"),
+    # The labs 1s has not run, and the flagships of those it has: the cheapest
+    # share of the plan first. The five 1s ran are left out (their own
+    # endpoints ran them), and Qwen, the customer's family.
+    "opencode-go": ("claude-haiku-5-5", "gpt-6-luna", "muse-spark-1.3-contributor",
+                    "minimax-m3", "longcat-2.0", "hy3", "kimi-k2.6", "mimo-v2.6-pro",
+                    "step-5-preview-free", "glm-5.3", "grok-4.7", "kimi-k3"),
     "openai": (), "google": (), "anthropic": (), "mistral": (), "openrouter": (),
     "together": (), "groq": (),
 }
@@ -96,7 +112,8 @@ EXTRA_FAST = 3              # fast-tier models the key lists, tried beyond CANDI
 # Words in a variable's name that say whose key it is: for a key set under a
 # name nothing here reads (the names it is read under are pasarbench.sweep's
 # PROVIDER_KEYS).
-OWNERS = {"zai": r"ZAI|Z_AI|GLM|ZHIPU|BIGMODEL", "mimo": r"MIMO|XIAOMI", "xai": r"XAI|GROK",
+OWNERS = {"opencode-go": r"OPENCODE",
+          "zai": r"ZAI|Z_AI|GLM|ZHIPU|BIGMODEL", "mimo": r"MIMO|XIAOMI", "xai": r"XAI|GROK",
           "deepseek": r"DEEPSEEK", "openai": r"OPENAI", "google": r"GEMINI|GOOGLE",
           "anthropic": r"ANTHROPIC|CLAUDE", "mistral": r"MISTRAL",
           "openrouter": r"OPENROUTER", "together": r"TOGETHER", "groq": r"GROQ"}
@@ -109,14 +126,152 @@ RETIRED = {m: "grok-4.3" for m in (
 MAX_TOKENS = 2048          # the sweep's own
 THINKING_MAX_TOKENS = 4096  # room for a model that cannot stop reasoning
 
+# OpenCode Go (v73), read 2026-10-16 from opencode.ai/docs/go and the plan's
+# own /models: model -> (its API, its monthly limit in dollars, its price per
+# 1M tokens -- input, cached input, output -- and its lab). The API: "chat"
+# /chat/completions, "messages" Anthropic's /messages, "responses" OpenAI's
+# /responses; "google" is Google's own, which this harness does not speak.
+# A model's monthly limit is how fast it uses the plan's one allowance: 20% of
+# it every 5 hours, 50% a week, all of it a month -- a dollar of a model whose
+# limit is $15 uses four times the share of a dollar of one whose limit is $60.
+# None: free while OpenCode offers it. A price of None: not read here. Where a
+# model has two price tiers, the lower (prompts under 100K-272K tokens, which
+# every 1s request is); DeepSeek's are its peak prices, off-peak half.
+GO_URL = PROVIDERS["opencode-go"][1]
+GO_URL_OLD = "https://opencode.ai/zen/go/v1"   # the plan's first path; it still answers
+GO_MODELS: dict[str, tuple[str, int | None, tuple[float, float, float] | None, str]] = {
+    "claude-haiku-5-5": ("messages", 15, (0.10, 0.01, 0.50), "Anthropic"),
+    "gpt-6-luna": ("responses", 15, (0.10, 0.01, 0.50), "OpenAI"),
+    "gpt-5.6-luna": ("responses", 15, (0.20, 0.02, 1.20), "OpenAI"),
+    "muse-spark-1.3-contributor": ("responses", 60, (0.10, 0.002, 0.20), "Meta"),
+    "muse-spark-1.2-contributor": ("responses", 60, None, "Meta"),
+    "grok-4.7": ("responses", 15, (2.00, 0.50, 6.00), "xAI"),
+    "grok-4.6": ("responses", 15, (2.00, 0.50, 6.00), "xAI"),
+    "minimax-m3": ("messages", 60, (0.30, 0.06, 1.20), "MiniMax"),
+    "minimax-m2.7": ("messages", 60, (0.30, 0.06, 1.20), "MiniMax"),
+    "longcat-2.0": ("chat", 60, (0.30, 0.006, 1.20), "Meituan"),
+    "longcat-2.5-preview-free": ("chat", None, (0.0, 0.0, 0.0), "Meituan"),
+    "hy3": ("chat", 60, (0.14, 0.035, 0.58), "Tencent"),
+    "hy4-preview": ("chat", 30, (0.834, 0.042, 2.501), "Tencent"),
+    "kimi-k2.6": ("chat", 60, (0.95, 0.16, 4.00), "Moonshot"),
+    "kimi-k2.7-code": ("chat", 60, (0.95, 0.19, 4.00), "Moonshot"),
+    "kimi-k3": ("chat", 15, (3.00, 0.30, 15.00), "Moonshot"),
+    "mimo-v2.6-pro": ("chat", 15, (0.435, 0.003625, 0.87), "Xiaomi"),
+    "mimo-v2.5-pro": ("chat", 15, (0.435, 0.003625, 0.87), "Xiaomi"),
+    "mimo-v2.6-flash": ("chat", 60, None, "Xiaomi"),
+    "mimo-v2.5": ("chat", 60, None, "Xiaomi"),
+    "glm-5.3": ("chat", 15, (1.40, 0.26, 4.40), "Z.ai"),
+    "glm-5.2": ("chat", 60, (1.40, 0.26, 4.40), "Z.ai"),
+    "glm-5.3-flash": ("chat", 60, None, "Z.ai"),
+    "deepseek-v4-pro": ("chat", 15, (1.32, 0.044, 3.96), "DeepSeek"),
+    "deepseek-v4.1-flash": ("chat", 80, (0.30, 0.006, 1.20), "DeepSeek"),
+    "step-5-preview-free": ("chat", None, (0.0, 0.0, 0.0), "StepFun"),
+    "space-bunny": ("chat", 30, (0.15, 0.03, 0.60), "not said"),
+    "cat-jam-free": ("chat", None, (0.0, 0.0, 0.0), "not said"),
+    "qwen3.8-max": ("messages", 15, None, "Alibaba (Qwen)"),
+    "qwen3.8-flash": ("messages", 30, None, "Alibaba (Qwen)"),
+    "qwen3.7-plus": ("messages", 60, None, "Alibaba (Qwen)"),
+    "gemini-4-argon-contributor": ("google", 60, None, "Google"),
+}
+GO_BACKEND = {"chat": "openai", "messages": "anthropic", "responses": "responses"}
+GO_PLAN = ("The plan: 20% of the month's allowance every 5 hours, 50% a week. With 'Use "
+           "balance' off in the OpenCode console, as it starts, a run stops at the limit and "
+           "finishes when run again; with it on, your Zen balance pays past the limit.")
+GO_WORKERS = 4      # conversations at once on Go: a shared gateway, watched for abuse
+# What one model's 1s takes (RUNBOOK 1s, from the five models run there): its
+# 225 conversations send about 7.8M prompt tokens in about 1,600 requests and
+# get about 0.13M back -- more for a model that reasons, up to about 0.6M.
+RUN_PROMPT, RUN_OUT, RUN_OUT_REASONING = 7.8e6, 0.13e6, 0.6e6
+
+
+def go_api(model: str) -> str:
+    """The API OpenCode Go serves a model in; "chat" for one not in the
+    table, as most of the plan's models are."""
+    return GO_MODELS.get(model, ("chat",))[0]
+
+
+def go_settings(model: str) -> list[tuple[str, int]]:
+    """A Go model's request settings, the first to try first, and its token
+    limit a step: reasoning off where the model has a switch, else as low as it
+    goes, with room for it; temperature 0, unless a model refuses one beside
+    its reasoning -- the last setting then leaves temperature out
+    ("temperature": null), and the trace header records it as not sent. The
+    run takes the first the provider accepts (negotiate()). Every model's last
+    resort is its last setting with no temperature sent."""
+    m, api = model.lower(), go_api(model)
+    if api == "responses":
+        if m.startswith("gpt-"):           # effort none..max; temperature only with none
+            options = [('{"reasoning":{"effort":"none"}}', MAX_TOKENS),
+                       ('{"reasoning":{"effort":"low"}}', THINKING_MAX_TOKENS)]
+        elif m.startswith("grok-"):        # Grok 4.7 always reasons: low to xhigh
+            options = [('{"reasoning":{"effort":"low"}}', THINKING_MAX_TOKENS)]
+        elif m.startswith("muse-spark"):   # minimal to xhigh, no "none"
+            options = [('{"reasoning":{"effort":"minimal"}}', THINKING_MAX_TOKENS),
+                       ('{"reasoning":{"effort":"low"}}', THINKING_MAX_TOKENS)]
+        else:
+            options = [("", THINKING_MAX_TOKENS)]
+    elif api == "messages":
+        if m.startswith("claude"):         # thinks only when asked to
+            options = [("", MAX_TOKENS)]
+        else:                              # MiniMax reasons as it answers; 0 may be refused
+            options = [("", THINKING_MAX_TOKENS),
+                       ('{"temperature":0.01}', THINKING_MAX_TOKENS)]
+    elif m.startswith("glm-5.3"):          # cannot stop reasoning, as on Z.ai
+        options = [('{"reasoning_effort":"low"}', THINKING_MAX_TOKENS),
+                   ("", THINKING_MAX_TOKENS)]
+    elif m.startswith(("deepseek", "mimo", "glm", "kimi")):
+        options = [('{"thinking":{"type":"disabled"}}', MAX_TOKENS), ("", THINKING_MAX_TOKENS)]
+    else:
+        options = [("", THINKING_MAX_TOKENS)]
+    last, mt = options[-1]
+    body = {**(json.loads(last) if last else {}), "temperature": None}
+    return options + [(json.dumps(body, separators=(",", ":")), mt)]
+
+
+def go_cost(model: str) -> tuple[float, float] | None:
+    """One 1s run of a Go model at its price, in dollars: at best nine in ten
+    prompt tokens from the cache and no reasoning, at worst none cached and
+    reasoning. None for a price not read here."""
+    row = GO_MODELS.get(model)
+    if not row or row[2] is None:
+        return None
+    i, c, o = row[2]
+    return ((RUN_PROMPT * (0.1 * i + 0.9 * c) + RUN_OUT * o) / 1e6,
+            (RUN_PROMPT * i + RUN_OUT_REASONING * o) / 1e6)
+
+
+def go_share(model: str) -> str:
+    """What one 1s run of a Go model takes of the plan, in words."""
+    row = GO_MODELS.get(model)
+    if not row:
+        return (f"{model} is not in the table read on 2026-10-16: its share of the plan is "
+                f"not known here")
+    api, limit, _, lab = row
+    if limit is None:
+        return f"{lab}; free while OpenCode offers it (a preview): none of the plan"
+    cost = go_cost(model)
+    if cost is None:
+        return f"{lab}; its price is not read here; its monthly limit is ${limit}"
+    lo, hi = (100 * x / limit for x in cost)
+    windows = ("fits in one 5-hour window (20% of the month)" if hi <= 20 else
+               "may reach a 5-hour limit (20% of the month): if it stops, run it again once "
+               "the window resets" if lo <= 20 else
+               f"takes at least {-(-lo // 20):.0f} 5-hour windows (20% of the month each), "
+               f"and a week allows 50%" + ("; at worst more than the month" if hi > 100 else ""))
+    return (f"{lab}; one run about ${cost[0]:.2f}-{cost[1]:.2f} at its price, "
+            f"{lo:.0f}-{hi:.0f}% of the plan's month (its limit ${limit}); {windows}")
+
 
 def settings_for(provider: str, model: str) -> tuple[str, int]:
     """A model's request settings and its token limit a step: reasoning off
     where the model lets it be, else as low as it goes, with room for it.
     GLM-5.3 and its Flash cannot stop thinking (Z.ai answers 1210 to
     "disabled"): low effort, 4,096 tokens a step. Grok 4.3 reasons unless told
-    "none", xAI's setting for it in place of its retired fast models."""
+    "none", xAI's setting for it in place of its retired fast models. On
+    OpenCode Go, the first of the model's go_settings()."""
     m = model.lower()
+    if provider == "opencode-go":
+        return go_settings(model)[0]
     if provider == "zai" and m.startswith("glm-5.3"):
         return '{"reasoning_effort":"low"}', THINKING_MAX_TOKENS
     if provider == "xai" and m.startswith("grok-4.3"):
@@ -154,7 +309,7 @@ def commands(backend: str, url: str, model: str, name: str, extra: str,
              max_tokens: int = MAX_TOKENS, workers: int = 8) -> list[list[str]]:
     """The two sweeps of RUNBOOK 1s for one model. No key is in them."""
     agent = ["--backend", backend, "--model", model]
-    if backend == "openai":
+    if backend != "anthropic" or url.rstrip("/") != PROVIDERS["anthropic"][1]:
         agent += ["--base-url", url]
     if extra:
         agent += ["--extra-body", extra]
@@ -242,13 +397,17 @@ def api_errors(name: str) -> int:
 
 
 def _backend(backend: str, url: str, model: str, key: str, extra: str, max_tokens: int):
-    from pasarbench.harness.backends import AnthropicBackend, OpenAICompatBackend
+    from pasarbench.harness.backends import (AnthropicBackend, OpenAICompatBackend,
+                                             ResponsesBackend)
+    body = json.loads(extra) if extra else {}
     if backend == "anthropic":
         return AnthropicBackend(model=model, api_key=key, temperature=0.0,
-                                max_tokens=max_tokens)
+                                max_tokens=max_tokens, base_url=url, extra_body=body)
+    if backend == "responses":
+        return ResponsesBackend(model=model, base_url=url, api_key=key, temperature=0.0,
+                                max_tokens=max_tokens, extra_body=body)
     return OpenAICompatBackend(model=model, base_url=url, api_key=key, temperature=0.0,
-                               max_tokens=max_tokens,
-                               extra_body=json.loads(extra) if extra else {})
+                               max_tokens=max_tokens, extra_body=body)
 
 
 def probe(backend: str, url: str, model: str, key: str, extra: str,
@@ -300,6 +459,47 @@ def preflight(backend: str, url: str, model: str, key: str, extra: str,
                          f"   A wrong key, a model name the provider does not know, a "
                          f"model that takes no tools or no temperature 0, or a setting the "
                          f"provider refuses (--extra-body).")
+
+
+# A request refused for what it asked -- a setting the provider does not take
+# -- rather than for the key, the model's name or a limit: the next of a
+# model's settings is tried (v73).
+REFUSED_SETTING = re.compile(r"HTTP (400|422) ")
+
+
+def negotiate(backend: str, url: str, model: str, key: str,
+              options: list[tuple[str, int]]) -> tuple[dict, str, int, list[tuple[str, str]]]:
+    """probe() with each of a model's settings in turn until one works: what
+    the probe found, the settings and token limit it worked with, and those
+    tried before them, each with the provider's answer. The last error is
+    raised when none works -- at once, when it is not about a setting."""
+    refused: list[tuple[str, str]] = []
+    for i, (extra, mt) in enumerate(options):
+        try:
+            return probe(backend, url, model, key, extra, mt), extra, mt, refused
+        except Exception as e:                                # noqa: BLE001
+            if i == len(options) - 1 or not REFUSED_SETTING.search(str(e)):
+                raise
+            refused.append((extra or "(none)", _hide(str(e), key)[:200]))
+    raise ValueError("no settings to try")
+
+
+def first_error(name: str, *keys: str) -> str:
+    """The provider's words in the first conversation an API error ended, or
+    "": what a run that stopped says to do next."""
+    for run in runs(name):
+        for f in sorted((ROOT / "traces" / run / "full").glob("*.jsonl")):
+            try:
+                recs = [json.loads(x) for x in f.read_text(encoding="utf-8").splitlines()
+                        if x.strip()]
+            except (OSError, ValueError):
+                continue
+            if not recs or recs[-1].get("stop_reason") != "backend_error":
+                continue
+            for r in recs:
+                if r.get("type") == "event" and r.get("kind") == "backend_error":
+                    return _hide(str(r.get("error", "")), *keys)[:300]
+    return ""
 
 
 def _version(model: str) -> tuple[int, ...]:
@@ -471,8 +671,11 @@ def held_by_other(key: str, own: tuple[str, ...]) -> list[str]:
 def listed_models(url: str, key: str) -> list[str] | str:
     """The model ids the key can use (GET /models), or why they could not be
     listed."""
-    req = urllib.request.Request(url.rstrip("/") + "/models",
-                                 headers={"Authorization": f"Bearer {key}"})
+    from pasarbench.harness.backends import USER_AGENT, gateway
+    headers = {"Authorization": f"Bearer {key}"}
+    if gateway(url):
+        headers["User-Agent"] = USER_AGENT      # a gateway that asks a client to name itself
+    req = urllib.request.Request(url.rstrip("/") + "/models", headers=headers)
     try:
         with urllib.request.urlopen(req, timeout=30) as r:
             data = json.loads(r.read().decode())
@@ -538,16 +741,34 @@ def check(providers: list[str], models: list[str], out_path: Path,
         else:
             say(f"  its model list: {listed}")
         tried = tuple(models or CANDIDATES.get(prov, ()))
-        if not models and isinstance(listed, list):
+        if not models and isinstance(listed, list) and prov != "opencode-go":
             tried += tuple(fast_extras(listed, tried))
         worked = isinstance(listed, list)
         for model in tried:
             if isinstance(listed, list) and listed and model not in listed:
                 say(f"  {model:32s} not in your key's list -- not tried")
                 continue
-            extra, mt = settings_for(prov, model)
+            mb, options, where = backend, [settings_for(prov, model)], url
+            if prov == "opencode-go":
+                from pasarbench.models import model_family
+                if go_api(model) not in GO_BACKEND:
+                    say(f"  {model:32s} served in {go_api(model).title()}'s own API, which "
+                        f"this harness does not speak -- not tried")
+                    continue
+                if model_family(model) == model_family(CUSTOMER_MODEL):
+                    say(f"  {model:32s} a Qwen model, as the customer is -- not tried")
+                    continue
+                mb, options = GO_BACKEND[go_api(model)], go_settings(model)
             try:
-                r = probe(backend, url, model, key, extra, mt)
+                try:
+                    r, extra, mt, refused = negotiate(mb, where, model, key, options)
+                except Exception as e:                        # noqa: BLE001
+                    # The plan's first path, for a model its current one does
+                    # not know yet.
+                    if prov != "opencode-go" or "HTTP 404" not in str(e):
+                        raise
+                    where = GO_URL_OLD
+                    r, extra, mt, refused = negotiate(mb, where, model, key, options)
                 worked = True
                 how = (f"looked it up with {r['tool']} and answered" if r["tool"] and
                        r["answered"] else f"called {r['tool']}, then no answer"
@@ -559,8 +780,18 @@ def check(providers: list[str], models: list[str], out_path: Path,
                        if r.get("cached") else "")
                     + (f"; settings {extra}" if extra else "")
                     + (f"; served as {r['served']}" if r["served"] != model else ""))
+                if prov == "opencode-go":
+                    for ex, why in refused:
+                        say(f"  {'':32s}      settings {ex} refused first: {why}")
+                    say(f"  {'':32s}      its API: {go_api(model)}"
+                        + (f", {mt:,} tokens a step" if mt != MAX_TOKENS else "")
+                        + (f"; answered on {where} -- run it with --base-url {where}"
+                           if where != url else ""))
+                    say(f"  {'':32s}      {go_share(model)}")
             except Exception as e:                            # noqa: BLE001
                 say(f"  {model:32s} FAIL {_hide(str(e), key)[:300]}")
+        if prov == "opencode-go":
+            say(f"  {GO_PLAN}")
         if typed and not worked:
             say("  the key you typed: no request with it worked, so it is not saved")
         elif typed and ask and _ask(ask, f"  Save it to {env_file.name} as {names[0]}, so the "
@@ -575,6 +806,10 @@ def check(providers: list[str], models: list[str], out_path: Path,
     keys = sorted(k for k in os.environ if k.endswith("_API_KEY"))
     if not found:
         say("No provider's key found, in this shell or in .env.")
+    if "opencode-go" not in providers and any(
+            os.environ.get(n, "").strip() for n in provider_key_names(GO_URL)):
+        say("OpenCode Go's key is set: its models are tried with --check --provider "
+            "opencode-go (each try spends a little of the plan)")
     say(f"API key variables set (names only): {', '.join(keys) or 'none'}")
     for name, prov in unread_keys():
         label, url, _, _ = PROVIDERS[prov]
@@ -600,6 +835,17 @@ def check(providers: list[str], models: list[str], out_path: Path,
     return 0
 
 
+def _say_why(provider: str, why: str) -> None:
+    """The first error of a run that stopped, and, for a plan's usage limit,
+    what to do about it."""
+    if not why:
+        return
+    print(f"   the first: {why}")
+    if provider == "opencode-go" and re.search(r"usage limit|HTTP 429|HTTP 402", why):
+        print("   That is the plan's usage limit, most likely (OpenCode Go: 20% of the month "
+              "every 5 hours, 50% a week): run the same command again once it resets.")
+
+
 def _ask(ask, prompt: str, default: str = "") -> str:
     got = ask(f"{prompt}{f' [{default}]' if default else ''}: ").strip()
     return got or default
@@ -614,9 +860,9 @@ def main(argv: list[str] | None = None, ask=input, secret=getpass.getpass) -> in
     ap.add_argument("--extra-body", help="request settings as JSON (default: the provider's "
                                          "in the table, e.g. DeepSeek's reasoning off)")
     ap.add_argument("--yes", action="store_true", help="do not ask before running")
-    ap.add_argument("--workers", type=int, default=8,
-                    help="conversations at once (default 8): fewer for a provider that "
-                         "limits how many requests an account has open")
+    ap.add_argument("--workers", type=int, default=None,
+                    help="conversations at once (default 8; 4 on OpenCode Go): fewer for a "
+                         "provider that limits how many requests an account has open")
     ap.add_argument("--dry-run", action="store_true", help="the plan only; nothing is sent")
     ap.add_argument("--check", action="store_true",
                     help="which keys work and which models: every provider whose key is "
@@ -627,7 +873,10 @@ def main(argv: list[str] | None = None, ask=input, secret=getpass.getpass) -> in
     from pasarbench.models import check_agent_simulator
     from pasarbench.sweep import SIM_KEY, key_for, provider_key_env, provider_key_names
     if a.check:
-        provs = [a.provider] if a.provider else [p for p in PROVIDERS if p != "other"]
+        # OpenCode Go only when named: each try spends a little of the plan's
+        # allowance, and its dozen models are many tries (v73).
+        provs = [a.provider] if a.provider else [p for p in PROVIDERS
+                                                 if p not in ("other", "opencode-go")]
         # Someone to type a key: a terminal, or the caller's own prompts.
         there = ask is not input or sys.stdin.isatty()
         return check(provs, [a.model] if a.model else [], ROOT / "models_check.txt",
@@ -664,14 +913,25 @@ def main(argv: list[str] | None = None, ask=input, secret=getpass.getpass) -> in
         raise SystemExit(f"{model} is retired: its provider answers for it with "
                          f"{RETIRED[model]}, at {RETIRED[model]}'s price, so its runs would be "
                          f"another model's under its name. Run {RETIRED[model]}.")
-    extra, max_tokens = settings_for(provider, model)
-    extra = a.extra_body if a.extra_body is not None else extra
+    # The settings to try, in turn, until the provider takes one: one for every
+    # provider but OpenCode Go, whose models each have theirs (v73).
+    options = [settings_for(provider, model)]
+    if provider == "opencode-go":
+        if go_api(model) not in GO_BACKEND:
+            raise SystemExit(f"{model} is served in {go_api(model).title()}'s own API, which "
+                             f"this harness does not speak: pick another of the plan's models")
+        backend, options = GO_BACKEND[go_api(model)], go_settings(model)
+    extra, max_tokens = options[0]
+    if a.extra_body is not None:
+        extra = a.extra_body
+        options = [(extra, max_tokens)]
     if extra:
         try:
             if not isinstance(json.loads(extra), dict):
                 raise ValueError
         except ValueError:
             raise SystemExit(f"--extra-body {extra!r} is not a JSON object")
+    workers = a.workers or (GO_WORKERS if provider == "opencode-go" else 8)
     name = a.name or (short_name(model) if a.model else
                       _ask(ask, "Short name for its runs", short_name(model)))
     if not NAME.match(name):
@@ -690,11 +950,19 @@ def main(argv: list[str] | None = None, ask=input, secret=getpass.getpass) -> in
     print(f"            {parts}: their parts, 117 conversations")
     print(f"  reading   V-{name}.txt (RUNBOOK 1s)"
           + (f"; continuing {cases}" if earlier else ""))
+    if provider == "opencode-go":
+        print(f"  API       {go_api(model)} ({backend} backend), {workers} conversations at "
+              f"once")
+        if len(options) > 1:
+            print("  settings  the first the provider takes of: "
+                  + " | ".join(ex or "(none)" for ex, _ in options))
+        print(f"  plan      {go_share(model)}")
+        print(f"            {GO_PLAN}")
     if a.dry_run:
         print("\n(dry run: nothing sent) The runs would be, each with the two keys in its "
               "environment as PASARBENCH_API_KEY and PASARBENCH_SIM_API_KEY and no other "
               "*_API_KEY:")
-        for c in commands(backend, url, model, name, extra, max_tokens, a.workers):
+        for c in commands(backend, url, model, name, extra, max_tokens, workers):
             print("  " + " ".join(c[1:]))
         for c in readings(name):
             print("  " + " ".join(c[1:]))
@@ -729,30 +997,45 @@ def main(argv: list[str] | None = None, ask=input, secret=getpass.getpass) -> in
 
     print(f"Checking that {model} looks an order up with its tools and answers ...",
           flush=True)
-    try:
-        served = preflight(backend, url, model, agent_key, extra, max_tokens)
-    except SystemExit as e:
-        log(name, f"stopped at the check requests, nothing ran: {e}")
-        print(f"   (written to logs/add_model-{name}.log)")
-        raise
-    log(name, f"check requests ok: answered as {served}")
-    print(f"  ok: answered as {served}")
+    for i, (ex, mt) in enumerate(options):
+        try:
+            served = preflight(backend, url, model, agent_key, ex, mt)
+        except SystemExit as e:
+            if i < len(options) - 1 and REFUSED_SETTING.search(str(e)):
+                # A setting the provider does not take: the next one (v73).
+                why = str(e).splitlines()[1].strip() if "\n" in str(e) else str(e)
+                log(name, f"settings {ex or 'none'} refused: {why[:300]}")
+                print(f"  settings {ex or '(none)'} refused: {why[:200]}")
+                continue
+            log(name, f"stopped at the check requests, nothing ran: {e}")
+            print(f"   (written to logs/add_model-{name}.log)")
+            raise
+        extra, max_tokens = ex, mt
+        break
+    log(name, f"check requests ok: answered as {served}"
+              + (f"; settings {extra or 'none'}, {max_tokens:,} tokens a step" if i else ""))
+    print(f"  ok: answered as {served}"
+          + (f", with settings {extra or '(none)'}" if i else ""))
     if not a.yes and not _ask(ask, "Run them? (y/n)", "n").lower().startswith("y"):
         print("Nothing ran.")
         return 0
 
     env = child_env(agent_key, customer_key)
-    for c in commands(backend, url, model, name, extra, max_tokens, a.workers):
+    for c in commands(backend, url, model, name, extra, max_tokens, workers):
         rc = subprocess.run(c, env=env).returncode
         log(name, f"sweep {c[c.index('--run-id') + 1]} ended, exit code {rc}")
         if rc:
             print("!! a sweep stopped. Run the same command again: it carries on.")
+            _say_why(provider, first_error(name, agent_key, customer_key))
             return 1
     left = api_errors(name)
     if left:
-        log(name, f"{left} conversations ended on a server or API error; no reading yet")
+        why = first_error(name, agent_key, customer_key)
+        log(name, f"{left} conversations ended on a server or API error; no reading yet"
+                  + (f"; the first: {why}" if why else ""))
         print(f"!! {left} conversations ended on a server or API error. Run the same "
               f"command again before reading: only those run again.")
+        _say_why(provider, why)
         return 1
     out = Path(f"V-{name}.txt")
     with out.open("w", encoding="utf-8") as fh:
