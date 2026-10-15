@@ -1,6 +1,6 @@
 # What failed
 
-Fifty-one real defects found while building this. The first fifteen are in
+Fifty-three real defects found while building this. The first fifteen are in
 the order of how much damage they would have done; the rest are in the order
 they were found. Every one is reproducible from the git history.
 
