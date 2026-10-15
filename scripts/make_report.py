@@ -1984,9 +1984,16 @@ def section_hard_edition(traces: Path = Path("traces")) -> str:
     checks.append((len(sims) == 1, "one customer in every run: "
                    + ", ".join(f"`{x}`" for x in sorted(map(str, sims)))))
     temps = {h.get("agent_temperature") for h in heads}
+    # An agent whose provider refuses temperature 0 beside its reasoning runs at
+    # its default, recorded as None (v73: add_model's last setting): named here.
+    off = {n: sorted({str(h.get("agent_temperature")) for h in agents[n]["heads"].values()})
+           for n in order
+           if {h.get("agent_temperature") for h in agents[n]["heads"].values()} != {0.0}}
     checks.append((temps == {0.0}, "agent temperature 0 in every run" if temps == {0.0}
-                   else f"agent temperatures differ or are unrecorded: "
-                        f"{sorted(map(str, temps))}"))
+                   else "agent temperature 0 in every run but "
+                        + ", ".join(f"{n}'s ({', '.join(v)})" for n, v in off.items())
+                        + (" -- None: no temperature sent, the provider's default"
+                           if any("None" in v for v in off.values()) else "")))
     for n in order:
         a = agents[n]
         models = {str(h.get("requested_model")) for h in a["heads"].values()}
