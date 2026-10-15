@@ -41,6 +41,13 @@ _FAMILIES: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("microsoft", ("phi-",)),
     ("cohere", ("command-", "aya")),
     ("xai", ("grok",)),
+    # The labs OpenCode Go serves beside these (v73).
+    ("minimax", ("minimax",)),
+    ("xiaomi", ("mimo",)),
+    ("meituan", ("longcat",)),
+    ("tencent", ("hunyuan", "hy3", "hy4")),
+    ("stepfun", ("step-",)),
+    ("meta", ("muse-spark",)),
 )
 
 

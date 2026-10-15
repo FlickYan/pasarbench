@@ -32,7 +32,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from .agents import HarnessAgent
 from .db import Database
 from .harness.backends import (AnthropicBackend, MuteBackend,
-                               OpenAICompatBackend, ScriptedBackend)
+                               OpenAICompatBackend, ResponsesBackend, ScriptedBackend)
 from .analyze import attribute_failures, markdown_report
 from .diagnose import tool_scaling_report
 from .claim_reader import QUOTE_CHECK as READER_QUOTES
@@ -112,6 +112,8 @@ PROVIDER_KEYS: dict[str, tuple[str, ...]] = {
     "openrouter.ai": ("OPENROUTER_API_KEY",),
     "api.together.xyz": ("TOGETHER_API_KEY",),
     "api.groq.com": ("GROQ_API_KEY",),
+    # OpenCode's gateway (v73): the Go plan and pay-as-you-go Zen, one key.
+    "opencode.ai": ("OPENCODE_API_KEY", "OPENCODE_GO_API_KEY"),
 }
 # This run's keys, for whatever endpoint the command names: the agent's, and
 # the customer's (which the claim reader and the translator share). They come
@@ -208,8 +210,27 @@ def make_backend(kind: str, args) -> callable:
                                              extra_body=_extra_body(args.extra_body))
     if kind == "anthropic":
         return lambda t: AnthropicBackend(model=args.model, api_key=args.api_key,
-                                          temperature=args.temperature)
+                                          temperature=args.temperature,
+                                          max_tokens=args.max_tokens,
+                                          base_url=agent_url(args),
+                                          extra_body=_extra_body(args.extra_body))
+    if kind == "responses":
+        route = fold_router(args)
+        return lambda t: ResponsesBackend(model=route(t), base_url=agent_url(args),
+                                          api_key=args.api_key,
+                                          temperature=args.temperature,
+                                          max_tokens=args.max_tokens,
+                                          extra_body=_extra_body(args.extra_body))
     raise ValueError(kind)
+
+
+def agent_url(args) -> str:
+    """The agent's endpoint: --base-url, or for the anthropic backend
+    without one, Anthropic's own (v73: --base-url reaches it too, for an
+    endpoint that speaks Anthropic's API, such as OpenCode Go's)."""
+    if args.backend == "anthropic" and not getattr(args, "base_url_given", True):
+        return ANTHROPIC_URL
+    return args.base_url
 
 
 def fold_router(args):
@@ -462,6 +483,7 @@ def run_cell(strategy_name: str, backend_factory, simulator_factory, tasks: list
             # tool_checks: an episode run before v27, when the tools took any
             # argument value, is not the same experiment (WHAT_FAILED #35).
             if (head.get("requested_model") != getattr(want, "model", None)
+                    or head.get("via") != getattr(want, "via", None)
                     or head.get("simulator") != getattr(want_sim, "name", "?")
                     or head.get("context") != strategy.name
                     or head.get("policy_mode", policy_mode) != policy_mode
@@ -476,7 +498,9 @@ def run_cell(strategy_name: str, backend_factory, simulator_factory, tasks: list
                     or head.get("tool_checks", 1) != TOOL_CHECKS):
                 raise SystemExit(
                     f"--resume: {cell_dir} already holds episodes from a different "
-                    f"setup (model {head.get('requested_model')!r}, simulator "
+                    f"setup (model {head.get('requested_model')!r}"
+                    + (f" via {head['via']}" if head.get("via") else "")
+                    + f", simulator "
                     f"{head.get('simulator')!r}, policy {head.get('policy_mode')!r}, "
                     f"guardrail {head.get('guardrail', 'off')!r}, closing "
                     f"{head.get('closing', 'off')!r}"
@@ -602,12 +626,16 @@ def markdown_table(rows: list[dict]) -> str:
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--backend", default="scripted",
-                    choices=["scripted", "mute", "openai", "anthropic"])
+                    choices=["scripted", "mute", "openai", "anthropic", "responses"],
+                    help="openai: /chat/completions; anthropic: Anthropic's /messages; "
+                         "responses: OpenAI's /responses (v73) -- each at --base-url")
     ap.add_argument("--simulator", default="silent",
                     choices=["silent", "openai", "anthropic"])
     ap.add_argument("--model", default="gpt-4o-mini")
     ap.add_argument("--sim-model", default="gpt-4o-mini")
-    ap.add_argument("--base-url", default="https://api.openai.com/v1")
+    ap.add_argument("--base-url", default=None,
+                    help="the agent's endpoint (default https://api.openai.com/v1; for "
+                         "--backend anthropic, https://api.anthropic.com/v1)")
     ap.add_argument("--api-key", default="",
                     help="prefer the provider's variable (DEEPSEEK_API_KEY for "
                          "api.deepseek.com, OPENAI_API_KEY for api.openai.com, ...) or "
@@ -724,21 +752,25 @@ def main() -> None:
                     help="permit an agent and simulated customer from one model "
                          "family (only to measure that bias on purpose)")
     args = ap.parse_args()
+    # --base-url given or not: the anthropic backend goes to Anthropic unless
+    # it is (v73); everything else that falls back on --base-url finds the
+    # default it always had.
+    args.base_url_given = args.base_url is not None
+    args.base_url = args.base_url or "https://api.openai.com/v1"
+    url = agent_url(args)
 
-    if args.backend == "openai" and _local(args.base_url):
+    if args.backend in ("openai", "anthropic", "responses") and _local(url):
         # A local server gets the placeholder key: serve_sglang.sh listens on
         # localhost without one, and a provider key picked up from the
         # environment has no business leaving the machine for a local process.
         args.api_key = "EMPTY"
-    elif args.backend == "openai":
-        args.api_key = args.api_key or key_for(args.base_url)
-        check_key(args, args.base_url)
-    elif args.backend == "anthropic":
-        args.api_key = args.api_key or key_for(ANTHROPIC_URL)
-        check_key(args, ANTHROPIC_URL)
+    elif args.backend in ("openai", "anthropic", "responses"):
+        args.api_key = args.api_key or key_for(url)
+        check_key(args, url)
     fold_models = ([kv.split("=", 1)[-1] for kv in args.fold_models.split(",")]
                    if args.fold_models else [])
-    if args.backend in ("openai", "anthropic") and args.simulator in ("openai", "anthropic"):
+    if (args.backend in ("openai", "anthropic", "responses")
+            and args.simulator in ("openai", "anthropic")):
         for note in dict.fromkeys(check_agent_simulator(m, args.sim_model,
                                                         args.allow_same_family)
                                   for m in [args.model, *fold_models]):

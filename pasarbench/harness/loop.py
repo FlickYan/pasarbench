@@ -131,6 +131,11 @@ def run_episode(
         # Collection samples at temperature 1.0 and evaluation at 0.0; a report
         # that compares runs has to be able to tell which one it is reading.
         "agent_temperature": getattr(backend, "temperature", None),
+        # The gateway the agent was reached through (v73: OpenCode Go), only
+        # when there was one, so the headers of every run before it stay as
+        # they were: the same model name through a plan's gateway and from its
+        # lab's own endpoint are told apart.
+        **({"via": backend.via} if getattr(backend, "via", None) else {}),
         # Only when on, so the headers of every run before it stay as they were.
         **({"guardrail": guardrail} if guardrail != "off" else {}),
         # The model the reader guardrail read with (v50), and how it found its
