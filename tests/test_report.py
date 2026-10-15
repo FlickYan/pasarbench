@@ -1075,7 +1075,7 @@ def test_hard_edition_section():
     tmp = Path(tempfile.mkdtemp())
     v3 = "llm-user/v3:openai-compat:qwen3.8-flash"
 
-    def run(name, model, start, case_ok, part_ok):
+    def run(name, model, start, case_ok, part_ok, temperature=0.0):
         for cell, ids, ok in ((f"V-{name}", [t.task_id for t in cases], case_ok),
                               (f"V-{name}-parts", sorted(set(twins.values())), part_ok)):
             d = tmp / "traces" / cell / "full"
@@ -1085,7 +1085,7 @@ def test_hard_edition_section():
                 for k in range(3):
                     head = {"type": "header", "task_id": tid, "language": t.language,
                             "trap": t.trap, "requested_model": model, "simulator": v3,
-                            "agent_temperature": 0.0, "started_at": start,
+                            "agent_temperature": temperature, "started_at": start,
                             "agent_extra_body": {"thinking": {"type": "disabled"}}}
                     said = ([{"type": "event", "kind": "user_turn", "text":
                               f"{t.hidden_facts.get('phone_last4', '0000')}. Actually don't "
@@ -1142,6 +1142,12 @@ def test_hard_edition_section():
           and "- ✓ agent temperature 0 in every run" in md
           and "- ✓ each agent's two runs: one model, one setting, every case's part" in md,
           md[md.find("*The customer"):])
+    run("w", "model-w", "2026-10-13T04:00", every, every, temperature=None)
+    md = section()
+    check("v73: an agent whose provider took no temperature, run at its default and recorded "
+          "as None, is named in the temperature check, not lost in a list",
+          "- ✗ **agent temperature 0 in every run but w's (None) -- None: no temperature "
+          "sent, the provider's default**" in md, md[md.find("*The customer"):])
 
 
 def main() -> int:

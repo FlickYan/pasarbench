@@ -3268,6 +3268,223 @@ def test_add_model_check():
         os.environ.update(keys)
 
 
+def test_add_model_go():
+    """v73: OpenCode Go in add_model.py -- one key for many labs' models, each
+    in the API the plan serves it in and with settings of its own, the plan's
+    allowance in view. A setting the provider refuses is not the run's: the
+    next is tried, and the run goes with the first it takes. --check tries the
+    models 1s has not run, on their own APIs, and says what one run takes of
+    the plan; a run the usage limit stopped says so."""
+    print("\n=== add_model on OpenCode Go: each model in its API, the plan in view ===")
+    import contextlib
+    import importlib.util
+    import io
+    import json
+    import os
+    import tempfile
+    from pathlib import Path
+    from types import SimpleNamespace
+
+    root = Path(__file__).resolve().parent.parent
+    spec = importlib.util.spec_from_file_location("add_model", root / "scripts" / "add_model.py")
+    am = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(am)
+    cwd = os.getcwd()
+    keys = {k: os.environ.pop(k) for k in list(os.environ) if k.endswith("_API_KEY")}
+    go = am.GO_URL
+    try:
+        def plan(*argv):
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                am.main(["--provider", "opencode-go", *argv, "--dry-run"])
+            return out.getvalue()
+
+        def refused(argv):
+            try:
+                with contextlib.redirect_stdout(io.StringIO()):
+                    am.main(argv, ask=lambda prompt: "n", secret=lambda prompt: "")
+                return ""
+            except SystemExit as e:
+                return str(e)
+        haiku = plan("--model", "claude-haiku-5-5")
+        luna = plan("--model", "gpt-6-luna")
+        kimi = plan("--model", "kimi-k2.6")
+        k3 = plan("--model", "kimi-k3")
+        slow = plan("--model", "kimi-k2.6", "--workers", "2")
+        check("each Go model in the API the plan serves it in, at the plan's endpoint: Claude "
+              "in Anthropic's, GPT in OpenAI's Responses with reasoning off, Kimi in chat with "
+              "its thinking off -- four conversations at once unless told otherwise",
+              f"--backend anthropic --model claude-haiku-5-5 --base-url {go} --simulator" in haiku
+              and f"--backend responses --model gpt-6-luna --base-url {go} --extra-body "
+                  '{"reasoning":{"effort":"none"}} --simulator' in luna
+              and f"--backend openai --model kimi-k2.6 --base-url {go} --extra-body "
+                  '{"thinking":{"type":"disabled"}} --simulator' in kimi
+              and haiku.count("--workers 4 --resume") == 2
+              and slow.count("--workers 2 --resume") == 2
+              and "--workers 8 --resume" in plan_other(am), (haiku, luna, kimi))
+        check("…and what one run takes of the plan, at its price and the model's limit: "
+              "Claude Haiku a few percent of the month, Kimi K3 more than one 5-hour window "
+              "even at best; the settings to try in turn named",
+              "1-7% of the plan's month (its limit $15); fits in one 5-hour window" in haiku
+              and "takes at least 3 5-hour windows" in k3 and "more than the month" in k3
+              and "the first the provider takes of: " in luna
+              and "Use balance" in haiku, (haiku, k3))
+        check("a Qwen model of the plan is refused, the customer being one; a model the plan "
+              "serves in Google's own API is too, this harness not speaking it",
+              "is a Qwen model" in refused(["--provider", "opencode-go", "--model",
+                                            "qwen3.8-max"])
+              and "Google's own API" in refused(["--provider", "opencode-go", "--model",
+                                                 "gemini-4-argon-contributor"]))
+
+        tmp = Path(tempfile.mkdtemp())
+        am.ROOT = tmp
+        ran = []
+
+        def fake_run(cmd, env=None, stdout=None, stderr=None):
+            ran.append((cmd, env))
+            if stdout is not None:
+                stdout.write("read\n")
+            return SimpleNamespace(returncode=0)
+        am.subprocess = SimpleNamespace(run=fake_run, STDOUT=-2)
+        tried = []
+
+        def fussy(backend, url, model, key, extra, max_tokens=2048):
+            tried.append((backend, url, extra, max_tokens))
+            if '"none"' in extra:
+                raise SystemExit("!! the check requests failed, so nothing ran:\n   HTTP 400 "
+                                 f"from {url}/responses: {{\"error\":{{\"message\":\"Unsupported "
+                                 "value: 'none'\"}}\n   A wrong key, ...")
+            if "temperature" not in extra:
+                raise SystemExit("!! the check requests failed, so nothing ran:\n   HTTP 400 "
+                                 f"from {url}/responses: temperature is not supported with "
+                                 "reasoning\n   A wrong key, ...")
+            return model + "-served"
+        am.preflight = fussy
+        os.environ.update(OPENCODE_API_KEY="oc-k", DASHSCOPE_API_KEY="ds-k",
+                          DEEPSEEK_API_KEY="sk-dsk")
+        with contextlib.redirect_stdout(io.StringIO()):
+            rc = am.main(["--provider", "opencode-go", "--model", "gpt-6-luna", "--yes"],
+                         ask=lambda prompt: "y", secret=lambda prompt: "")
+        sweeps = [" ".join(c) for c, e in ran if "pasarbench.sweep" in c]
+        envs = [e for c, e in ran if "pasarbench.sweep" in c]
+        record = (tmp / "logs" / "add_model-gpt-6-luna.log").read_text(encoding="utf-8")
+        check("a setting the provider refuses is not the run's: the next of the model's is "
+              "tried -- reasoning off, then low, then low with no temperature sent -- the run "
+              "goes with the first it takes, and its record says which and why",
+              rc == 0 and [t[2] for t in tried] == ['{"reasoning":{"effort":"none"}}',
+                                                     '{"reasoning":{"effort":"low"}}',
+                                                     '{"reasoning":{"effort":"low"},'
+                                                     '"temperature":null}']
+              and [t[3] for t in tried] == [2048, 4096, 4096]
+              and len(sweeps) == 2
+              and all('--extra-body {"reasoning":{"effort":"low"},"temperature":null} '
+                      '--max-tokens 4096' in s for s in sweeps)
+              and 'settings {"reasoning":{"effort":"none"}} refused: HTTP 400' in record
+              and 'check requests ok: answered as gpt-6-luna-served; settings '
+                  '{"reasoning":{"effort":"low"},"temperature":null}, 4,096 tokens a step'
+              in record, (tried, record))
+        check("…the plan's key in the runs' environment as this run's key, beside no other "
+              "provider's, and in no command line or record",
+              all(e["PASARBENCH_API_KEY"] == "oc-k" and e["PASARBENCH_SIM_API_KEY"] == "ds-k"
+                  and "OPENCODE_API_KEY" not in e and "DEEPSEEK_API_KEY" not in e for e in envs)
+              and not any(k in " ".join(" ".join(c) for c, _ in ran) for k in ("oc-k", "ds-k"))
+              and "oc-k" not in record)
+
+        full = tmp / "traces" / "V-kimi-k2.6" / "full"
+        full.mkdir(parents=True)
+        (full / "T__r0.jsonl").write_text(
+            json.dumps({"type": "header", "requested_model": "kimi-k2.6"}) + "\n"
+            + json.dumps({"type": "event", "kind": "backend_error",
+                          "error": "RuntimeError: not sent: the usage limit (HTTP 429 from "
+                                   "opencode.ai: Usage limit reached) -- reached earlier in "
+                                   "this run; run it again once the limit resets"}) + "\n"
+            + json.dumps({"type": "footer", "stop_reason": "backend_error"}) + "\n")
+        am.preflight = lambda backend, url, model, key, extra, max_tokens=2048: model
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            rc = am.main(["--provider", "opencode-go", "--model", "kimi-k2.6", "--yes"],
+                         ask=lambda prompt: "y", secret=lambda prompt: "")
+        said = out.getvalue()
+        check("a run the plan's usage limit stopped: no reading, the provider's words, and "
+              "what to do -- run it again once the window resets",
+              rc == 1 and "ended on a server or API error" in said
+              and "the first: RuntimeError: not sent: the usage limit" in said
+              and "That is the plan's usage limit" in said
+              and not (tmp / "V-kimi-k2.6.txt").exists(), said[-600:])
+
+        calls = []
+
+        def fake_probe(backend, url, model, key, extra, max_tokens=2048):
+            calls.append((backend, url, model, key, extra, max_tokens))
+            if model == "kimi-k2.6" and "thinking" in extra:
+                raise RuntimeError(f"HTTP 400 from {url}/chat/completions: unknown field "
+                                   f"'thinking'")
+            if model == "hy3" and url == go:
+                raise RuntimeError(f"HTTP 404 from {url}/chat/completions: no such model")
+            if model == "grok-4.7":
+                raise RuntimeError(f"HTTP 401 from {url}/responses: bad key {key}")
+            return {"served": model, "requests": 2, "tool": "get_order", "answered": True,
+                    "prompt": 9000, "completion": 80, "seconds": 1.5, "cached": (4000, 4500)}
+        am.probe = fake_probe
+        am.listed_models = lambda url, key: sorted(am.GO_MODELS)
+        for k in [k for k in os.environ if k.endswith("_API_KEY")]:
+            os.environ.pop(k)
+        os.environ.update(OPENCODE_API_KEY="oc-secret-1", DASHSCOPE_API_KEY="ds-secret-2")
+        with contextlib.redirect_stdout(io.StringIO()):
+            rc = am.main(["--check", "--provider", "opencode-go"], ask=lambda prompt: "n",
+                         secret=lambda prompt: "")
+        text = (tmp / "models_check.txt").read_text(encoding="utf-8")
+        by = {m: b for b, u, m, k, e, t in calls}
+        check("--check on Go tries the models 1s has not run, each in its own API -- "
+              "Anthropic's, OpenAI's Responses, chat -- and the plan's key only to the plan",
+              rc == 0 and [m for m in am.CANDIDATES["opencode-go"] if m not in by] == []
+              and by["claude-haiku-5-5"] == "anthropic" and by["minimax-m3"] == "anthropic"
+              and by["gpt-6-luna"] == "responses" and by["muse-spark-1.3-contributor"]
+              == "responses" and by["kimi-k2.6"] == "openai"
+              and all((k == "oc-secret-1") == ("opencode.ai" in u) for _, u, _, k, _, _ in calls)
+              and "key from OPENCODE_API_KEY" in text, (by, text))
+        check("…a setting refused is followed by the next, a model the plan's current path "
+              "does not know is tried on its first, a key refused is said in the provider's "
+              "words with the key hidden, and each model's share of the plan is beside it",
+              'settings {"thinking":{"type":"disabled"}} refused first: HTTP 400' in text
+              and f"answered on {am.GO_URL_OLD} -- run it with --base-url {am.GO_URL_OLD}"
+              in text
+              and f"{'grok-4.7':32s} FAIL HTTP 401" in text
+              and "bad key <key>" in text and "oc-secret-1" not in text
+              and "Anthropic; one run about $0.21-1.08 at its price" in text
+              and "its API: responses" in text and am.GO_PLAN in text, text)
+        with contextlib.redirect_stdout(io.StringIO()):
+            am.main(["--check", "--provider", "opencode-go", "--model", "qwen3.8-max"],
+                    ask=lambda prompt: "n", secret=lambda prompt: "")
+        qwen = (tmp / "models_check.txt").read_text(encoding="utf-8")
+        with contextlib.redirect_stdout(io.StringIO()):
+            am.main(["--check", "--provider", "opencode-go", "--model",
+                     "gemini-4-argon-contributor"], ask=lambda prompt: "n",
+                    secret=lambda prompt: "")
+        gem = (tmp / "models_check.txt").read_text(encoding="utf-8")
+        check("…and a Qwen model of the plan, or one in Google's own API, is not tried",
+              "a Qwen model, as the customer is -- not tried" in qwen
+              and "served in Google's own API, which this harness does not speak" in gem
+              and not any(m in ("qwen3.8-max", "gemini-4-argon-contributor")
+                          for _, _, m, _, _, _ in calls), (qwen, gem))
+    finally:
+        os.chdir(cwd)
+        for k in [k for k in os.environ if k.endswith("_API_KEY")]:
+            os.environ.pop(k)
+        os.environ.update(keys)
+
+
+def plan_other(am) -> str:
+    """add_model's plan for a provider other than Go, as test_add_model_go
+    compares its default worker count."""
+    import contextlib
+    import io
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out):
+        am.main(["--provider", "zai", "--model", "glm-5.3-flash", "--dry-run"])
+    return out.getvalue()
+
+
 def test_export_hf():
     """v44 publishes the recorded runs as a Hugging Face dataset: one line per
     episode with its setup and verdict as columns beside the whole trace, a
@@ -3583,6 +3800,7 @@ def main() -> int:
     test_read_failures()
     test_add_model()
     test_add_model_check()
+    test_add_model_go()
     test_export_hf()
     print(f"\n{len(PASS)} passed, {len(FAIL)} failed")
     for f in FAIL:

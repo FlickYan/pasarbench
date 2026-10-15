@@ -2003,6 +2003,256 @@ def test_keys_by_provider():
         os.environ.update(keys)
 
 
+def test_gateway_backends():
+    """v73: OpenCode Go -- one key for many labs' models at one gateway, each
+    model in its own API. The key goes there and nowhere else; the gateway is
+    sent the user agent and the session id per conversation it asks for, and
+    no other provider is; Anthropic's API and OpenAI's Responses API are spoken
+    at any endpoint, their usage read as every other backend's; the trace
+    header names the gateway; and once a plan's usage limit is reached, the
+    run sends that gateway nothing more."""
+    print("\n=== OpenCode Go: one gateway, three APIs, a usage limit ===")
+    import json
+    import os
+    import threading
+    from http.server import BaseHTTPRequestHandler, HTTPServer
+
+    from pasarbench.harness import backends
+    from pasarbench.harness.backends import (AnthropicBackend, OpenAICompatBackend,
+                                             ResponsesBackend)
+    from pasarbench.harness.trace import read_episode
+    from pasarbench.sweep import key_for, provider_key_env
+    go = "https://opencode.ai/inference/go/v1"
+    keys = {k: os.environ.pop(k) for k in list(os.environ) if k.endswith("_API_KEY")}
+    try:
+        os.environ.update(OPENCODE_API_KEY="oc-k", DEEPSEEK_API_KEY="sk-dsk",
+                          ANTHROPIC_API_KEY="sk-ant", OPENAI_API_KEY="sk-oai")
+        check("the plan's key for its gateway, on either of its paths, and for no look-alike "
+              "host; DeepSeek's still DeepSeek's",
+              key_for(go) == "oc-k" and key_for("https://opencode.ai/zen/go/v1") == "oc-k"
+              and provider_key_env(go) == "OPENCODE_API_KEY"
+              and key_for("https://opencode.ai.example.net/v1") == ""
+              and key_for("https://api.deepseek.com/v1") == "sk-dsk")
+        check("Anthropic's key only to Anthropic and OpenAI's only to OpenAI, whatever "
+              "endpoint the backend is pointed at",
+              AnthropicBackend("m").api_key == "sk-ant"
+              and AnthropicBackend("m", base_url=go).api_key == ""
+              and ResponsesBackend("m").api_key == "sk-oai"
+              and ResponsesBackend("m", base_url=go).api_key == "EMPTY")
+    finally:
+        for k in [k for k in os.environ if k.endswith("_API_KEY")]:
+            os.environ.pop(k)
+        os.environ.update(keys)
+
+    sent = []
+
+    def fake_post(url, payload, headers, timeout=120.0):
+        sent.append((url, payload, headers))
+        if url.endswith("/messages"):
+            return {"model": "claude-haiku-5-5", "stop_reason": "tool_use", "content": [
+                {"type": "text", "text": "Let me check."},
+                {"type": "tool_use", "id": "tu1", "name": "get_order",
+                 "input": {"order_id": "GO-1"}}],
+                "usage": {"input_tokens": 100, "cache_read_input_tokens": 900,
+                          "cache_creation_input_tokens": 50, "output_tokens": 20}}
+        if url.endswith("/responses"):
+            return {"model": "gpt-6-luna", "status": "completed", "output": [
+                {"type": "reasoning", "id": "rs1", "summary": []},
+                {"type": "message", "role": "assistant",
+                 "content": [{"type": "output_text", "text": "Checking."}]},
+                {"type": "function_call", "id": "fc1", "call_id": "call_9", "name": "get_order",
+                 "arguments": '{"order_id": "GO-1"}'},
+                {"type": "function_call", "id": "fc2", "call_id": "call_10",
+                 "name": "get_shipment", "arguments": "{bad"}],
+                "usage": {"input_tokens": 1000, "input_tokens_details": {"cached_tokens": 800},
+                          "output_tokens": 30}}
+        return {"model": "kimi-k2.6", "choices": [{"message": {"content": "ok"},
+                                                   "finish_reason": "stop"}],
+                "usage": {"prompt_tokens": 10, "completion_tokens": 1}}
+
+    tools = [{"type": "function", "function": {
+        "name": "get_order", "description": "Look an order up",
+        "parameters": {"type": "object", "properties": {"order_id": {"type": "string"}}}}}]
+    turn = [Message(role="system", content="policy"), Message(role="user", content="hi"),
+            Message(role="assistant", content="", tool_calls=[
+                ToolCall(name="get_order", id="c1", arguments={"order_id": "GO-1"})]),
+            Message(role="tool", tool_call_id="c1", name="get_order",
+                    content='{"status": "shipped"}'),
+            Message(role="assistant", content="It shipped."),
+            Message(role="user", content="thanks")]
+    other = [Message(role="system", content="policy"), Message(role="user", content="another")]
+    real, backends._post = backends._post, fake_post
+    try:
+        a = AnthropicBackend("claude-haiku-5-5", api_key="oc-k", base_url=go)
+        ra = a.chat(turn, tools)
+        r = ResponsesBackend("gpt-6-luna", base_url=go, api_key="oc-k",
+                             extra_body={"reasoning": {"effort": "none"}})
+        rr = r.chat(turn, tools)
+        c = OpenAICompatBackend("kimi-k2.6", go, api_key="oc-k")
+        c.chat(turn, tools)
+        c.chat(other, tools)
+        OpenAICompatBackend("m", "https://api.deepseek.com/v1", api_key="k").chat(turn, tools)
+        ResponsesBackend("m", api_key="k").chat(turn, tools)
+        bare = ResponsesBackend("m", base_url=go, api_key="oc-k",
+                                extra_body={"reasoning": {"effort": "low"}, "temperature": None})
+        bare.chat(turn, tools)
+    finally:
+        backends._post = real
+    urls = [u for u, _, _ in sent]
+    sessions = [h.get("x-opencode-session") for _, _, h in sent]
+    agents = [h.get("User-Agent") for _, _, h in sent]
+    check("each of the gateway's three APIs at its own path under the one endpoint",
+          urls[:3] == [go + "/messages", go + "/responses", go + "/chat/completions"]
+          and urls[4] == "https://api.deepseek.com/v1/chat/completions"
+          and urls[5] == "https://api.openai.com/v1/responses", urls)
+    check("to the gateway, this client's own user agent and one session id per "
+          "conversation, whichever API carries it; to no other provider either",
+          agents[:4] == ["pasarbench/1.0"] * 4 and agents[4:6] == [None, None]
+          and sessions[0] and sessions[0] == sessions[1] == sessions[2]
+          and sessions[3] and sessions[3] != sessions[0] and sessions[4:6] == [None, None],
+          (agents, sessions))
+    _, pa, ha = sent[0]
+    check("Anthropic's API at the gateway: the key as x-api-key, the system prompt apart, "
+          "a tool result as the user's block; the prompt counted whole -- cache read and "
+          "written included -- and the cached part apart",
+          ha["x-api-key"] == "oc-k" and ha["anthropic-version"] == "2023-06-01"
+          and "Authorization" not in ha and pa["system"] == "policy"
+          and pa["messages"][2]["content"][0]["type"] == "tool_result"
+          and pa["tools"][0]["input_schema"]["type"] == "object"
+          and (ra.usage.prompt_tokens, ra.usage.cached_tokens, ra.usage.completion_tokens)
+          == (1050, 900, 20)
+          and ra.content == "Let me check." and ra.tool_calls[0].id == "tu1"
+          and ra.served_model == "claude-haiku-5-5", (pa, ra))
+    _, pr, hr = sent[1]
+    check("OpenAI's Responses API: the system prompt as instructions, each turn an input "
+          "item -- a tool call and its result matched by the call's id -- the tools in its "
+          "own shape, nothing stored, temperature 0 and the model's settings",
+          pr["instructions"] == "policy" and pr["store"] is False
+          and pr["input"] == [
+              {"role": "user", "content": "hi"},
+              {"type": "function_call", "call_id": "c1", "name": "get_order",
+               "arguments": '{"order_id": "GO-1"}'},
+              {"type": "function_call_output", "call_id": "c1", "output": '{"status": "shipped"}'},
+              {"role": "assistant", "content": "It shipped."},
+              {"role": "user", "content": "thanks"}]
+          and pr["tools"] == [{"type": "function", "name": "get_order",
+                               "description": "Look an order up",
+                               "parameters": tools[0]["function"]["parameters"]}]
+          and pr["temperature"] == 0.0 and pr["max_output_tokens"] == 2048
+          and pr["reasoning"] == {"effort": "none"}
+          and hr["Authorization"] == "Bearer oc-k", pr)
+    check("…and its answer read back: the text, each call with its call id -- broken "
+          "arguments as a recoverable error, as the chat backend has them -- the reasoning "
+          "left out, the usage with its cached part",
+          rr.content == "Checking."
+          and [(t.name, t.arguments, t.id) for t in rr.tool_calls]
+          == [("get_order", {"order_id": "GO-1"}, "call_9"),
+              ("get_shipment", {"__malformed__": "{bad"}, "call_10")]
+          and (rr.usage.prompt_tokens, rr.usage.cached_tokens, rr.usage.completion_tokens)
+          == (1000, 800, 30) and rr.stop_reason == "tool_calls"
+          and rr.served_model == "gpt-6-luna", rr)
+    warm = AnthropicBackend("minimax-m3", api_key="oc-k", base_url=go,
+                            extra_body={"temperature": 0.01})
+    check("a setting given as null is not sent: a model that refuses a temperature beside its "
+          "reasoning runs at its default, and the backend says so (None, not 0); a "
+          "temperature among the settings is the one the header records",
+          "temperature" not in sent[6][1] and sent[6][1]["reasoning"] == {"effort": "low"}
+          and bare.temperature is None and r.temperature == 0.0
+          and bare.extra_body == {"reasoning": {"effort": "low"}, "temperature": None}
+          and warm.temperature == 0.01, sent[6][1])
+    check("the gateway named for the trace: Go, Zen, and none for a lab's own endpoint",
+          a.via == r.via == c.via == "opencode-go"
+          and OpenAICompatBackend("m", "https://opencode.ai/zen/v1", api_key="k").via
+          == "opencode-zen"
+          and OpenAICompatBackend("m", "https://api.deepseek.com/v1", api_key="k").via is None)
+
+    class ViaScripted(ScriptedBackend):
+        via = "opencode-go"
+
+    heads = []
+    for b in (ScriptedBackend(SOLUTIONS["T01"]), ViaScripted(SOLUTIONS["T01"])):
+        with tempfile.TemporaryDirectory() as tmp:
+            tw = TraceWriter(root=tmp, run_id="r")
+            task = BY_ID["T01"]
+            run_episode(task, Database.fresh(task.db_patch), b, trace=tw)
+            tw.close()
+            heads.append(read_episode(next(Path(tmp, "r").glob("*.jsonl")))[0])
+    check("the trace header names the gateway the agent was reached through, and only when "
+          "there was one: every earlier run's header as it was",
+          "via" not in heads[0] and heads[1]["via"] == "opencode-go", heads[1])
+
+    hits = []
+
+    class Limit(BaseHTTPRequestHandler):
+        def log_message(self, *a):
+            pass
+
+        def do_POST(self):
+            hits.append(self.path)
+            self.rfile.read(int(self.headers["Content-Length"]))
+            body = json.dumps({"error": {"message": "Usage limit reached for this 5-hour "
+                                                    "window"}}).encode()
+            self.send_response(429)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+    srv = HTTPServer(("127.0.0.1", 0), Limit)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    url = f"http://127.0.0.1:{srv.server_port}/v1"
+    kept = backends.PLAN_HOSTS
+
+    def three():
+        errs = []
+        for _ in range(3):
+            try:
+                OpenAICompatBackend("m", url, api_key="k").chat(other, [])
+            except RuntimeError as e:
+                errs.append(str(e))
+        return errs
+    try:
+        before = three()
+        sent_before = len(hits)
+        backends.PLAN_HOSTS = (*kept, "127.0.0.1")
+        hits.clear()
+        after = three()
+    finally:
+        backends.PLAN_HOSTS = kept
+        backends._HALTED.clear()
+        srv.shutdown()
+    check("a plan's usage limit: after the first refusal, the run sends that gateway "
+          "nothing more, each later request ended unsent with the reason; any other "
+          "provider's 429 ends its own request only, as before",
+          sent_before == 3 and all("HTTP 429" in e for e in before)
+          and len(hits) == 1 and "HTTP 429" in after[0]
+          and all(e.startswith("not sent: the usage limit (HTTP 429") for e in after[1:])
+          and "5-hour window" in after[1], (before, after, hits))
+
+    import subprocess
+    import sys
+    root = Path(__file__).resolve().parent.parent
+    env = {k: v for k, v in os.environ.items() if not k.endswith("_API_KEY")}
+    env["DEEPSEEK_API_KEY"] = "sk-dsk"
+
+    def stops(*agent):
+        r = subprocess.run([sys.executable, "-m", "pasarbench.sweep", *agent, "--suite",
+                            "edition3", "-k", "1", "--run-id", "never"],
+                           capture_output=True, text=True, cwd=root, env=env)
+        return r.returncode != 0 and not (root / "traces" / "never").exists(), r.stdout + r.stderr
+    resp = stops("--backend", "responses", "--model", "gpt-6-luna", "--base-url", go)
+    msg = stops("--backend", "anthropic", "--model", "claude-haiku-5-5", "--base-url", go)
+    own = stops("--backend", "anthropic", "--model", "claude-haiku-5-5")
+    check("the sweep speaks the Responses API, and Anthropic's at an endpoint named: "
+          "pointed at the plan with only DeepSeek's key set, it stops before any request and "
+          "names the plan's variable -- and Anthropic's own endpoint still Anthropic's",
+          resp[0] and "set OPENCODE_API_KEY" in resp[1] and "opencode.ai" in resp[1]
+          and msg[0] and "set OPENCODE_API_KEY" in msg[1]
+          and own[0] and "set ANTHROPIC_API_KEY" in own[1]
+          and all("No other provider's key is sent there" in s for _, s in (resp, msg, own)),
+          (resp[1][-300:], msg[1][-300:], own[1][-300:]))
+
+
 def main() -> int:
     test_reference_through_loop()
     test_budgets_bite()
@@ -2020,6 +2270,7 @@ def main() -> int:
     test_customer_waits()
     test_customer_3()
     test_keys_by_provider()
+    test_gateway_backends()
     print(f"\n{len(PASS)} passed, {len(FAIL)} failed")
     for f in FAIL:
         print(f"  FAILED: {f}")
