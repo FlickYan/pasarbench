@@ -1928,8 +1928,8 @@ python scripts/add_model.py
 ```
 
 It asks for the provider (OpenAI, Google, Anthropic, Mistral, xAI, Z.ai,
-Xiaomi MiMo, OpenRouter, Together, Groq, DeepSeek, or any OpenAI-compatible
-endpoint), the model's name and its API key. The key is typed at a hidden
+Xiaomi MiMo, OpenRouter, Together, Groq, DeepSeek, OpenCode Go (v73, below), or
+any OpenAI-compatible endpoint), the model's name and its API key. The key is typed at a hidden
 prompt — or taken from the provider's own variable, in `.env` or the shell,
 under any of the names it goes by (`ZAI_API_KEY` or `GLM_API_KEY` for Z.ai,
 `MIMO_API_KEY` for Xiaomi, `XAI_API_KEY` or `GROK_API_KEY` for xAI;
@@ -2161,6 +2161,99 @@ API models needs combinations that defeat them, built and read the same way
 before they run. Two instruments failed on the way and are named: the voucher
 choice's reader (#49, fixed) and the generated profile's phone (#48, recorded
 for the next edition; the editions are pinned as every run had them).
+
+**More labs through OpenCode Go** (v73). OpenCode Go is a subscription
+($10 a month, [opencode.ai/go](https://opencode.ai/go)) that serves many labs'
+models behind one key, at `https://opencode.ai/inference/go/v1`. Each model is
+served in one of three APIs, and since v73 the harness speaks all three:
+`/chat/completions` (`--backend openai`), Anthropic's `/messages`
+(`--backend anthropic --base-url ...`) and OpenAI's `/responses`
+(`--backend responses`, a new backend: the system prompt as `instructions`, a
+tool call and its result as `function_call` and `function_call_output` items
+matched by the call's id, nothing stored on the server). `add_model.py` knows
+which API each model is in (`GO_MODELS`, read from
+[opencode.ai/docs/go](https://opencode.ai/docs/go/) and the plan's own
+`/models` on 2026-10-16), and the key goes to `opencode.ai` only, as
+`OPENCODE_API_KEY` (or `OPENCODE_GO_API_KEY`).
+
+```bash
+python scripts/add_model.py --check --provider opencode-go   # each model's two requests; asks for the key once
+python scripts/add_model.py --provider opencode-go --model claude-haiku-5-5
+python scripts/add_model.py --provider opencode-go --model gpt-6-luna
+python scripts/add_model.py --provider opencode-go --model muse-spark-1.3-contributor
+python scripts/add_model.py --provider opencode-go --model minimax-m3
+python scripts/add_model.py --provider opencode-go --model longcat-2.0
+python scripts/add_model.py --provider opencode-go --model hy3
+python scripts/add_model.py --provider opencode-go --model kimi-k2.6
+python scripts/add_model.py --provider opencode-go --model mimo-v2.6-pro
+```
+
+The plain `--check` leaves Go out — each try spends a little of the plan — and
+says so when its key is set. Each run is 1s's two sweeps and its reading, as
+for any model: `V-<model>` and `V-<model>-parts`, against customer 3, paired
+with every model already run.
+
+**The plan's allowance.** Usage is counted in dollars at each model's price,
+against one allowance: 20% of it every 5 hours, 50% a week, all of it a month.
+A model's "monthly limit" in OpenCode's table says how fast it uses it — a
+dollar of a model whose limit is $15 takes four times the share of a dollar of
+one whose limit is $60. One 1s run, at 1s's token counts (7.8M prompt tokens,
+0.13M back, more for a model that reasons), at best nine in ten prompt tokens
+from the cache and at worst none, with reasoning:
+
+| model | lab | API | one run, at its price | of the month | settings, tried in turn |
+|---|---|---|---|---|---|
+| `claude-haiku-5-5` | Anthropic | messages | $0.21–1.08 | 1–7% | none |
+| `gpt-6-luna` | OpenAI | responses | $0.21–1.08 | 1–7% | reasoning none; low |
+| `muse-spark-1.3-contributor` | Meta | responses | $0.12–0.90 | 0–2% | reasoning minimal; low |
+| `minimax-m3` | MiniMax | messages | $0.81–3.06 | 1–5% | none; temperature 0.01 |
+| `longcat-2.0` | Meituan | chat | $0.43–3.06 | 1–5% | none |
+| `hy3` | Tencent | chat | $0.43–1.44 | 1–2% | none |
+| `kimi-k2.6` | Moonshot | chat | $2.38–9.81 | 4–16% | thinking disabled; none |
+| `mimo-v2.6-pro` | Xiaomi | chat | $0.48–3.92 | 3–26% | thinking disabled; none |
+| `step-5-preview-free` | StepFun | chat | free while offered | — | none |
+| `glm-5.3` | Z.ai | chat | $3.49–13.56 | 23–90% | reasoning_effort low; none |
+| `grok-4.7` | xAI | responses | $5.85–19.20 | 39–128% | reasoning low (it always reasons) |
+| `kimi-k3` | Moonshot | chat | $6.40–32.40 | 43–216% | thinking disabled; none |
+
+The first eight together take about 12% of the month at best and 70% at
+worst; the last three, two or more 5-hour windows each, and Grok 4.7 or Kimi K3
+alone can take most of a month. `add_model.py` prints each run's share before
+it starts. The settings: reasoning off where the model has a switch, else as
+low as it goes, at temperature 0; each model's are tried in turn by the two
+check requests, and the first the provider takes is the run's — its record in
+`logs/add_model-<name>.log` says which, and why the others were refused. Every
+model's last resort sends no temperature at all (`"temperature": null`): it
+then runs at its provider's default, and the trace header records
+`agent_temperature: null`, not 0. Read such a model's line with that beside it.
+
+**When the limit is reached.** With "Use balance" off in the OpenCode console,
+as it starts, the plan refuses requests until the window resets; on, your Zen
+balance pays past it. At the first refusal the harness sends the gateway
+nothing more in that run (`backends.PLAN_HOSTS`): the conversations left end at
+once, unsent, as server errors, `add_model.py` says it is the plan's limit, and
+the same command run again after the window resets runs only those.
+
+**What Go asks of a client, and what to know.** It is "designed for OpenCode
+and other coding agents", and its traffic "is monitored for abuse": a run on Go
+has four conversations at once (`--workers` sets it), names itself
+(`User-Agent: pasarbench/1.0`) and sends one session id per conversation
+(`x-opencode-session`), as its docs ask, and no other provider is sent either.
+Its docs' privacy table (read 2026-10-16): most models keep nothing and train
+on nothing; Claude Haiku 5.5, GPT 6 Luna and Grok 4.7 keep requests up to 30
+days; the Contributor models — Muse Spark here — may train on what they are
+sent, and are offered only in the regions Meta permits. The
+conversations are synthetic, no one's data; but a model trained on them may
+later know the benchmark's tasks. The trace header names the gateway
+(`"via": "opencode-go"`), and a run name that holds one route's episodes refuses
+to resume from the other.
+
+**Left out.** The five 1s ran (Grok 4.3 is not on Go; the other four are, and
+ran on their labs' own endpoints); Qwen, the customer's family; Gemini 4 Argon,
+served in Google's own API, which the harness does not speak; Space Bunny, Cat
+Jam and Omen, whose labs are not named, so the customer-family check cannot read
+them. Any of the plan's models runs with `--model <its id>`: one not in the
+table goes to `/chat/completions`, with its share of the plan not known.
 
 ### 1t. Is it the language? The same conversation, translated (API only, no GPU)
 
