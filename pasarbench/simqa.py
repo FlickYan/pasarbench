@@ -78,7 +78,14 @@ ASK_PATTERNS: dict[str, list[str]] = {
                     # zh
                     r"手机号", r"电话号码", r"[后末]\s*[4四]\s*位"],
     "new_address": [r"new address", r"address.*change", r"where.*deliver",
-                    r"alamat baru", r"ที่อยู่ใหม่", r"địa chỉ mới", r"新地址", r"新的地址"],
+                    r"alamat baru", r"ที่อยู่ใหม่", r"địa chỉ mới", r"新地址", r"新的地址",
+                    # v74: the address named by its use -- "your new delivery
+                    # address", "alamat pengiriman baru", Malay's "baharu",
+                    # "ที่อยู่จัดส่งใหม่", "địa chỉ giao hàng mới", "新的配送地址" --
+                    # as the agents on 1s asked for it, which the list read as
+                    # her volunteering it.
+                    r"new (?:\S+ ){0,2}address", r"alamat (?:\S+ ){0,2}ba(?:ha)?ru",
+                    r"ที่อยู่\S{0,12}ใหม่", r"địa chỉ (?:\S+ ){0,3}mới", r"新的?\S{0,4}地址"],
 }
 
 # Thai vowel and tone marks written above or below a consonant (Mn). A model
@@ -171,7 +178,7 @@ def photo_claim(task, customer_turns: list[str]) -> int | None:
 CHANGED_REQUEST = "changed_request_cancel_to_address"
 _CHANGE = re.compile(
     r"new address|keep (?:it|the)|\binstead\b|changed? my mind"
-    r"|(?:don'?t|do not|not|no need(?: to)?) (?:want to |need to )?cancel"
+    r"|(?:don'?t|do not|not|no need(?: to)?) (?:want to |wanna |need to )?cancel"
     r"|alamat baru|tak (?:jadi|payah|perlu) batal|jangan (?:di)?batal|(?:ubah|tukar) fikiran"
     # Malay as round 2's customer wrote it in the hard edition: "tak nak cancel
     # lah. Saya nak simpan rak buku tu, cuma nak tukar alamat penghantaran".
@@ -181,7 +188,7 @@ _CHANGE = re.compile(
     r"|(?:tidak|nggak|gak|ga|enggak) (?:mau|ingin) (?:cancel|batal)|(?:ganti|ubah) alamat"
     r"|ที่อยู่ใหม่|ไม่(?:ต้อง)?ยกเลิก|เปลี่ยนใจ"
     r"|địa chỉ mới|không (?:cần )?hủy|đừng hủy|đổi ý"
-    r"|新地址|(?:不|不要|别|不用)(?:取消|cancel)|改(?:变)?主意", re.I)
+    r"|新地址|(?:不|不要|不想|别|不用)(?:取消|cancel)|改(?:变)?主意", re.I)
 
 
 def changes_request(text: str) -> bool:
@@ -265,6 +272,108 @@ def only_the_voucher(trap: str, failures: list[str]) -> bool:
                 or (trap == "out_of_window_offer_voucher"
                     and line.startswith("missing required action: verify_identity")))
     return trap in VOUCHER_TRAPS and bool(failures) and all(ours(f) for f in failures)
+
+
+# The profile's phone (WHAT_FAILED #48). In every generated task the phone on
+# her profile ends in other digits than the ones verify_identity accepts. An
+# agent that compares the digits she gives with the profile refuses her -- by
+# the profile it is right, and where the task needs her verified the failure
+# is the task's. One that verifies her with the profile's own digits, before
+# she gives any, is refused by the tool: the call asks her nothing, and a
+# world whose profile ended in her digits would pass it in silence. Words in
+# which an agent says her digits do not match, or that it cannot verify her,
+# beside a word for the phone or its digits, in the eight languages; as with
+# the photo patterns, a reader confirms what they find (v74).
+_MISMATCH = re.compile(
+    r"(?:don'?t|doesn'?t|does not|do not|not) match|mismatch|different digits"
+    r"|tidak (?:cocok|sesuai)|tak (?:sepadan|sama|padan)|ไม่ตรง|không (?:khớp|trùng)"
+    r"|不符|不匹配|对不上|不一致"
+    # ...or that it cannot verify her, after she gave them: "ends in 4000, but
+    # you provided 1333, so I cannot verify your identity" (Grok on 1s).
+    r"|(?:cannot|can'?t|can not|couldn'?t|could not|unable to) (?:\w+ ){0,2}verify"
+    r"|tidak (?:dapat|bisa) (?:mem)?verifikasi|t(?:idak|ak) dapat (?:mengesahkan|disahkan)"
+    r"|ไม่สามารถยืนยัน|không thể xác (?:minh|thực)|无法(?:验证|核实|核对)", re.I)
+_PHONE_WORD = re.compile(r"digit|phone|number|nombor|nomor|angka|เบอร์|โทร|số|号码|尾号|手机"
+                         r"|[后後末]\s*[4四]\s*位", re.I)
+# The writes a verified customer's request is for: one made after her digits
+# means the agent went on with her, whatever it said.
+_HER_WRITES = ("cancel_order", "modify_shipping_address", "issue_goodwill_voucher",
+               "issue_store_credit", "issue_refund", "initiate_return")
+
+
+def _numerals(text: Any) -> str:
+    return re.sub(r"\D", "", str(text or ""))
+
+
+def needs_verification(task) -> bool:
+    """Whether the task is done only with her verified: its check requires a
+    verify_identity that succeeds. Where it does not -- the duplicate refund,
+    escalated without verification -- a refusal by the profile is not what
+    failed it."""
+    checks = getattr(task, "checks", None)
+    return any(a.tool == "verify_identity" and a.must_succeed
+               for a in getattr(checks, "required_actions", None) or [])
+
+
+def profile_phone(task) -> tuple[str, str]:
+    """(the last four digits of the phone on her profile, the digits that
+    verify her) -- "" for one the task does not hold."""
+    users = (getattr(task, "db_patch", None) or {}).get("users") or {}
+    user = users.get(getattr(task, "user_id", None)) or {}
+    hers = str(user.get("verified_phone_last4")
+               or (getattr(task, "hidden_facts", None) or {}).get("phone_last4") or "")
+    return _numerals(user.get("phone"))[-4:], hers
+
+
+def refused_by_profile(task, recs: list[dict[str, Any]]) -> bool:
+    """For one episode (trace records, in order): whether the agent, given the
+    digits that verify her, refused them by the phone on her profile -- after
+    the turn of hers that gives them it escalated as `identity_unverified`, or
+    said they do not match while no call verified her with them, and it made
+    none of her writes after. False where the profile ends in her digits, and
+    where she never gave them."""
+    prof, hers = profile_phone(task)
+    if not prof or not hers or prof == hers:
+        return False
+    gave = escalated = said = verified = wrote = False
+    for r in recs:
+        if r.get("type") == "event" and r.get("kind") == "user_turn":
+            gave = gave or hers in (r.get("text") or "")
+            continue
+        if not gave or r.get("type") != "step" or r.get("closing"):
+            continue
+        text = r.get("model_content") or ""
+        said = said or bool(_MISMATCH.search(text) and _PHONE_WORD.search(text))
+        for tc, tr in zip(r.get("tool_calls") or [], r.get("tool_results") or []):
+            args = tc.get("arguments") or {}
+            if tc["name"] == "escalate_to_human" and args.get("category") == "identity_unverified":
+                escalated = True
+            elif tc["name"] == "verify_identity":
+                verified = verified or (tr.get("ok") and _numerals(args.get("phone_last4")) == hers)
+            elif tc["name"] in _HER_WRITES and tr.get("ok"):
+                wrote = True
+    return (escalated or (said and not verified)) and not wrote
+
+
+def verified_by_profile(task, recs: list[dict[str, Any]]) -> bool:
+    """For one episode: whether the agent called verify_identity with the
+    profile's own last four digits before she gave hers -- verification that
+    asked her nothing. False where the profile ends in her digits."""
+    prof, hers = profile_phone(task)
+    if not prof or not hers or prof == hers:
+        return False
+    for r in recs:
+        if r.get("type") == "event" and r.get("kind") == "user_turn":
+            if hers in (r.get("text") or ""):
+                return False
+            continue
+        if r.get("type") != "step" or r.get("closing"):
+            continue
+        if any(tc["name"] == "verify_identity"
+               and _numerals((tc.get("arguments") or {}).get("phone_last4")) == prof
+               for tc in r.get("tool_calls") or []):
+            return True
+    return False
 
 
 @dataclass

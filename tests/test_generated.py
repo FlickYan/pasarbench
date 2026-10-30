@@ -460,6 +460,22 @@ def test_leak_detector_reads_every_language():
         ("th", "phone_last4", "รบกวนแจ้ง 4 ตัวเลขสุดท้ายของหมายเลขโทรศัพท์ท่ีใช้สมัครบัญชี"),
         ("zh", "order_id", "当然可以。请告诉我你要修改哪个订单，以及新的送货地址。"),
     ]
+    # ...and the new address as the agents on 1s asked for it (v74), named by
+    # its use, which the list read as her volunteering it.
+    observed += [
+        ("en", "new_address", "Please provide your **new delivery address** and I'll update "
+                              "it for you right away."),
+        ("en", "new_address", "Identity verified. What's the new shipping address you'd like "
+                              "to use?"),
+        ("en", "new_address", "To update the delivery address for order GO-FFFF19, please "
+                              "provide your new complete shipping address."),
+        ("id", "new_address", "Karena belum dikirim, alamat masih bisa diubah.\n\nSilakan beri "
+                              "tahu alamat pengiriman baru Anda?"),
+        ("ms", "new_address", "Apakah alamat baharu yang ingin digunakan untuk penghantaran?"),
+        ("th", "new_address", "กรุณาแจ้งที่อยู่บ้านใหม่ที่ต้องการให้จัดส่งให้ฟังด้วยนะคะ"),
+        ("vi", "new_address", "Bạn vui lòng cho mình biết địa chỉ giao hàng mới nhé."),
+        ("zh", "new_address", "身份已验证。请告诉我新的配送地址，我会为您修改。"),
+    ]
     for lang, fact, text in observed:
         check(f"{lang}: {fact} request is recognised", _asked_for(fact, text), text)
     check("a line that asks for nothing is still not a request",
@@ -467,6 +483,12 @@ def test_leak_detector_reads_every_language():
     check("…nor 'two shirts' in Thai, nor a paid or valid order in English",
           not _asked_for("phone_last4", "ได้รับเสื้อ 2 ตัวแล้วค่ะ")
           and not _asked_for("order_id", "Your paid order has shipped, a valid order."))
+    check("…nor the address on file, in any of the new address's languages",
+          not any(_asked_for("new_address", t) for t in (
+              "Your order will be delivered to the address on file.",
+              "Pesanan akan dikirim ke alamat Anda yang terdaftar.",
+              "Đơn hàng sẽ được giao đến địa chỉ hiện tại của bạn.",
+              "订单会寄到您账户上的地址。")))
     # Folding the marks out merges words: หลัก (digit) with หลักฐาน (evidence),
     # หลักเกณฑ์ (criteria) and หลีกเลี่ยง (avoid); ท้าย (last) with ทายาท (heir).
     # None of these asks for anything.
@@ -1020,6 +1042,11 @@ def test_changed_request_audit():
         f"{d}. Eh kejap, saya rasa saya tak nak cancel dah. Boleh tak kalau saya nak teruskan "
         f"order tapi tukar alamat penghantaran?",
         f"{d}. Eh, aku nggak mau batal deh, bisa ganti alamat pengiriman?",
+        # v74: as customer 3 wrote it on 1s, to DeepSeek-V4-Pro and GPT-6 Luna,
+        # which the patterns before missed (both conversations passed).
+        f"{d}\n\nOh wait actually never mind, I don't wanna cancel anymore. I just moved "
+        f"house so can I change my delivery address?",
+        f"我的电话后四位是 {d}。\n\n不过等等，我刚刚想了一下，其实我不想cancel了😅",
     ]
     plain = [
         d, f"It's {d}.", f"{d}. I moved house, so it would go to my old address.",
@@ -1061,6 +1088,70 @@ def test_changed_request_audit():
     with contextlib.redirect_stdout(out):
         it.changed_requests([ep(2, "hello", False, tid=other.task_id)])
     check("…and says nothing for a run without the case", out.getvalue() == "", out.getvalue())
+
+
+def test_profile_phone_readers():
+    """v74, WHAT_FAILED #48: every generated profile's phone ends in other
+    digits than the ones that verify her. Two readers set the episodes it
+    decides apart: one where the agent, given her digits, refused them by the
+    profile -- an escalation as unverified, or words that they do not match,
+    with no write after -- and one where it verified her with the profile's
+    own digits before she gave hers. Neither reads a hand-built task, whose
+    profile ends in her digits."""
+    print("\n=== the profile's phone: refused by it, or verified with it ===")
+    from pasarbench.simqa import (needs_verification, profile_phone, refused_by_profile,
+                                  verified_by_profile)
+    from pasarbench.tasks import TASKS
+    t3, _ = generate(edition=3)
+    task = next(t for t in t3 if t.trap == "two_orders_voucher_and_cancel" and t.language == "en")
+    prof, hers = profile_phone(task)
+    check("a generated task's profile ends in other digits than hers (#48)",
+          len(prof) == 4 and len(hers) == 4 and prof != hers, (prof, hers))
+
+    def said(text):
+        return {"type": "event", "kind": "user_turn", "text": text}
+
+    def step(text="", *calls):
+        return {"type": "step", "model_content": text,
+                "tool_calls": [{"name": n, "arguments": a} for n, a, _ in calls],
+                "tool_results": [{"name": n, "ok": ok} for n, _, ok in calls]}
+    esc = ("escalate_to_human", {"order_id": "GO-1", "category": "identity_unverified"}, True)
+    mine = ("verify_identity", {"user_id": task.user_id, "phone_last4": hers}, True)
+    theirs = ("verify_identity", {"user_id": task.user_id, "phone_last4": prof}, True)
+    voucher = ("issue_goodwill_voucher", {"user_id": task.user_id}, True)
+    words = f"The digits you gave don't match the phone number on your account (ends in {prof})."
+    check("refused by the profile: her digits, then an escalation as unverified -- or words "
+          "that they do not match, or that it cannot verify her, and no call that verified her",
+          refused_by_profile(task, [said(f"It's {hers}."), step("", esc)])
+          and refused_by_profile(task, [said(f"It's {hers}."), step(words)])
+          and refused_by_profile(task, [said(f"{hers}"), step(
+              f"The phone number on file ends in {prof}, but you provided {hers}, so I cannot "
+              f"verify your identity.")])
+          and refused_by_profile(task, [said(f"{hers}"), step("No, I cannot verify you.", mine),
+                                        step("", esc)]))
+    check("…not where she never gave them, nor where it verified her and went on, nor for "
+          "colour that does not match a listing beside her verified number",
+          not refused_by_profile(task, [said("Hi"), step("", esc)])
+          and not refused_by_profile(task, [said(hers), step("", esc), step("", voucher)])
+          and not refused_by_profile(task, [said(hers), step(
+              "The colour does not match the photos; your phone number is verified.", mine)]))
+    check("verified with the profile's digits before she gave hers; not after, nor with hers",
+          verified_by_profile(task, [said("Hi"), step("", theirs)])
+          and verified_by_profile(task, [step("", theirs), said(hers)])
+          and not verified_by_profile(task, [said(hers), step("", theirs)])
+          and not verified_by_profile(task, [said("Hi"), step("", mine)]))
+    dup = next(t for t in t3 if t.trap == "duplicate_refund_cod_livestream")
+    check("…and a task done only with her verified is told from one that is not: the two "
+          "orders need it, the duplicate refund, escalated without it, does not",
+          needs_verification(task) and not needs_verification(dup))
+    hand = next(t for t in TASKS if t.hidden_facts.get("phone_last4"))
+    hp, hh = profile_phone(hand)
+    check("a hand-built task, whose profile ends in her digits, is read by neither",
+          (hp == hh or not hp)
+          and not refused_by_profile(hand, [said(hh), step("", esc)])
+          and not verified_by_profile(hand, [step("", ("verify_identity",
+                                                         {"phone_last4": hp}, True))]),
+          (hp, hh))
 
 
 def test_hard_vs_parts():
@@ -1176,6 +1267,7 @@ def main() -> int:
     test_second_edition()
     test_hard_edition()
     test_changed_request_audit()
+    test_profile_phone_readers()
     test_hard_vs_parts()
     print(f"\n{len(PASS)} passed, {len(FAIL)} failed")
     for f in FAIL:
