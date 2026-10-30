@@ -1,6 +1,6 @@
 # What failed
 
-Fifty-three real defects found while building this. The first fifteen are in
+Fifty-five real defects found while building this. The first fifteen are in
 the order of how much damage they would have done; the rest are in the order
 they were found. Every one is reproducible from the git history.
 
@@ -1917,6 +1917,31 @@ world. The next edition carries one, with a guarantee every generated task must
 pass — the phone on the profile ends in the digits that verify her — and the
 reading of 1s counts Grok's failure as the task's (RUNBOOK 1s).
 
+**What seven more agents moved (v74).** Far more than the record showed. On
+1s's twelve agents, the cases and their parts, 2,700 conversations: given the
+digits that verify her, the agent compared them with the profile's phone and
+refused her in 63, every one a failure. In 50 the task needed her verified,
+and the failure is the task's — LongCat 2.0 39, Hy3 5, MiMo-V2.6-Pro 3 (twice
+after the tool had verified her), MiniMax M3 2, Grok 4.3 1; in 13 it was the
+duplicate refund, escalated without verification, and what they missed is the
+agent's — LongCat 11, Grok 2. LongCat's 50 are over half its failures, and in
+about half of them it read her the phone or its last digits ("+66862345000,
+so the last 4 digits should be 5000"). And the other face: GPT-6 Luna called
+`verify_identity` with the profile's own digits before she gave hers in 145
+conversations, all 26 of its failures among them, and tried to escalate the
+order as unverified in 139 of them — a ticket for a human made in 120, 97 of
+them in conversations that passed. MiMo-V2.6-Flash did the same in 50,
+V4.1-Flash in 3, MiniMax and LongCat in one each, and all but one of those 55
+then asked her. Section 8 counts both since v74 (`simqa.refused_by_profile`,
+apart where the task needs no verification, and `simqa.verified_by_profile`).
+
+**The fix needs a second guarantee.** A profile whose phone ends in her
+digits ends the first face and hides the second: each of GPT-6 Luna's calls
+would verify her without asking her anything, and the checks, which ask only
+that `verify_identity` was called with her digits, would pass it. The next
+edition needs both — the profile's phone ending in her digits, and a check
+that the digits verified came from her, in a turn of hers before the call.
+
 **Lesson.** When a fix changes a fact, find every place the world states it.
 A tool that shows a value and a tool that checks it are two statements of one
 fact, and only a test that reads both will see them disagree.
@@ -2149,6 +2174,71 @@ translations.
 **Lesson.** A variant made by asking a model twice is two samples, not one text
 and its variant. Make the variant from the one text, and test with a stand-in
 that would differ between two calls, as the model does.
+
+## 54. The changed request's customer note took a customer who never gave her digits for one who gave them late
+
+**What happened.** RESULTS.md's section 8 sets aside, on the changed request,
+the conversations in which her phone digits came without the change of mind
+her persona puts in that message: there the case measured her, and "those
+failures are hers, not the agent's". On the OpenCode Go runs it set aside 8 of
+GPT-6 Luna's 39, 7 of them failures. Read, in those 7 she never gave her digits
+at all. GPT-6 Luna verified her with the profile's own digits before she had
+said more than her request (#48), was refused, and escalated the order as
+unverified — in two, asking for her digits in the same message that told her
+verification had failed — so she never answered, and the change her persona
+makes with her digits never came. "Wait, I haven't given you any digits yet?"
+she said in one; it escalated again.
+
+**Why.** `simqa.change_with_digits` answers "no change" both when her digits
+came without one and when they never came, and the note counted the two alike.
+It was written for a customer who changes her mind late; no agent before had
+left her unasked.
+
+**What it moved.** The note, not a number: §8's pass rates count every
+conversation. It called 7 of GPT-6 Luna's failures the customer's; they were
+its own. The eighth, a pass, said its change in words the reader lacked
+("其实我不想cancel了"), as one of DeepSeek-V4-Pro's had ("I don't wanna cancel
+anymore", RUNBOOK 1s).
+
+**Fix.** v74: the note counts her digits without her change apart from her
+digits never given — the first hers, the second the agent's — in section 8 and
+in section 6's hard edition on round 2's models, and the reader knows both
+phrasings.
+
+**Lesson.** A reader's "no" has two causes when its question has a
+precondition. Count them apart, and say which one the note is about.
+
+## 55. A reasoning model's empty reply went to the customer as a turn
+
+**What happened.** Hy3 reasons, and the plan offers no switch to turn it off;
+on 1s it ran at 4,096 tokens a step, add_model's room for a model that cannot
+stop reasoning. Fifty-three times its reasoning took the whole step and left no
+reply — 37 on the cases, in 20 conversations, and 16 on the parts — and the
+harness passed the empty reply to the customer as the agent's turn. "Halo? Ada
+nggak sih yang bisa bantu?" she wrote, and again, and the conversation ran on
+to the 180-second wall clock: 8 of Hy3's 108 cases ended there, three of them
+its only failures on the refunded livestream order, where it had looked the
+order up and never escalated it.
+
+**Why.** The chat backend's comment says that a reply with reasoning and no
+answer is surfaced "rather than returning a silent empty turn"; the line under
+it sets the content to "", which it already was. To the loop, a reply with no
+tool call is the agent speaking to the customer, empty or not.
+
+**What it moved.** Hy3's line on the livestream case, three failures of its
+sixteen on the cases; of the others, ten are its own (a refund on top of the
+cancellation, on the two orders) and three the profile's phone (#48). No other
+agent of the twelve left a reply empty at the step's limit.
+
+**Fix.** Recorded, not changed: every run so far ran this way, and a fix
+changes what an agent's step is. The comment now says what the code does. A
+model that reasons without a switch is read beside it (RUNBOOK 1s); a rerun of
+Hy3 with more room a step, under another name, would measure it without the
+cap.
+
+**Lesson.** A comment that says what the code does is a claim like any other.
+Test it where it matters: the test here would have been one reply of nothing
+but reasoning.
 
 ---
 
