@@ -3439,8 +3439,8 @@ def test_add_model_go():
               "Anthropic's, OpenAI's Responses, chat -- and the plan's key only to the plan",
               rc == 0 and [m for m in am.CANDIDATES["opencode-go"] if m not in by] == []
               and by["claude-haiku-5-5"] == "anthropic" and by["minimax-m3"] == "anthropic"
-              and by["gpt-6-luna"] == "responses" and by["muse-spark-1.3-contributor"]
-              == "responses" and by["kimi-k2.6"] == "openai"
+              and by["gpt-6-luna"] == "responses" and by["kimi-k2.6"] == "openai"
+              and "muse-spark-1.3-contributor" not in by
               and all((k == "oc-secret-1") == ("opencode.ai" in u) for _, u, _, k, _, _ in calls)
               and "key from OPENCODE_API_KEY" in text, (by, text))
         check("…a setting refused is followed by the next, a model the plan's current path "
@@ -3467,6 +3467,122 @@ def test_add_model_go():
               and "served in Google's own API, which this harness does not speak" in gem
               and not any(m in ("qwen3.8-max", "gemini-4-argon-contributor")
                           for _, _, m, _, _, _ in calls), (qwen, gem))
+    finally:
+        os.chdir(cwd)
+        for k in [k for k in os.environ if k.endswith("_API_KEY")]:
+            os.environ.pop(k)
+        os.environ.update(keys)
+
+
+def test_add_model_go_contributor():
+    """v74: a Contributor model of OpenCode Go -- one that may train on what it
+    is sent -- is refused to a workspace whose Privacy settings do not allow
+    that, whatever the request's settings. The refusal is an HTTP 400, as a
+    refused setting is; it is not one, and add_model stopped only after trying
+    every setting, with a list of causes that left the real one out. Now it
+    stops at the first, says what the plan asks and where, and names such a
+    model before any key is asked for; --check leaves it out of its candidates."""
+    print("\n=== add_model on OpenCode Go: a Contributor model refused for privacy ===")
+    import contextlib
+    import importlib.util
+    import io
+    import os
+    import tempfile
+    from pathlib import Path
+    from types import SimpleNamespace
+
+    root = Path(__file__).resolve().parent.parent
+    spec = importlib.util.spec_from_file_location("add_model", root / "scripts" / "add_model.py")
+    am = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(am)
+    cwd = os.getcwd()
+    keys = {k: os.environ.pop(k) for k in list(os.environ) if k.endswith("_API_KEY")}
+    muse = "muse-spark-1.3-contributor"
+    words = (f'HTTP 400 from {am.GO_URL}/responses: {{"type":"error","error":{{"type":'
+             f'"invalid_request_error","message":"Upstream request failed: This Go model '
+             f"trains on request data. Allow paid endpoints that train on request data in "
+             f"your workspace's Privacy settings to use it.\"}}}}")
+    try:
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            am.main(["--provider", "opencode-go", "--model", muse, "--dry-run"])
+        plan = out.getvalue()
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            am.main(["--provider", "opencode-go", "--model", "gpt-6-luna", "--dry-run"])
+        luna = out.getvalue()
+        check("a Contributor model is named as one in the plan, before any key is asked for, "
+              "and left out of --check's candidates; another model is not",
+              "a Contributor model: it may train on what it is sent" in plan
+              and "Privacy settings" in plan and "Contributor" not in luna
+              and not any(am.contributor(m) for m in am.CANDIDATES["opencode-go"])
+              and am.contributor(muse) and not am.contributor("gpt-6-luna"), plan)
+        check("the plan's privacy refusal is not a setting refused, though both are HTTP 400s",
+              am.setting_refused("HTTP 400 from x: Unsupported value: 'none'")
+              and am.setting_refused("HTTP 422 from x: temperature")
+              and not am.setting_refused(words)
+              and not am.setting_refused("HTTP 401 from x: bad key"))
+
+        tried = []
+
+        def refuse(backend, url, model, key, extra, max_tokens=2048):
+            tried.append(extra)
+            raise RuntimeError(words)
+        am.probe = refuse
+        try:
+            am.negotiate("responses", am.GO_URL, muse, "k", am.go_settings(muse))
+            raised = False
+        except RuntimeError:
+            raised = True
+        check("negotiating a Contributor model's settings stops at its first refusal: no "
+              "other setting changes it",
+              raised and len(tried) == 1 and len(am.go_settings(muse)) == 3, tried)
+
+        tmp = Path(tempfile.mkdtemp())
+        am.ROOT = tmp
+        ran = []
+        am.subprocess = SimpleNamespace(run=lambda *a, **k: ran.append(a) or
+                                        SimpleNamespace(returncode=0), STDOUT=-2)
+        os.environ.update(OPENCODE_API_KEY="oc-k", DASHSCOPE_API_KEY="ds-k")
+        tried.clear()
+        out = io.StringIO()
+        try:
+            with contextlib.redirect_stdout(out):
+                am.main(["--provider", "opencode-go", "--model", muse, "--yes"],
+                        ask=lambda prompt: "y", secret=lambda prompt: "")
+            said = ""
+        except SystemExit as e:
+            said = str(e)
+        record = (tmp / "logs" / f"add_model-{muse}.log").read_text(encoding="utf-8")
+        check("a run of it stops at the first check request: the provider's words, then what "
+              "the plan asks of the workspace and where -- not the list of other causes -- "
+              "no other setting tried, nothing run, the record saying why, no key in it",
+              f"{muse} was refused, so nothing ran" in said
+              and "This Go model trains on request data" in said
+              and "Allow paid endpoints that train on request data" in said
+              and "OpenCode console" in said and "no other was tried" in said
+              and "A wrong key" not in said and len(tried) == 1 and not ran
+              and "stopped at the check requests" in record and "refused:" not in record
+              and "oc-k" not in record and "oc-k" not in said, (said, tried, record))
+
+        tried.clear()
+        am.listed_models = lambda url, key: sorted(am.GO_MODELS)     # nothing sent
+        with contextlib.redirect_stdout(io.StringIO()):
+            am.main(["--check", "--provider", "opencode-go", "--model", muse],
+                    ask=lambda prompt: "n", secret=lambda prompt: "")
+        text = (tmp / "models_check.txt").read_text(encoding="utf-8")
+        check("…and --check on it, asked by name: the refusal in the provider's words, what "
+              "the plan asks, one request to the plan (the other, the customer's check)",
+              f"{muse:32s} FAIL HTTP 400" in text and "allow that to try it" in text
+              and tried.count(am.go_settings(muse)[0][0]) == 1
+              and len(tried) == 2, (text, tried))
+
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            am._say_why("opencode-go", "RuntimeError: " + words)
+        mid = out.getvalue()
+        check("a run stopped by it part-way -- the setting changed while it ran -- says the same",
+              "Contributor models" in mid and "usage limit" not in mid, mid)
     finally:
         os.chdir(cwd)
         for k in [k for k in os.environ if k.endswith("_API_KEY")]:
@@ -3801,6 +3917,7 @@ def main() -> int:
     test_add_model()
     test_add_model_check()
     test_add_model_go()
+    test_add_model_go_contributor()
     test_export_hf()
     print(f"\n{len(PASS)} passed, {len(FAIL)} failed")
     for f in FAIL:

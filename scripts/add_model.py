@@ -97,10 +97,12 @@ CANDIDATES: dict[str, tuple[str, ...]] = {
     "deepseek": ("deepseek-v4-pro", "deepseek-flash"),
     # The labs 1s has not run, and the flagships of those it has: the cheapest
     # share of the plan first. The five 1s ran are left out (their own
-    # endpoints ran them), and Qwen, the customer's family.
-    "opencode-go": ("claude-haiku-5-5", "gpt-6-luna", "muse-spark-1.3-contributor",
-                    "minimax-m3", "longcat-2.0", "hy3", "kimi-k2.6", "mimo-v2.6-pro",
-                    "step-5-preview-free", "glm-5.3", "grok-4.7", "kimi-k3"),
+    # endpoints ran them), and Qwen, the customer's family. So is Muse Spark
+    # (v74): a Contributor model, which may train on what it is sent and which
+    # the plan refuses to a workspace that has not allowed that (contributor()).
+    "opencode-go": ("claude-haiku-5-5", "gpt-6-luna", "minimax-m3", "longcat-2.0", "hy3",
+                    "kimi-k2.6", "mimo-v2.6-pro", "step-5-preview-free", "glm-5.3",
+                    "grok-4.7", "kimi-k3"),
     "openai": (), "google": (), "anthropic": (), "mistral": (), "openrouter": (),
     "together": (), "groq": (),
 }
@@ -182,6 +184,27 @@ GO_WORKERS = 4      # conversations at once on Go: a shared gateway, watched for
 # 225 conversations send about 7.8M prompt tokens in about 1,600 requests and
 # get about 0.13M back -- more for a model that reasons, up to about 0.6M.
 RUN_PROMPT, RUN_OUT, RUN_OUT_REASONING = 7.8e6, 0.13e6, 0.6e6
+# The plan's Contributor models (its docs' privacy table, read 2026-10-16) may
+# train on what they are sent, and the plan serves them only to a workspace
+# whose Privacy settings allow it: "Allow paid endpoints that train on request
+# data". Without that, every request is refused, whatever its settings -- so
+# the refusal is not a setting's, and none is tried after it (v74).
+PRIVACY_REFUSED = re.compile(r"trains? on (?:the )?request data|Privacy settings", re.I)
+CONTRIBUTOR = ("a Contributor model: it may train on what it is sent, and the plan serves it "
+               "only to a workspace whose Privacy settings allow paid endpoints that train on "
+               "request data")
+PRIVACY_STOP = ("It is one of OpenCode Go's Contributor models, which may train on what they "
+                "are sent: the plan serves them only to a workspace that allows it (the "
+                "OpenCode console, your workspace's Privacy settings, 'Allow paid endpoints "
+                "that train on request data'). No request setting changes that, so no other "
+                "was tried. A model trained on these conversations may later know the "
+                "benchmark's tasks (RUNBOOK 1s): to run it anyway, allow it there and run the "
+                "same command again; or pick another of the plan's models.")
+
+
+def contributor(model: str) -> bool:
+    """One of the plan's Contributor models, by its name."""
+    return model.lower().endswith("-contributor")
 
 
 def go_api(model: str) -> str:
@@ -241,17 +264,19 @@ def go_cost(model: str) -> tuple[float, float] | None:
 
 
 def go_share(model: str) -> str:
-    """What one 1s run of a Go model takes of the plan, in words."""
+    """What one 1s run of a Go model takes of the plan, in words -- and, for
+    a Contributor model, what the plan asks of the workspace first."""
     row = GO_MODELS.get(model)
+    privacy = f"; {CONTRIBUTOR}" if contributor(model) else ""
     if not row:
         return (f"{model} is not in the table read on 2026-10-16: its share of the plan is "
-                f"not known here")
+                f"not known here{privacy}")
     api, limit, _, lab = row
     if limit is None:
-        return f"{lab}; free while OpenCode offers it (a preview): none of the plan"
+        return f"{lab}; free while OpenCode offers it (a preview): none of the plan{privacy}"
     cost = go_cost(model)
     if cost is None:
-        return f"{lab}; its price is not read here; its monthly limit is ${limit}"
+        return f"{lab}; its price is not read here; its monthly limit is ${limit}{privacy}"
     lo, hi = (100 * x / limit for x in cost)
     windows = ("fits in one 5-hour window (20% of the month)" if hi <= 20 else
                "may reach a 5-hour limit (20% of the month): if it stops, run it again once "
@@ -259,7 +284,7 @@ def go_share(model: str) -> str:
                f"takes at least {-(-lo // 20):.0f} 5-hour windows (20% of the month each), "
                f"and a week allows 50%" + ("; at worst more than the month" if hi > 100 else ""))
     return (f"{lab}; one run about ${cost[0]:.2f}-{cost[1]:.2f} at its price, "
-            f"{lo:.0f}-{hi:.0f}% of the plan's month (its limit ${limit}); {windows}")
+            f"{lo:.0f}-{hi:.0f}% of the plan's month (its limit ${limit}); {windows}{privacy}")
 
 
 def settings_for(provider: str, model: str) -> tuple[str, int]:
@@ -455,7 +480,12 @@ def preflight(backend: str, url: str, model: str, key: str, extra: str,
     try:
         return probe(backend, url, model, key, extra, max_tokens)["served"]
     except Exception as e:                                    # noqa: BLE001
-        raise SystemExit(f"!! the check requests failed, so nothing ran:\n   {_hide(str(e), key)}\n"
+        said = _hide(str(e), key)
+        if PRIVACY_REFUSED.search(said):
+            # Not a setting: the workspace's own (v74).
+            raise SystemExit(f"!! {model} was refused, so nothing ran:\n   {said}\n   "
+                             f"{PRIVACY_STOP}")
+        raise SystemExit(f"!! the check requests failed, so nothing ran:\n   {said}\n"
                          f"   A wrong key, a model name the provider does not know, a "
                          f"model that takes no tools or no temperature 0, or a setting the "
                          f"provider refuses (--extra-body).")
@@ -463,8 +493,15 @@ def preflight(backend: str, url: str, model: str, key: str, extra: str,
 
 # A request refused for what it asked -- a setting the provider does not take
 # -- rather than for the key, the model's name or a limit: the next of a
-# model's settings is tried (v73).
+# model's settings is tried (v73). Not a Contributor model refused to a
+# workspace that has not allowed it, which no setting changes (v74).
 REFUSED_SETTING = re.compile(r"HTTP (400|422) ")
+
+
+def setting_refused(error: str) -> bool:
+    """Whether a request was refused for a setting it sent, so that the next
+    of a model's settings may be taken."""
+    return bool(REFUSED_SETTING.search(error)) and not PRIVACY_REFUSED.search(error)
 
 
 def negotiate(backend: str, url: str, model: str, key: str,
@@ -478,7 +515,7 @@ def negotiate(backend: str, url: str, model: str, key: str,
         try:
             return probe(backend, url, model, key, extra, mt), extra, mt, refused
         except Exception as e:                                # noqa: BLE001
-            if i == len(options) - 1 or not REFUSED_SETTING.search(str(e)):
+            if i == len(options) - 1 or not setting_refused(str(e)):
                 raise
             refused.append((extra or "(none)", _hide(str(e), key)[:200]))
     raise ValueError("no settings to try")
@@ -790,6 +827,9 @@ def check(providers: list[str], models: list[str], out_path: Path,
                     say(f"  {'':32s}      {go_share(model)}")
             except Exception as e:                            # noqa: BLE001
                 say(f"  {model:32s} FAIL {_hide(str(e), key)[:300]}")
+                if PRIVACY_REFUSED.search(str(e)):
+                    say(f"  {'':32s}      {CONTRIBUTOR}: allow that to try it -- no "
+                        f"other setting was tried")
         if prov == "opencode-go":
             say(f"  {GO_PLAN}")
         if typed and not worked:
@@ -841,7 +881,9 @@ def _say_why(provider: str, why: str) -> None:
     if not why:
         return
     print(f"   the first: {why}")
-    if provider == "opencode-go" and re.search(r"usage limit|HTTP 429|HTTP 402", why):
+    if provider == "opencode-go" and PRIVACY_REFUSED.search(why):
+        print(f"   {PRIVACY_STOP}")
+    elif provider == "opencode-go" and re.search(r"usage limit|HTTP 429|HTTP 402", why):
         print("   That is the plan's usage limit, most likely (OpenCode Go: 20% of the month "
               "every 5 hours, 50% a week): run the same command again once it resets.")
 
@@ -1001,7 +1043,7 @@ def main(argv: list[str] | None = None, ask=input, secret=getpass.getpass) -> in
         try:
             served = preflight(backend, url, model, agent_key, ex, mt)
         except SystemExit as e:
-            if i < len(options) - 1 and REFUSED_SETTING.search(str(e)):
+            if i < len(options) - 1 and setting_refused(str(e)):
                 # A setting the provider does not take: the next one (v73).
                 why = str(e).splitlines()[1].strip() if "\n" in str(e) else str(e)
                 log(name, f"settings {ex or 'none'} refused: {why[:300]}")
