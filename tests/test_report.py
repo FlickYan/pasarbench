@@ -1134,9 +1134,12 @@ def test_hard_edition_section():
           and "- **Separation:** the hard edition separates x–z, which the parts do not. "
               "The parts separate x–y, which the cases do not." in md,
           md[md.find("| agents"):][:1500])
-    check("…the customer and the voucher choice said even when there is nothing to set "
-          "aside, and one customer at temperature 0",
+    check("…the customer, the profile's phone and the voucher choice said even when there "
+          "is nothing to set aside, and one customer at temperature 0",
           "her phone digits came with her change of mind" in md
+          and "She never gave them" not in md
+          and "no agent refused the digits that verify her by the phone on her profile" in md
+          and "It verified her with the profile's own digits" not in md
           and "she never declined it" in md
           and "- ✓ one customer in every run: `llm-user/v3:openai-compat:qwen3.8-flash`" in md
           and "- ✓ agent temperature 0 in every run" in md
@@ -1148,6 +1151,75 @@ def test_hard_edition_section():
           "as None, is named in the temperature check, not lost in a list",
           "- ✗ **agent temperature 0 in every run but w's (None) -- None: no temperature "
           "sent, the provider's default**" in md, md[md.find("*The customer"):])
+
+    # v74. A changed request in which she never gave her digits: the agent never
+    # asked and waited, so her change never came -- the agent's, not hers
+    # (WHAT_FAILED #54). One in which the agent refused her digits by the
+    # profile's phone where the task needed her verified, one where it did not,
+    # and one in which it verified her with the profile's own digits before she
+    # gave hers (#48).
+    import re
+    from pasarbench.simqa import profile_phone
+
+    def rewrite(cell, tid, k, records, passed):
+        f = tmp / "traces" / cell / "full" / f"{tid}__r{k}.jsonl"
+        head, *_, foot = [json.loads(l) for l in f.read_text().splitlines()]
+        f.write_text("\n".join(json.dumps(r) for r in (head, *records,
+                                                        {**foot, "passed": passed})) + "\n")
+    changed = next(t for t in cases if t.trap == CHANGED_REQUEST)
+    rewrite("V-x", changed.task_id, 0, [
+        {"type": "step", "model_content": "", "tool_calls": [
+            {"name": "verify_identity", "arguments": {"phone_last4": profile_phone(changed)[0]}},
+            {"name": "escalate_to_human", "arguments": {"category": "identity_unverified"}}],
+         "tool_results": [{"name": "verify_identity", "ok": True},
+                          {"name": "escalate_to_human", "ok": True}]},
+        {"type": "event", "kind": "user_turn", "text": "Ok, I'll wait for them."}], False)
+    two = next(t for t in cases if t.trap == "two_orders_voucher_and_cancel")
+    prof, hers = profile_phone(two)
+    rewrite("V-y", two.task_id, 1, [
+        {"type": "event", "kind": "user_turn", "text": f"Yes please, the last 4 are {hers}."},
+        {"type": "step", "model_content": "The digits you provided don't match the phone "
+                                          "number on your account.",
+         "tool_calls": [{"name": "escalate_to_human",
+                         "arguments": {"category": "identity_unverified"}}],
+         "tool_results": [{"name": "escalate_to_human", "ok": True}]}], False)
+    # ...and one where no verification was needed: the duplicate refund, which
+    # is escalated without it, refused all the same.
+    dup = next(t for t in cases if t.trap == "duplicate_refund_cod_livestream")
+    rewrite("V-y", dup.task_id, 2, [
+        {"type": "event", "kind": "user_turn", "text": f"{profile_phone(dup)[1]}"},
+        {"type": "step", "model_content": "Sorry, I cannot verify your identity: the phone "
+                                          "number on file ends in other digits.",
+         "tool_calls": [], "tool_results": []}], False)
+    part = tasks[twins[two.task_id]]
+    pprof, _ = profile_phone(part)
+    rewrite("V-z-parts", part.task_id, 2, [
+        {"type": "step", "model_content": "", "tool_calls": [
+            {"name": "verify_identity", "arguments": {"phone_last4": pprof}}],
+         "tool_results": [{"name": "verify_identity", "ok": True}]},
+        {"type": "event", "kind": "user_turn", "text": "Hello?"}], True)
+    md = section()
+    note = md[md.find("*The customer"):md.find("*The voucher")]
+    check("v74: she never gave her digits in a changed request -- the agent's, said apart "
+          "from her digits without her change (WHAT_FAILED #54); the agent's refusal by the "
+          "profile's phone counted as the task's where the task needed her verified and "
+          "apart where it did not, and its verifying her with the profile's digits before "
+          "she gave hers counted beside it, each on the cases and the parts (#48)",
+          "in every changed-request conversation in which she gave them, her phone digits "
+          "came with her change of mind" in note
+          and "She never gave them in 1 of 39 x episodes (1 of them failed): her change comes "
+              "with her digits, and she was not asked for them and waited for — those "
+              "failures are the agent's, not hers (WHAT_FAILED #54)." in note
+          and "*The profile's phone (WHAT_FAILED #48):* given the digits that verify her, the "
+              "agent refused them by the phone on her profile, which ends in others, in 1 of "
+              "108 y episodes (1 of them failed); the task needed her verified, so those "
+              "failures are the task's, not the agent's. It refused her so where no "
+              "verification was needed — the duplicate refund, escalated without it — in 1 of "
+              "108 y episodes (1 of them failed): what those missed was the agent's." in note
+          and re.search(r"It verified her with the profile's own digits before she gave hers "
+                        r"in 1 of 108 x episodes \(1 of them failed\); 1 of \d+ z's parts "
+                        r"episodes \(0 of them failed\): the tool refused those", note)
+          and "y episodes" not in note[note.find("It verified"):], note)
 
 
 def main() -> int:

@@ -1714,36 +1714,124 @@ def section_grpo(traces: Path = Path("traces"), stats_dir: Path = Path("data/grp
     return "\n".join(out)
 
 
-def _changed_requests(runs: list[tuple[str, Path, list[dict]]]) -> str:
+def _episode_records(cell: Path, e: dict) -> list[dict] | None:
+    """One episode's trace records, or None when they cannot be read."""
+    try:
+        return [json.loads(l) for l in (cell / f"{e['transcript_id']}.jsonl")
+                .read_text(encoding="utf-8").splitlines() if l.strip()]
+    except (OSError, ValueError):
+        return None
+
+
+def _changed_requests(runs: list[tuple[str, Path, list[dict]]]) -> tuple[str, str]:
     """For each (label, cell, episodes): the hard edition's changed-request
     episodes in which her phone digits came without the change her persona
-    makes in that message, and the failures among them -- "" when every one
-    came with it. Those failures are hers, not the model's (RUNBOOK 1s)."""
+    makes in that message, and the failures among them -- hers, not the
+    model's (RUNBOOK 1s); and those in which she never gave them. Her change
+    comes with her digits, so where she was not asked for them and waited for,
+    it never came, and those failures are not hers (v74, WHAT_FAILED #54).
+    "" for either when there is none."""
     from pasarbench.rescore import all_tasks
     from pasarbench.simqa import CHANGED_REQUEST, change_with_digits
     tasks = all_tasks()
-    parts = []
+    late_parts, never_parts = [], []
     for label, cell, eps in runs:
-        n = late = failed = 0
+        n = late = late_failed = never = never_failed = 0
         for e in eps:
             task = tasks.get(e["task_id"])
             if task is None or task.trap != CHANGED_REQUEST:
                 continue
-            try:
-                recs = [json.loads(l) for l in (cell / f"{e['transcript_id']}.jsonl")
-                        .read_text(encoding="utf-8").splitlines() if l.strip()]
-            except (OSError, ValueError):
+            recs = _episode_records(cell, e)
+            if recs is None:
                 continue
             turns = [r.get("text") or "" for r in recs
                      if r.get("type") == "event" and r.get("kind") == "user_turn"]
-            _, changed = change_with_digits(task, turns)
+            at, changed = change_with_digits(task, turns)
             n += 1
-            if not changed:
+            if at is None:
+                never += 1
+                never_failed += not e["passed"]
+            elif not changed:
                 late += 1
-                failed += not e["passed"]
+                late_failed += not e["passed"]
         if late:
-            parts.append(f"{late} of {n} {label} episodes ({failed} of them failed)")
-    return "; ".join(parts)
+            late_parts.append(f"{late} of {n} {label} episodes ({late_failed} of them failed)")
+        if never:
+            never_parts.append(f"{never} of {n} {label} episodes ({never_failed} of them "
+                               f"failed)")
+    return "; ".join(late_parts), "; ".join(never_parts)
+
+
+def _customer_note(late: str, never: str, who: str, cite: str = "") -> str:
+    """The changed request's customer, in words: her digits without her change
+    set aside as hers; her digits never given, as the agent's."""
+    return (f"in the changed request her phone digits came without the change of mind her "
+            f"persona puts in that message in {late}; those failures are hers, not the "
+            f"{who}'s{cite}." if late else
+            "in every changed-request conversation" + (" in which she gave them," if never else "")
+            + f" her phone digits came with her change of mind, as her persona has it: the "
+              f"case measures the {who}.") + (
+        f" She never gave them in {never}: her change comes with her digits, and she was not "
+        f"asked for them and waited for — those failures are the {who}'s, not hers "
+        f"(WHAT_FAILED #54)." if never else "")
+
+
+def _profile_phones(runs: list[tuple[str, Path, list[dict]]]) -> tuple[str, str, str]:
+    """For each (label, cell, episodes): the episodes in which the agent,
+    given the digits that verify her, refused them by the phone on her profile,
+    which ends in others (WHAT_FAILED #48) -- on a task that needs her verified,
+    the task's failures, not the agent's; on one that does not, the duplicate
+    refund, apart -- and those in which it verified her with the profile's own
+    digits before she gave hers; each with the failures among them. "" for any
+    when there is none (v74)."""
+    from pasarbench.rescore import all_tasks
+    from pasarbench.simqa import needs_verification, refused_by_profile, verified_by_profile
+    tasks = all_tasks()
+    found: dict[str, list[str]] = {"needed": [], "not needed": [], "unasked": []}
+    for label, cell, eps in runs:
+        n = 0
+        counts = {k: [0, 0] for k in found}            # episodes, failed
+        for e in eps:
+            task = tasks.get(e["task_id"])
+            recs = _episode_records(cell, e) if task is not None else None
+            if recs is None:
+                continue
+            n += 1
+            if refused_by_profile(task, recs):
+                c = counts["needed" if needs_verification(task) else "not needed"]
+                c[0] += 1
+                c[1] += not e["passed"]
+            if verified_by_profile(task, recs):
+                counts["unasked"][0] += 1
+                counts["unasked"][1] += not e["passed"]
+        for k, (k_n, k_failed) in counts.items():
+            if k_n:
+                found[k].append(f"{k_n} of {n} {label} episodes ({k_failed} of them failed)")
+    return tuple("; ".join(found[k]) for k in ("needed", "not needed", "unasked"))
+
+
+def _profile_note(needed: str, other: str, unasked: str) -> str:
+    """Section 8's line on the profile's phone, from _profile_phones."""
+    head = "given the digits that verify her, the agent refused them by the phone on her " \
+           "profile, which ends in others,"
+    if needed:
+        text = (f"{head} in {needed}; the task needed her verified, so those failures are the "
+                f"task's, not the agent's.")
+        if other:
+            text += (f" It refused her so where no verification was needed — the duplicate "
+                     f"refund, escalated without it — in {other}: what those missed was the "
+                     f"agent's.")
+    elif other:
+        text = (f"{head} only where no verification was needed — the duplicate refund, "
+                f"escalated without it — in {other}: what those missed was the agent's.")
+    else:
+        text = ("no agent refused the digits that verify her by the phone on her profile, "
+                "which ends in others.")
+    if unasked:
+        text += (f" It verified her with the profile's own digits before she gave hers in "
+                 f"{unasked}: the tool refused those, the profile's digits not being hers; in a "
+                 f"world whose profile ended in her digits they would verify her unasked.")
+    return text
 
 
 def section_edition3(traces: Path = Path("traces"),
@@ -1819,13 +1907,8 @@ def section_edition3(traces: Path = Path("traces"),
             f"{sum(rates[k][t])}/{len(rates[k][t])}" if t in rates[k] else "—"
             for k in present) + " |")
     runs = [(rows[k][0], cell[k], e3[k]) for k in present]
-    late = _changed_requests(runs)
-    out.append("\n*The customer:* " + (
-        f"in the changed request her phone digits came without the change of mind her "
-        f"persona puts in that message in {late}; those failures are hers, not the "
-        f"model's (RUNBOOK 1s)." if late else
-        "in every changed-request conversation her phone digits came with her change of "
-        "mind, as her persona has it: the case measures the model."))
+    late, never = _changed_requests(runs)
+    out.append("\n*The customer:* " + _customer_note(late, never, "model", " (RUNBOOK 1s)"))
     vouch = _voucher_choices(runs)
     out.append("\n*The voucher choice:* " + (
         f"offered the voucher on the two orders, she declined it in {vouch} (WHAT_FAILED "
@@ -1856,8 +1939,9 @@ def section_hard_edition(traces: Path = Path("traces")) -> str:
     each case against its part, paired, sign test; the cases' table; every pair
     of agents on the cases and on the parts -- the hard edition separates two
     agents the parts do not if their comparison resolves on the cases and not on
-    the parts; the changed request's customer and the voucher choice beside them;
-    one customer, temperature 0, one model and setting an agent."""
+    the parts; the changed request's customer, the profile's phone (WHAT_FAILED
+    #48, v74) and the voucher choice beside them; one customer, temperature 0,
+    one model and setting an agent."""
     from pasarbench.diagnose import load_episodes, paired_episodes
     from pasarbench.generate import EDITION3_PARTS, part_of
     from pasarbench.rescore import all_tasks
@@ -1963,15 +2047,12 @@ def section_hard_edition(traces: Path = Path("traces")) -> str:
                        if reverse else ""))
 
     runs = [(n, agents[n]["hcell"], agents[n]["hard"]) for n in order]
-    late = _changed_requests(runs)
-    out.append("\n*The customer:* " + (
-        f"in the changed request her phone digits came without the change of mind her "
-        f"persona puts in that message in {late}; those failures are hers, not the "
-        f"agent's." if late else
-        "in every changed-request conversation her phone digits came with her change of "
-        "mind, as her persona has it: the case measures the agent."))
-    vouch = _voucher_choices(runs + [(f"{n}'s parts", agents[n]["pcell"],
-                                      agents[n]["parts"]) for n in order])
+    both = runs + [(f"{n}'s parts", agents[n]["pcell"], agents[n]["parts"]) for n in order]
+    late, never = _changed_requests(runs)
+    out.append("\n*The customer:* " + _customer_note(late, never, "agent"))
+    out.append("\n*The profile's phone (WHAT_FAILED #48):* " + _profile_note(
+        *_profile_phones(both)))
+    vouch = _voucher_choices(both)
     out.append("\n*The voucher choice:* " + (
         f"offered the voucher, she declined it in {vouch} (WHAT_FAILED #46)." if vouch
         else "offered the voucher, she never declined it — a voucher the agent tried to "
