@@ -2180,7 +2180,6 @@ which API each model is in (`GO_MODELS`, read from
 python scripts/add_model.py --check --provider opencode-go   # each model's two requests; asks for the key once
 python scripts/add_model.py --provider opencode-go --model claude-haiku-5-5
 python scripts/add_model.py --provider opencode-go --model gpt-6-luna
-python scripts/add_model.py --provider opencode-go --model muse-spark-1.3-contributor
 python scripts/add_model.py --provider opencode-go --model minimax-m3
 python scripts/add_model.py --provider opencode-go --model longcat-2.0
 python scripts/add_model.py --provider opencode-go --model hy3
@@ -2205,7 +2204,7 @@ from the cache and at worst none, with reasoning:
 |---|---|---|---|---|---|
 | `claude-haiku-5-5` | Anthropic | messages | $0.21–1.08 | 1–7% | none |
 | `gpt-6-luna` | OpenAI | responses | $0.21–1.08 | 1–7% | reasoning none; low |
-| `muse-spark-1.3-contributor` | Meta | responses | $0.12–0.90 | 0–2% | reasoning minimal; low |
+| `muse-spark-1.3-contributor` | Meta | responses | $0.12–0.90 | 0–2% | reasoning minimal; low — a Contributor model, refused without the workspace's privacy opt-in (below): not run |
 | `minimax-m3` | MiniMax | messages | $0.81–3.06 | 1–5% | none; temperature 0.01 |
 | `longcat-2.0` | Meituan | chat | $0.43–3.06 | 1–5% | none |
 | `hy3` | Tencent | chat | $0.43–1.44 | 1–2% | none |
@@ -2244,7 +2243,14 @@ on nothing; Claude Haiku 5.5, GPT 6 Luna and Grok 4.7 keep requests up to 30
 days; the Contributor models — Muse Spark here — may train on what they are
 sent, and are offered only in the regions Meta permits. The
 conversations are synthetic, no one's data; but a model trained on them may
-later know the benchmark's tasks. The trace header names the gateway
+later know the benchmark's tasks. The plan serves a Contributor model only to
+a workspace whose Privacy settings allow "paid endpoints that train on request
+data": without that, every request is an HTTP 400, whatever its settings. v73
+took that for a setting refused, tried each of the model's, and stopped with
+a list of causes that left the real one out; since v74 `add_model.py` stops at
+the first, says what the plan asks and where, and names such a model in its
+plan before any key is asked for. Muse Spark is left out of `--check`'s
+candidates, and has not run. The trace header names the gateway
 (`"via": "opencode-go"`), and a run name that holds one route's episodes refuses
 to resume from the other.
 
@@ -2252,8 +2258,175 @@ to resume from the other.
 ran on their labs' own endpoints); Qwen, the customer's family; Gemini 4 Argon,
 served in Google's own API, which the harness does not speak; Space Bunny, Cat
 Jam and Omen, whose labs are not named, so the customer-family check cannot read
-them. Any of the plan's models runs with `--model <its id>`: one not in the
-table goes to `/chat/completions`, with its share of the plan not known.
+them; Muse Spark, a Contributor model (above). Any of the plan's models runs
+with `--model <its id>`: one not in the table goes to `/chat/completions`, with
+its share of the plan not known.
+
+**Seven more, run 2026-10-16 and finished 2026-10-21 (UTC+8), v73**
+(`V-claude-haiku-5-5`, `V-gpt-6-luna`, `V-minimax-m3`, `V-kimi-k2.6`,
+`V-longcat-2.0`, `V-hy3` and `V-mimo-v2.6-pro`, each with its `-parts`, all
+through OpenCode Go; RESULTS.md §8 sets them beside the five): **not shown
+harder for any of the seven.** Customer 3 again; temperature 0 but for Claude
+Haiku 5.5, which refuses one ("`temperature` is deprecated for this model") and
+ran at Anthropic's default, recorded as `null`; 225 conversations an agent, none
+left that an API error ended — the plan's gateway answered GPT-6 Luna once with
+a 502 and Kimi and MiniMax once each with a 503, and LongCat's parts stopped on
+server errors; the same command run again finished each.
+
+| agent | settings | hard cases, pass^1 (pass^k) | their parts | each case against its part |
+|---|---|---|---|---|
+| Claude Haiku 5.5 (`claude-haiku-5-5`) | Anthropic's API, no temperature sent | 0.991 (0.97) | 0.972 (0.94) | INCONCLUSIVE — 1 more, 2 less, p = 1.0 |
+| GPT-6 Luna (`gpt-6-luna`) | Responses API, reasoning none | 0.889 (0.72) | 0.870 (0.72) | INCONCLUSIVE — 6 more, 6 less, p = 1.0 |
+| MiniMax M3 (`minimax-m3`) | Anthropic's API, as served | 0.731 (0.44) | 0.759 (0.53) | INCONCLUSIVE — 10 more, 8 less, p = 0.82 |
+| Kimi K2.6 (`kimi-k2.6`) | thinking off | 0.815 (0.69) | 0.750 (0.72) | INCONCLUSIVE — 2 more, 6 less, p = 0.29 |
+| LongCat 2.0 (`longcat-2.0`) | as served | 0.657 (0.31) | 0.565 (0.36) | INCONCLUSIVE — 10 more, 15 less, p = 0.42 |
+| Hy3 (`hy3`) | as served; it reasons | 0.852 (0.64) | 0.926 (0.81) | INCONCLUSIVE — 10 more, 4 less, p = 0.18 |
+| MiMo-V2.6-Pro (`mimo-v2.6-pro`) | thinking off | 0.926 (0.81) | 0.917 (0.81) | INCONCLUSIVE — 3 more, 4 less, p = 1.0 |
+
+Each case's passes against its part's:
+
+| case (its part) | Claude | GPT-6 Luna | MiniMax | Kimi | LongCat | Hy3 | MiMo-Pro |
+|---|---|---|---|---|---|---|---|
+| the livestream dress, refunded already (the duplicate refund) | 30 · 27 | 30 · 30 | 13 · 11 | 12 · 3 | 16 · 2 | 27 · 25 | 27 · 24 |
+| two orders in one chat (the out-of-window voucher) | 38 · 39 | 34 · 28 | 29 · 33 | 37 · 39 | 25 · 27 | 26 · 37 | 35 · 36 |
+| the changed request (the cancellation while processing) | 39 · 39 | 32 · 36 | 37 · 38 | 39 · 39 | 30 · 32 | 39 · 38 | 38 · 39 |
+
+**Where it is hard: every failure on the cases, read and named by its wrong
+turn** (123).
+
+- **The refunded livestream order** (55). Told her it had been refunded
+  already — she had not checked her bank, she said — and closed without the
+  escalation P10 asks for "even if you have explained the existing refund and
+  the customer accepts it": Kimi 17, MiniMax 13, LongCat 9, MiMo-Pro 1. Store
+  credit in its place: MiniMax 3, Kimi 1; store credit and then, when she asked
+  for her money, a refund to her bank, refused on cash on delivery: MiniMax 1;
+  escalated, and store credit beside it: MiMo-Pro 2. A message to the seller
+  and nothing else: LongCat 1. Escalated as an out-of-window dispute without
+  the order looked up, and so without the refund seen: LongCat 1 — the wrong
+  turn the case was built for, as GLM's three were. Hy3 3: it looked the order
+  up, then its reasoning took the step's 4,096 tokens and its replies came out
+  empty, until the wall clock stopped it before any escalation (WHAT_FAILED
+  #55). And LongCat 3 that refused her digits by the profile's phone first
+  (below): the escalation needs no verification, so what they missed is
+  LongCat's.
+- **Two orders** (49). A refund on top of the cancellation, which refunds the
+  card itself — refused by the tool, and failed by the check as any refund
+  tried on the case is: Hy3 10, in a case it otherwise solved. On the
+  cancellation's own part it cancelled in 38 conversations of 39 and never
+  refunded on top, and no other agent of the twelve did it anywhere. The
+  covers taken as still inside their window — it closed on 3 November, and the
+  prompt says the day is the 11th — and so photos asked for, as for a return,
+  and no voucher: MiniMax 7, Kimi 1 (round 2's anatomy, and Grok's once); a
+  return and a refund opened on them when she pressed: Kimi 1. The voucher in Singapore dollars, the cap's currency, to a
+  customer in Indonesia or Malaysia: MiniMax 3, GPT-6 Luna 1. GPT-6 Luna's
+  other 4 began as every failure of its did, with her verified by the
+  profile's digits (below), and then: the conversation's 120,000 tokens ran
+  out, twice; it left the cancellation with the human it had escalated it to;
+  it told her the bottle was cancelled and never cancelled it. MiMo-Pro 2, in Thai: it searched the policy again and
+  again until the tokens ran out. LongCat 1: it asked her for her user id,
+  which the session gives it, and escalated an order named "unknown". The
+  customer's, once: offered the voucher, Claude's customer took it and ended
+  the conversation in the same message (#38). And the profile's phone, 18:
+  LongCat 13, Hy3 3, MiMo-Pro 2.
+- **The changed request** (19). GPT-6 Luna 7: it verified her with the
+  profile's own digits before she had said more than her request, was refused,
+  and escalated the order as unverified; she was never asked for her digits —
+  in two, asked in the same message that told her verification had failed —
+  and so never changed her mind, which her persona does with them. The new
+  address without its postcode, 11000 for Hà Nội: MiniMax 1. And the profile's
+  phone, 11: LongCat 9, MiniMax 1, MiMo-Pro 1.
+
+**The profile's phone** (WHAT_FAILED #48), on the cases and the parts. Given
+the digits that verify her, the agent compared them with the phone on her
+profile, which ends in others, and refused her in 63 conversations of the
+twelve agents, every one failed. In 50 the task needed her verified, so the
+failure is the task's, as 1s reads Grok's: LongCat 39, Hy3 5, MiMo-Pro 3 —
+twice after the tool had verified her ("the system accepted the verification,
+but the last 4 digits on file for your account are actually 5000") — MiniMax
+2, Grok 1. In 13 it was the duplicate refund, escalated without verification,
+and the escalation they missed is the agent's: LongCat 11, Grok 2. LongCat's
+50 are over half its failures; in about half of them it read her the phone or
+its last digits ("the phone number on your account is +66862345000, so the
+last 4 digits should be 5000"). The other face: GPT-6 Luna called
+`verify_identity` with the profile's own digits before she gave hers in 145
+conversations, all 26 of its failures among them, and tried to escalate the
+order as unverified in 139 of them — a ticket for a human made in 120, 97 of
+which passed; in the other 19 every such call named no order and the tool
+refused it. MiMo-V2.6-Flash did the same in 50, V4.1-Flash in 3, MiniMax and
+LongCat in one each, and all but one of V4.1-Flash's then asked her. The
+profile's digits verify no one in these worlds; in one whose profile ended in
+her digits — #48's fix as planned — each of those calls would verify her
+unasked, and pass. Section 8 counts both faces since v74; the next edition
+needs the profile to end in her digits and a check that the digits verified
+came from her.
+
+**The customer.** Her digits came without her change of mind in three
+conversations, Claude's, LongCat's and Hy3's, each a pass. In GPT-6 Luna's 7
+above she never gave them, and §8 had set those aside as hers: its reader's "no
+change" covered both. The reader also lacked two phrasings of the change, "I
+don't wanna cancel" (DeepSeek-V4-Pro's, above) and "其实我不想cancel了" (GPT-6
+Luna's), both in conversations that passed. v74 counts the digits never given
+apart, as the agent's, and reads both phrasings (WHAT_FAILED #54).
+
+**The voucher choice.** She declined the voucher once, on Hy3's parts, and
+asked for a human, as P6.3 and P10 have it: a failure the check makes on the
+voucher's lines alone (#46).
+
+**Separation.** Twelve agents make 66 pairs, each read twice. The hard edition
+separates four pairs the parts do not: Hy3 from DeepSeek-V4-Pro, GLM and
+Claude, by its refunds on top of the cancellation, its empty replies and the
+profile's phone; Kimi from Grok, by Grok's livestream order and its two orders
+(Kimi better on 12 tasks, worse on 2). The parts separate fourteen the cases do
+not, the duplicate refund again: nine of the twelve fail it more often as a
+part than inside the livestream story — Kimi 27 times in 30 alone and 18 in the
+story, LongCat 28 and 14, DeepSeek-V4-Pro 18 and 5. At p < 0.05 over 132
+tests, a few of these resolutions are chance's.
+
+**Stops, settings and what they measured.** GPT-6 Luna looks up more, and one
+tool a step: a median of 11 calls and 15 steps a conversation on the cases,
+where the others take 4 to 9 calls and 7 or 8 steps; 7 of its conversations
+ended at the 120,000-token budget. MiMo-Pro's 5 at the budget were policy
+searches in loops. Hy3 reasons, with no switch the plan offers: 1.08M tokens
+out over its two runs, several times what it said, and at 4,096 tokens a
+step its reasoning filled 53 steps and left them empty, which went to the
+customer as replies; 8 of its cases ended at the 180-second wall clock. Its
+line measures it at that step. LongCat reasons less (about twice what it
+said), MiniMax M3 not visibly (62 tokens a step at the median, about what its
+replies hold). Kimi and MiMo-Pro ran thinking off, GPT-6 Luna reasoning none.
+
+**What the runs cost**, each agent's tokens at the plan's prices (the
+customer's, on DashScope, apart):
+
+| agent | prompt tokens, both runs | from the cache | out | at the plan's prices | of the plan's month |
+|---|---|---|---|---|---|
+| Claude Haiku 5.5 | 11.0M | none | 0.44M | $1.32 | 8.8% |
+| GPT-6 Luna | 12.5M | 97% | 0.12M | $0.22 | 1.5% |
+| MiniMax M3 | 8.1M | 92% | 0.12M | $0.79 | 1.3% |
+| Kimi K2.6 | 7.1M | 65% | 0.14M | $3.69 | 6.2% |
+| LongCat 2.0 | 9.2M | 93% | 0.34M | $0.64 | 1.1% |
+| Hy3 | 7.6M | 90% | 1.08M | $0.97 | 1.6% |
+| MiMo-V2.6-Pro | 8.8M | 92% | 0.15M | $0.45 | 3.0% |
+
+$8.10 for the seven, about 23% of the month's allowance. Claude's is above the
+table's worst case: nothing came from the cache, because Anthropic's API caches
+only what a request marks and the harness marks nothing, and its runs sent 11M
+prompt tokens where 1s's estimate took 7.8M.
+
+**What it means.** For twelve agents from ten labs the hard edition is not
+harder than its parts: no agent's cases are shown to fail more than their
+parts, and one's, DeepSeek-V4-Pro's, fail less. Where the seven fail on the
+cases it is mostly the duplicate refund (55 of 123 failures, 40 of them the
+refund explained and not escalated) and the profile's phone (32, 29 of them
+the task's); and the parts separate more pairs than the cases.
+Two things are new. Hy3 meets on the two orders the kind of combination the
+edition was built for: alone, its cancellations are clean; beside a voucher it
+adds a refund on top, in 10 of 39 conversations — one model, not an edition
+harder for API models. And the identity check does not measure what it means
+to: 39 of LongCat's 93 failures are the profile's phone where the task needed
+her verified, the task's, and GPT-6 Luna's habit of verifying her by the
+profile shows only because the profile is wrong. #48's fix alone would remove the first and hide the second; the next
+edition carries the profile's phone ending in her digits and a check that the
+digits verified are ones she gave (WHAT_FAILED #48).
 
 ### 1t. Is it the language? The same conversation, translated (API only, no GPU)
 
