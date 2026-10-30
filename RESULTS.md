@@ -109,7 +109,7 @@ Unpaired rates over whatever tasks each language drew in this run: a gap here mi
 ## 3. Multilingual diagnosis
 
 *Source: `traces/C-clean/full` — 1075 episodes, pinned with `--multilingual-run`.*  
-*Also qualifying: `B-multilingual/full` (930), `D-nozh/full` (930), `F-clean-sim/full` (1075), `G-gated/full` (1075), `H-context/full` (96), `P-base/full` (1075), `P-ref/full` (1075), `P-rft/full` (1075), `P-smoke/full` (16), `P2-base-e2/full` (310), `P2-base-e3/full` (180), `P2-base/full` (1075), `P2-c2-check/full` (140), `P2-c3-check/full` (140), `P2-grpo-i1-e2/full` (310), `P2-grpo-i1-e3/full` (180), `P2-grpo-i1/full` (1075), `P2-ref/full` (1075), `P2-rft-e2/full` (310), `P2-rft-e3/full` (180), `P2-rft/full` (1075), `V-dsk-flash-parts/full` (117), `V-dsk-flash/full` (108), `V-dsk-parts/full` (117), `V-dsk/full` (108), `V-glm-parts/full` (117), `V-glm/full` (108), `V-grok-parts/full` (117), `V-grok/full` (108), `V-mimo-parts/full` (117), `V-mimo/full` (108).*
+*Also qualifying: `B-multilingual/full` (930), `D-nozh/full` (930), `F-clean-sim/full` (1075), `G-gated/full` (1075), `H-context/full` (96), `P-base/full` (1075), `P-ref/full` (1075), `P-rft/full` (1075), `P-smoke/full` (16), `P2-base-e2/full` (310), `P2-base-e3/full` (180), `P2-base/full` (1075), `P2-c2-check/full` (140), `P2-c3-check/full` (140), `P2-grpo-i1-e2/full` (310), `P2-grpo-i1-e3/full` (180), `P2-grpo-i1/full` (1075), `P2-ref/full` (1075), `P2-rft-e2/full` (310), `P2-rft-e3/full` (180), `P2-rft/full` (1075), `V-claude-haiku-5-5-parts/full` (117), `V-claude-haiku-5-5/full` (108), `V-dsk-flash-parts/full` (117), `V-dsk-flash/full` (108), `V-dsk-parts/full` (117), `V-dsk/full` (108), `V-glm-parts/full` (117), `V-glm/full` (108), `V-gpt-6-luna-parts/full` (117), `V-gpt-6-luna/full` (108), `V-grok-parts/full` (117), `V-grok/full` (108), `V-hy3-parts/full` (117), `V-hy3/full` (108), `V-kimi-k2.6-parts/full` (117), `V-kimi-k2.6/full` (108), `V-longcat-2.0-parts/full` (117), `V-longcat-2.0/full` (108), `V-mimo-parts/full` (117), `V-mimo-v2.6-pro-parts/full` (117), `V-mimo-v2.6-pro/full` (108), `V-mimo/full` (108), `V-minimax-m3-parts/full` (117), `V-minimax-m3/full` (108).*
 
 ## Multilingual diagnosis
 
@@ -553,16 +553,30 @@ Each episode's recorded tool calls are replayed against the world it ran in, and
 | `T-guard/full+search-300` | 474 | 0.970 → 0.970 | 0.930 → 0.930 | 0 | 0 | 0 |
 | `U-guard/full+search-300` | 474 | 0.973 → 0.973 | 0.943 → 0.943 | 0 | 0 | 0 |
 | `U-room/full+search-300` | 474 | 0.970 → 0.970 | 0.924 → 0.924 | 0 | 0 | 0 |
+| `V-claude-haiku-5-5/full` | 108 | 0.991 → 0.991 | 0.972 → 0.972 | 0 | 0 | 0 |
+| `V-claude-haiku-5-5-parts/full` | 117 | 0.974 → 0.974 | 0.949 → 0.949 | 0 | 0 | 0 |
 | `V-dsk/full` | 108 | 0.944 → 0.944 | 0.889 → 0.889 | 0 | 0 | 0 |
 | `V-dsk-flash/full` | 108 | 0.991 → 0.991 | 0.972 → 0.972 | 0 | 0 | 0 |
 | `V-dsk-flash-parts/full` | 117 | 1.000 → 1.000 | 1.000 → 1.000 | 0 | 0 | 0 |
 | `V-dsk-parts/full` | 117 | 0.795 → 0.795 | 0.692 → 0.692 | 0 | 0 | 0 |
 | `V-glm/full` | 108 | 0.954 → 0.954 | 0.889 → 0.889 | 0 | 0 | 0 |
 | `V-glm-parts/full` | 117 | 0.949 → 0.949 | 0.872 → 0.872 | 0 | 0 | 0 |
+| `V-gpt-6-luna/full` | 108 | 0.889 → 0.889 | 0.722 → 0.722 | 0 | 0 | 0 |
+| `V-gpt-6-luna-parts/full` | 117 | 0.880 → 0.880 | 0.744 → 0.744 | 0 | 0 | 0 |
 | `V-grok/full` | 108 | 0.685 → 0.685 | 0.583 → 0.583 | 0 | 0 | 0 |
 | `V-grok-parts/full` | 117 | 0.675 → 0.675 | 0.667 → 0.667 | 0 | 0 | 0 |
+| `V-hy3/full` | 108 | 0.852 → 0.852 | 0.639 → 0.639 | 0 | 0 | 0 |
+| `V-hy3-parts/full` | 117 | 0.915 → 0.915 | 0.795 → 0.795 | 0 | 0 | 0 |
+| `V-kimi-k2.6/full` | 108 | 0.815 → 0.815 | 0.694 → 0.694 | 0 | 0 | 0 |
+| `V-kimi-k2.6-parts/full` | 117 | 0.692 → 0.692 | 0.667 → 0.667 | 0 | 0 | 0 |
+| `V-longcat-2.0/full` | 108 | 0.657 → 0.657 | 0.306 → 0.306 | 0 | 0 | 0 |
+| `V-longcat-2.0-parts/full` | 117 | 0.521 → 0.521 | 0.333 → 0.333 | 0 | 0 | 0 |
 | `V-mimo/full` | 108 | 0.991 → 0.991 | 0.972 → 0.972 | 0 | 0 | 0 |
 | `V-mimo-parts/full` | 117 | 0.983 → 0.983 | 0.949 → 0.949 | 0 | 0 | 0 |
+| `V-mimo-v2.6-pro/full` | 108 | 0.926 → 0.926 | 0.806 → 0.806 | 0 | 0 | 0 |
+| `V-mimo-v2.6-pro-parts/full` | 117 | 0.863 → 0.863 | 0.744 → 0.744 | 0 | 0 | 0 |
+| `V-minimax-m3/full` | 108 | 0.731 → 0.731 | 0.444 → 0.444 | 0 | 0 | 0 |
+| `V-minimax-m3-parts/full` | 117 | 0.701 → 0.701 | 0.487 → 0.487 | 0 | 0 | 0 |
 
 | trap | fail → pass | pass → fail |
 |---|---|---|
@@ -582,14 +596,21 @@ Each agent on the hard edition's 36 cases and on their parts — the first editi
 | mimo | `mimo-v2.6-flash` | `{"thinking": {"type": "disabled"}}` | 0.991 (0.97) | 0.991 (0.97) | **INCONCLUSIVE** — +0.000; 1 cases failed more than their part, 1 less, p=1.000 |
 | grok | `grok-4.3` | `{"reasoning_effort": "none"}` | 0.685 (0.58) | 0.731 (0.72) | **INCONCLUSIVE** — -0.046; 6 cases failed more than their part, 2 less, p=0.289 |
 | glm | `glm-5.3-flash` | `{"reasoning_effort": "low"}` | 0.954 (0.89) | 0.944 (0.86) | **INCONCLUSIVE** — +0.009; 3 cases failed more than their part, 4 less, p=1.000 |
+| claude-haiku-5-5 | `claude-haiku-5-5` | `{"temperature": null}` | 0.991 (0.97) | 0.972 (0.94) | **INCONCLUSIVE** — +0.019; 1 cases failed more than their part, 2 less, p=1.000 |
+| gpt-6-luna | `gpt-6-luna` | `{"reasoning": {"effort": "none"}}` | 0.889 (0.72) | 0.870 (0.72) | **INCONCLUSIVE** — +0.019; 6 cases failed more than their part, 6 less, p=1.000 |
+| minimax-m3 | `minimax-m3` | — | 0.731 (0.44) | 0.759 (0.53) | **INCONCLUSIVE** — -0.028; 10 cases failed more than their part, 8 less, p=0.815 |
+| kimi-k2.6 | `kimi-k2.6` | `{"thinking": {"type": "disabled"}}` | 0.815 (0.69) | 0.750 (0.72) | **INCONCLUSIVE** — +0.065; 2 cases failed more than their part, 6 less, p=0.289 |
+| longcat-2.0 | `longcat-2.0` | — | 0.657 (0.31) | 0.565 (0.36) | **INCONCLUSIVE** — +0.093; 10 cases failed more than their part, 15 less, p=0.424 |
+| hy3 | `hy3` | — | 0.852 (0.64) | 0.926 (0.81) | **INCONCLUSIVE** — -0.074; 10 cases failed more than their part, 4 less, p=0.180 |
+| mimo-v2.6-pro | `mimo-v2.6-pro` | `{"thinking": {"type": "disabled"}}` | 0.926 (0.81) | 0.917 (0.81) | **INCONCLUSIVE** — +0.009; 3 cases failed more than their part, 4 less, p=1.000 |
 
 - **Harder:** shown for none of them.
 
-| case (its part) | dsk | dsk-flash | mimo | grok | glm |
-|---|---|---|---|---|---|
-| `duplicate_refund_cod_livestream` (`duplicate_refund_escalate`) | 25/30 · 12/30 | 29/30 · 30/30 | 29/30 · 30/30 | 2/30 · 1/30 | 25/30 · 24/30 |
-| `two_orders_voucher_and_cancel` (`out_of_window_offer_voucher`) | 38/39 · 39/39 | 39/39 · 39/39 | 39/39 · 38/39 | 33/39 · 39/39 | 39/39 · 39/39 |
-| `changed_request_cancel_to_address` (`cancel_while_processing`) | 39/39 · 39/39 | 39/39 · 39/39 | 39/39 · 39/39 | 39/39 · 39/39 | 39/39 · 39/39 |
+| case (its part) | dsk | dsk-flash | mimo | grok | glm | claude-haiku-5-5 | gpt-6-luna | minimax-m3 | kimi-k2.6 | longcat-2.0 | hy3 | mimo-v2.6-pro |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| `duplicate_refund_cod_livestream` (`duplicate_refund_escalate`) | 25/30 · 12/30 | 29/30 · 30/30 | 29/30 · 30/30 | 2/30 · 1/30 | 25/30 · 24/30 | 30/30 · 27/30 | 30/30 · 30/30 | 13/30 · 11/30 | 12/30 · 3/30 | 16/30 · 2/30 | 27/30 · 25/30 | 27/30 · 24/30 |
+| `two_orders_voucher_and_cancel` (`out_of_window_offer_voucher`) | 38/39 · 39/39 | 39/39 · 39/39 | 39/39 · 38/39 | 33/39 · 39/39 | 39/39 · 39/39 | 38/39 · 39/39 | 34/39 · 28/39 | 29/39 · 33/39 | 37/39 · 39/39 | 25/39 · 27/39 | 26/39 · 37/39 | 35/39 · 36/39 |
+| `changed_request_cancel_to_address` (`cancel_while_processing`) | 39/39 · 39/39 | 39/39 · 39/39 | 39/39 · 39/39 | 39/39 · 39/39 | 39/39 · 39/39 | 39/39 · 39/39 | 32/39 · 36/39 | 37/39 · 38/39 | 39/39 · 39/39 | 30/39 · 32/39 | 39/39 · 38/39 | 38/39 · 39/39 |
 
 *Each cell: the case's passes · its part's.*
 
@@ -599,23 +620,81 @@ Each agent on the hard edition's 36 cases and on their parts — the first editi
 | dsk → mimo | **INCONCLUSIVE** — +0.046; 3 tasks better, 0 worse, p=0.250 | **mimo better** — +0.188; 12 tasks better, 1 worse, p=0.003 | the parts separate them, the cases do not |
 | dsk → grok | **grok worse** — -0.259; 0 tasks better, 14 worse, p=0.000 | **grok worse** — -0.120; 1 tasks better, 8 worse, p=0.039 |  |
 | dsk → glm | **INCONCLUSIVE** — +0.009; 3 tasks better, 2 worse, p=1.000 | **glm better** — +0.154; 11 tasks better, 1 worse, p=0.006 | the parts separate them, the cases do not |
+| dsk → claude-haiku-5-5 | **INCONCLUSIVE** — +0.046; 4 tasks better, 1 worse, p=0.375 | **claude-haiku-5-5 better** — +0.179; 11 tasks better, 0 worse, p=0.001 | the parts separate them, the cases do not |
+| dsk → gpt-6-luna | **INCONCLUSIVE** — -0.056; 3 tasks better, 9 worse, p=0.146 | **INCONCLUSIVE** — +0.085; 12 tasks better, 10 worse, p=0.832 |  |
+| dsk → minimax-m3 | **minimax-m3 worse** — -0.213; 1 tasks better, 17 worse, p=0.000 | **minimax-m3 worse** — -0.094; 3 tasks better, 14 worse, p=0.013 |  |
+| dsk → kimi-k2.6 | **INCONCLUSIVE** — -0.130; 2 tasks better, 8 worse, p=0.109 | **kimi-k2.6 worse** — -0.103; 1 tasks better, 8 worse, p=0.039 | the parts separate them, the cases do not |
+| dsk → longcat-2.0 | **longcat-2.0 worse** — -0.287; 2 tasks better, 23 worse, p=0.000 | **longcat-2.0 worse** — -0.274; 0 tasks better, 21 worse, p=0.000 |  |
+| dsk → hy3 | **hy3 worse** — -0.093; 3 tasks better, 12 worse, p=0.035 | **INCONCLUSIVE** — +0.120; 11 tasks better, 3 worse, p=0.057 | the cases separate them, the parts do not |
+| dsk → mimo-v2.6-pro | **INCONCLUSIVE** — -0.019; 4 tasks better, 7 worse, p=0.549 | **INCONCLUSIVE** — +0.068; 7 tasks better, 4 worse, p=0.549 |  |
 | dsk-flash → mimo | **INCONCLUSIVE** — +0.000; 0 tasks better, 0 worse, p=1.000 | **INCONCLUSIVE** — -0.017; 0 tasks better, 2 worse, p=0.500 |  |
 | dsk-flash → grok | **grok worse** — -0.306; 0 tasks better, 15 worse, p=0.000 | **grok worse** — -0.325; 0 tasks better, 13 worse, p=0.000 |  |
 | dsk-flash → glm | **INCONCLUSIVE** — -0.037; 1 tasks better, 4 worse, p=0.375 | **INCONCLUSIVE** — -0.051; 0 tasks better, 5 worse, p=0.062 |  |
+| dsk-flash → claude-haiku-5-5 | **INCONCLUSIVE** — +0.000; 1 tasks better, 1 worse, p=1.000 | **INCONCLUSIVE** — -0.026; 0 tasks better, 2 worse, p=0.500 |  |
+| dsk-flash → gpt-6-luna | **gpt-6-luna worse** — -0.102; 1 tasks better, 10 worse, p=0.012 | **gpt-6-luna worse** — -0.120; 0 tasks better, 10 worse, p=0.002 |  |
+| dsk-flash → minimax-m3 | **minimax-m3 worse** — -0.259; 0 tasks better, 19 worse, p=0.000 | **minimax-m3 worse** — -0.299; 0 tasks better, 20 worse, p=0.000 |  |
+| dsk-flash → kimi-k2.6 | **kimi-k2.6 worse** — -0.176; 0 tasks better, 10 worse, p=0.002 | **kimi-k2.6 worse** — -0.308; 0 tasks better, 13 worse, p=0.000 |  |
+| dsk-flash → longcat-2.0 | **longcat-2.0 worse** — -0.333; 0 tasks better, 24 worse, p=0.000 | **longcat-2.0 worse** — -0.479; 0 tasks better, 26 worse, p=0.000 |  |
+| dsk-flash → hy3 | **hy3 worse** — -0.139; 1 tasks better, 13 worse, p=0.002 | **hy3 worse** — -0.085; 0 tasks better, 8 worse, p=0.008 |  |
+| dsk-flash → mimo-v2.6-pro | **INCONCLUSIVE** — -0.065; 1 tasks better, 7 worse, p=0.070 | **mimo-v2.6-pro worse** — -0.137; 0 tasks better, 10 worse, p=0.002 | the parts separate them, the cases do not |
 | mimo → grok | **grok worse** — -0.306; 0 tasks better, 15 worse, p=0.000 | **grok worse** — -0.308; 1 tasks better, 13 worse, p=0.002 |  |
 | mimo → glm | **INCONCLUSIVE** — -0.037; 1 tasks better, 4 worse, p=0.375 | **INCONCLUSIVE** — -0.034; 2 tasks better, 5 worse, p=0.453 |  |
+| mimo → claude-haiku-5-5 | **INCONCLUSIVE** — +0.000; 1 tasks better, 1 worse, p=1.000 | **INCONCLUSIVE** — -0.009; 2 tasks better, 2 worse, p=1.000 |  |
+| mimo → gpt-6-luna | **gpt-6-luna worse** — -0.102; 1 tasks better, 10 worse, p=0.012 | **gpt-6-luna worse** — -0.103; 2 tasks better, 10 worse, p=0.039 |  |
+| mimo → minimax-m3 | **minimax-m3 worse** — -0.259; 0 tasks better, 19 worse, p=0.000 | **minimax-m3 worse** — -0.282; 0 tasks better, 19 worse, p=0.000 |  |
+| mimo → kimi-k2.6 | **kimi-k2.6 worse** — -0.176; 0 tasks better, 10 worse, p=0.002 | **kimi-k2.6 worse** — -0.291; 1 tasks better, 13 worse, p=0.002 |  |
+| mimo → longcat-2.0 | **longcat-2.0 worse** — -0.333; 0 tasks better, 24 worse, p=0.000 | **longcat-2.0 worse** — -0.462; 0 tasks better, 25 worse, p=0.000 |  |
+| mimo → hy3 | **hy3 worse** — -0.139; 1 tasks better, 13 worse, p=0.002 | **hy3 worse** — -0.068; 1 tasks better, 8 worse, p=0.039 |  |
+| mimo → mimo-v2.6-pro | **INCONCLUSIVE** — -0.065; 1 tasks better, 7 worse, p=0.070 | **mimo-v2.6-pro worse** — -0.120; 1 tasks better, 10 worse, p=0.012 | the parts separate them, the cases do not |
 | grok → glm | **glm better** — +0.269; 15 tasks better, 0 worse, p=0.000 | **glm better** — +0.274; 13 tasks better, 0 worse, p=0.000 |  |
+| grok → claude-haiku-5-5 | **claude-haiku-5-5 better** — +0.306; 14 tasks better, 0 worse, p=0.000 | **claude-haiku-5-5 better** — +0.299; 13 tasks better, 0 worse, p=0.000 |  |
+| grok → gpt-6-luna | **INCONCLUSIVE** — +0.204; 14 tasks better, 8 worse, p=0.286 | **INCONCLUSIVE** — +0.205; 13 tasks better, 10 worse, p=0.678 |  |
+| grok → minimax-m3 | **INCONCLUSIVE** — +0.046; 10 tasks better, 7 worse, p=0.629 | **INCONCLUSIVE** — +0.026; 9 tasks better, 8 worse, p=1.000 |  |
+| grok → kimi-k2.6 | **kimi-k2.6 better** — +0.130; 12 tasks better, 2 worse, p=0.013 | **INCONCLUSIVE** — +0.017; 3 tasks better, 1 worse, p=0.625 | the cases separate them, the parts do not |
+| grok → longcat-2.0 | **INCONCLUSIVE** — -0.028; 9 tasks better, 15 worse, p=0.307 | **longcat-2.0 worse** — -0.154; 2 tasks better, 14 worse, p=0.004 | the parts separate them, the cases do not |
+| grok → hy3 | **INCONCLUSIVE** — +0.167; 13 tasks better, 7 worse, p=0.263 | **hy3 better** — +0.239; 13 tasks better, 3 worse, p=0.021 | the parts separate them, the cases do not |
+| grok → mimo-v2.6-pro | **mimo-v2.6-pro better** — +0.241; 15 tasks better, 4 worse, p=0.019 | **mimo-v2.6-pro better** — +0.188; 12 tasks better, 2 worse, p=0.013 |  |
+| glm → claude-haiku-5-5 | **INCONCLUSIVE** — +0.037; 4 tasks better, 1 worse, p=0.375 | **INCONCLUSIVE** — +0.026; 4 tasks better, 1 worse, p=0.375 |  |
+| glm → gpt-6-luna | **INCONCLUSIVE** — -0.065; 4 tasks better, 10 worse, p=0.180 | **INCONCLUSIVE** — -0.068; 5 tasks better, 10 worse, p=0.302 |  |
+| glm → minimax-m3 | **minimax-m3 worse** — -0.222; 0 tasks better, 19 worse, p=0.000 | **minimax-m3 worse** — -0.248; 0 tasks better, 18 worse, p=0.000 |  |
+| glm → kimi-k2.6 | **kimi-k2.6 worse** — -0.139; 1 tasks better, 9 worse, p=0.021 | **kimi-k2.6 worse** — -0.256; 0 tasks better, 13 worse, p=0.000 |  |
+| glm → longcat-2.0 | **longcat-2.0 worse** — -0.296; 0 tasks better, 23 worse, p=0.000 | **longcat-2.0 worse** — -0.427; 0 tasks better, 26 worse, p=0.000 |  |
+| glm → hy3 | **hy3 worse** — -0.102; 3 tasks better, 12 worse, p=0.035 | **INCONCLUSIVE** — -0.034; 4 tasks better, 7 worse, p=0.549 | the cases separate them, the parts do not |
+| glm → mimo-v2.6-pro | **INCONCLUSIVE** — -0.028; 4 tasks better, 6 worse, p=0.754 | **INCONCLUSIVE** — -0.085; 4 tasks better, 9 worse, p=0.267 |  |
+| claude-haiku-5-5 → gpt-6-luna | **gpt-6-luna worse** — -0.102; 0 tasks better, 9 worse, p=0.004 | **gpt-6-luna worse** — -0.094; 2 tasks better, 10 worse, p=0.039 |  |
+| claude-haiku-5-5 → minimax-m3 | **minimax-m3 worse** — -0.259; 0 tasks better, 19 worse, p=0.000 | **minimax-m3 worse** — -0.274; 0 tasks better, 19 worse, p=0.000 |  |
+| claude-haiku-5-5 → kimi-k2.6 | **kimi-k2.6 worse** — -0.176; 1 tasks better, 11 worse, p=0.006 | **kimi-k2.6 worse** — -0.282; 0 tasks better, 13 worse, p=0.000 |  |
+| claude-haiku-5-5 → longcat-2.0 | **longcat-2.0 worse** — -0.333; 0 tasks better, 25 worse, p=0.000 | **longcat-2.0 worse** — -0.453; 0 tasks better, 26 worse, p=0.000 |  |
+| claude-haiku-5-5 → hy3 | **hy3 worse** — -0.139; 0 tasks better, 12 worse, p=0.000 | **INCONCLUSIVE** — -0.060; 2 tasks better, 7 worse, p=0.180 | the cases separate them, the parts do not |
+| claude-haiku-5-5 → mimo-v2.6-pro | **INCONCLUSIVE** — -0.065; 1 tasks better, 7 worse, p=0.070 | **mimo-v2.6-pro worse** — -0.111; 1 tasks better, 9 worse, p=0.021 | the parts separate them, the cases do not |
+| gpt-6-luna → minimax-m3 | **INCONCLUSIVE** — -0.157; 6 tasks better, 15 worse, p=0.078 | **INCONCLUSIVE** — -0.179; 8 tasks better, 16 worse, p=0.152 |  |
+| gpt-6-luna → kimi-k2.6 | **INCONCLUSIVE** — -0.074; 10 tasks better, 11 worse, p=1.000 | **INCONCLUSIVE** — -0.188; 10 tasks better, 13 worse, p=0.678 |  |
+| gpt-6-luna → longcat-2.0 | **longcat-2.0 worse** — -0.231; 6 tasks better, 22 worse, p=0.004 | **longcat-2.0 worse** — -0.359; 4 tasks better, 21 worse, p=0.001 |  |
+| gpt-6-luna → hy3 | **INCONCLUSIVE** — -0.037; 7 tasks better, 9 worse, p=0.804 | **INCONCLUSIVE** — +0.034; 10 tasks better, 6 worse, p=0.454 |  |
+| gpt-6-luna → mimo-v2.6-pro | **INCONCLUSIVE** — +0.037; 10 tasks better, 7 worse, p=0.629 | **INCONCLUSIVE** — -0.017; 9 tasks better, 9 worse, p=1.000 |  |
+| minimax-m3 → kimi-k2.6 | **INCONCLUSIVE** — +0.083; 11 tasks better, 3 worse, p=0.057 | **INCONCLUSIVE** — -0.009; 7 tasks better, 6 worse, p=1.000 |  |
+| minimax-m3 → longcat-2.0 | **INCONCLUSIVE** — -0.074; 6 tasks better, 13 worse, p=0.167 | **longcat-2.0 worse** — -0.179; 1 tasks better, 18 worse, p=0.000 | the parts separate them, the cases do not |
+| minimax-m3 → hy3 | **INCONCLUSIVE** — +0.120; 11 tasks better, 4 worse, p=0.118 | **hy3 better** — +0.214; 17 tasks better, 2 worse, p=0.001 | the parts separate them, the cases do not |
+| minimax-m3 → mimo-v2.6-pro | **mimo-v2.6-pro better** — +0.194; 17 tasks better, 2 worse, p=0.001 | **mimo-v2.6-pro better** — +0.162; 16 tasks better, 2 worse, p=0.001 |  |
+| kimi-k2.6 → longcat-2.0 | **longcat-2.0 worse** — -0.157; 5 tasks better, 18 worse, p=0.011 | **longcat-2.0 worse** — -0.171; 1 tasks better, 15 worse, p=0.001 |  |
+| kimi-k2.6 → hy3 | **INCONCLUSIVE** — +0.037; 9 tasks better, 9 worse, p=1.000 | **hy3 better** — +0.222; 13 tasks better, 3 worse, p=0.021 | the parts separate them, the cases do not |
+| kimi-k2.6 → mimo-v2.6-pro | **INCONCLUSIVE** — +0.111; 8 tasks better, 3 worse, p=0.227 | **mimo-v2.6-pro better** — +0.171; 12 tasks better, 2 worse, p=0.013 | the parts separate them, the cases do not |
+| longcat-2.0 → hy3 | **hy3 better** — +0.194; 17 tasks better, 4 worse, p=0.007 | **hy3 better** — +0.393; 24 tasks better, 0 worse, p=0.000 |  |
+| longcat-2.0 → mimo-v2.6-pro | **mimo-v2.6-pro better** — +0.269; 22 tasks better, 2 worse, p=0.000 | **mimo-v2.6-pro better** — +0.342; 25 tasks better, 2 worse, p=0.000 |  |
+| hy3 → mimo-v2.6-pro | **INCONCLUSIVE** — +0.074; 11 tasks better, 4 worse, p=0.118 | **INCONCLUSIVE** — -0.051; 5 tasks better, 7 worse, p=0.774 |  |
 
-- **Separation:** the hard edition separates no pair of agents the parts do not. The parts separate dsk–dsk-flash, dsk–mimo, dsk–glm, which the cases do not.
+- **Separation:** the hard edition separates dsk–hy3, grok–kimi-k2.6, glm–hy3, claude-haiku-5-5–hy3, which the parts do not. The parts separate dsk–dsk-flash, dsk–mimo, dsk–glm, dsk–claude-haiku-5-5, dsk–kimi-k2.6, dsk-flash–mimo-v2.6-pro, mimo–mimo-v2.6-pro, grok–longcat-2.0, grok–hy3, claude-haiku-5-5–mimo-v2.6-pro, minimax-m3–longcat-2.0, minimax-m3–hy3, kimi-k2.6–hy3, kimi-k2.6–mimo-v2.6-pro, which the cases do not.
 
-*The customer:* in the changed request her phone digits came without the change of mind her persona puts in that message in 1 of 39 dsk episodes (0 of them failed); those failures are hers, not the agent's.
+*The customer:* in the changed request her phone digits came without the change of mind her persona puts in that message in 1 of 39 claude-haiku-5-5 episodes (0 of them failed); 1 of 39 longcat-2.0 episodes (0 of them failed); 1 of 39 hy3 episodes (0 of them failed); those failures are hers, not the agent's. She never gave them in 7 of 39 gpt-6-luna episodes (7 of them failed): her change comes with her digits, and she was not asked for them and waited for — those failures are the agent's, not hers (WHAT_FAILED #54).
 
-*The voucher choice:* offered the voucher, she never declined it — a voucher the agent tried to issue counts as hers taken (WHAT_FAILED #49): nothing to read as P6.3 and P10 read it.
+*The profile's phone (WHAT_FAILED #48):* given the digits that verify her, the agent refused them by the phone on her profile, which ends in others, in 1 of 108 grok episodes (1 of them failed); 1 of 108 minimax-m3 episodes (1 of them failed); 22 of 108 longcat-2.0 episodes (22 of them failed); 3 of 108 hy3 episodes (3 of them failed); 3 of 108 mimo-v2.6-pro episodes (3 of them failed); 1 of 117 minimax-m3's parts episodes (1 of them failed); 17 of 117 longcat-2.0's parts episodes (17 of them failed); 2 of 117 hy3's parts episodes (2 of them failed); the task needed her verified, so those failures are the task's, not the agent's. It refused her so where no verification was needed — the duplicate refund, escalated without it — in 3 of 108 longcat-2.0 episodes (3 of them failed); 2 of 117 grok's parts episodes (2 of them failed); 8 of 117 longcat-2.0's parts episodes (8 of them failed): what those missed was the agent's. It verified her with the profile's own digits before she gave hers in 3 of 108 dsk-flash episodes (1 of them failed); 38 of 108 mimo episodes (1 of them failed); 71 of 108 gpt-6-luna episodes (12 of them failed); 1 of 108 minimax-m3 episodes (0 of them failed); 1 of 108 longcat-2.0 episodes (0 of them failed); 12 of 117 mimo's parts episodes (0 of them failed); 74 of 117 gpt-6-luna's parts episodes (14 of them failed): the tool refused those, the profile's digits not being hers; in a world whose profile ended in her digits they would verify her unasked.
+
+*The voucher choice:* offered the voucher, she declined it in 1 of 39 hy3's parts episodes (1 of them failed on the voucher's lines alone) (WHAT_FAILED #46).
 
 Checks:
 
 - ✓ one customer in every run: `llm-user/v3:openai-compat:qwen3.8-flash`
-- ✓ agent temperature 0 in every run
+- ✗ **agent temperature 0 in every run but claude-haiku-5-5's (None) -- None: no temperature sent, the provider's default**
 - ✓ each agent's two runs: one model, one setting, every case's part
 
 ## 9. The language swap: one conversation, translated
