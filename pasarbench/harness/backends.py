@@ -297,11 +297,12 @@ class OpenAICompatBackend:
                   or (u.get("prompt_tokens_details") or {}).get("cached_tokens")
                   or 0)
         content = choice.get("content") or ""
-        if not content and choice.get("reasoning_content"):
-            # Thinking mode produced reasoning but no answer -- almost always
-            # means max_tokens was exhausted by the reasoning trace. Surface it
-            # rather than returning a silent empty turn.
-            content = ""
+        # Reasoning with no answer after it -- the reasoning took the step's
+        # max_tokens -- comes back as an empty reply, and with no tool call the
+        # loop hands it to the customer as the agent's turn: Hy3's 53 empty
+        # replies on RUNBOOK 1s (WHAT_FAILED #55). Recorded, not changed: every
+        # run so far ran this way. (Before v74 a comment here said it was
+        # surfaced; the line under it set content to "", which it already was.)
         return ModelResponse(
             content=content,
             tool_calls=calls,
