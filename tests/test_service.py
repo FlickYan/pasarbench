@@ -337,6 +337,7 @@ def test_parity(kind: str, every: int = 1):
     from pasarbench.db import Database
     from pasarbench.harness.backends import ScriptedBackend
     from pasarbench.harness.loop import run_episode
+    from pasarbench.harness.prompts import system_prompt
     from pasarbench.rescore import all_tasks
     from pasarbench.service.models import solutions
     from pasarbench.service.replay import replay_tenant
@@ -346,7 +347,7 @@ def test_parity(kind: str, every: int = 1):
     engine, url = database(kind, "parity")
     app = make_app(engine, url)
     tasks = list(all_tasks().items())[::every]
-    passed = same = 0
+    passed = same = prompts = 0
     bad: list = []
     replays = []
     t0 = time.monotonic()
@@ -355,7 +356,12 @@ def test_parity(kind: str, every: int = 1):
             ten = f"p{i:03d}"
             h = tenant(c, ten, f"task:{tid}")
             cid = c.post("/v1/conversations", headers=h, json={
-                "user_id": task.user_id, "model": f"scripted:{tid}"}).json()["conversation_id"]
+                "user_id": task.user_id, "model": f"scripted:{tid}",
+                "market": task.market}).json()["conversation_id"]
+            # What a real model reads first: the scripted one never does (#67).
+            shown = c.get(f"/v1/conversations/{cid}/messages?include_system=true",
+                          headers=h).json()[0]["content"]
+            prompts += shown == system_prompt(task.user_id, task.market, "preload")
             out = c.post(f"/v1/conversations/{cid}/messages", headers=h,
                          json={"content": task.opening}).json()
             conv = c.get(f"/v1/conversations/{cid}", headers=h).json()
@@ -382,10 +388,76 @@ def test_parity(kind: str, every: int = 1):
           f"({passed}/{n}, {time.monotonic() - t0:.0f}s)", passed == n, bad[:3])
     check(f"[{kind}] …leaving the world and the action log exactly as the benchmark's own "
           f"episode does ({same}/{n})", same == n, bad[:3])
+    check(f"[{kind}] …the model shown the benchmark's own system prompt, byte for byte, "
+          f"on every task ({prompts}/{n}; T09's customer is from MY, its market ID)",
+          prompts == n, prompts)
     check(f"[{kind}] replay: every tool call of {len(replays)} of those tenants run again "
           f"answers and changes the same, and rebuilds the same world",
           all(r["ok"] for r in replays) and sum(r["calls"] for r in replays) > 0,
           [r for r in replays if not r["ok"]][:1])
+    engine.dispose()
+
+
+def test_episodes(kind: str, every: int = 8):
+    """The benchmark's episode with the agent behind the API (service/episodes.py,
+    what scripts/service_sweep.py runs on a real model), traced as the
+    benchmark traces one."""
+    print(f"episodes through the API [{kind}]")
+    from pasarbench.db import Database
+    from pasarbench.harness.backends import ScriptedBackend
+    from pasarbench.harness.loop import run_episode
+    from pasarbench.harness.simulator import SilentUser
+    from pasarbench.harness.trace import TraceWriter, read_episode
+    from pasarbench.harness.types import Budget
+    from pasarbench.rescore import all_tasks, rescore_file
+    from pasarbench.service import episodes
+    from pasarbench.service.models import solutions
+
+    engine, url = database(kind, "episodes")
+    tasks = list(all_tasks().values())[::every]
+    agent = episodes.Agent("scripted", "scripted", None)
+    root = os.path.join(TMP, f"episodes-{kind}")
+    keys = ("step", "turn", "context_messages", "model_content")
+    passed = shown = same = agree = 0
+    bad: list = []
+    with client(make_app(engine, url)) as c:
+        for i, task in enumerate(tasks):
+            out = episodes.run(task, 0, client=c, operator=OP, engine=engine, agent=agent,
+                               simulator=SilentUser(), budget=Budget(),
+                               writer=TraceWriter(root=root, run_id="service/full"),
+                               tenant_id=f"e{i:04d}")
+            ref = TraceWriter(root=root, run_id="benchmark/full")
+            run_episode(task, Database.fresh(task.db_patch),
+                        ScriptedBackend(solutions()[task.task_id]), trace=ref, run_index=0)
+            ref.close()
+
+            def view(recs):
+                return ([({k: s[k] for k in keys},
+                          [(tc["name"], tc["arguments"]) for tc in s["tool_calls"]],
+                          [{k: r.get(k) for k in ("name", "args", "ok", "error", "result_chars",
+                                                  "result_sha1", "payment")}
+                           for r in s["tool_results"]]) for s in recs if s["type"] == "step"],
+                        [(e["turn"], e["ended"], e["text"]) for e in recs
+                         if e["type"] == "event" and e["kind"] == "user_turn"])
+            name = f"{task.task_id}__r0.jsonl"
+            mine = view(read_episode(os.path.join(root, "service", "full", name)))
+            theirs = view(read_episode(os.path.join(root, "benchmark", "full", name)))
+            rs = rescore_file(out.trace)
+            passed += out.passed and out.stop == "done"
+            shown += bool(out.prompt_ok and out.tools_ok)
+            same += mine == theirs
+            agree += rs.status == "rescored" and rs.current == out.passed
+            if mine != theirs or not out.passed:
+                bad.append((task.task_id, out.stop, out.failures[:1]))
+    n = len(tasks)
+    check(f"[{kind}] {n} episodes through the API, each task's reference solution: every "
+          f"one passes, the model shown the benchmark's own prompt and tools ({passed}, "
+          f"{shown})", passed == shown == n, bad[:3])
+    check(f"[{kind}] …each traced step for step as the benchmark traces the same episode: "
+          f"its calls and arguments, the answers' digests and lengths, its replies, the "
+          f"context's length, the customer's turns ({same}/{n})", same == n, bad[:3])
+    check(f"[{kind}] …and each trace re-scores to the service's verdict, the benchmark's "
+          f"tools replaying the calls the service ran ({agree}/{n})", agree == n)
     engine.dispose()
 
 
@@ -899,6 +971,48 @@ def test_limits_and_budgets():
               and int(r.headers["retry-after"]) > 0, r.text)
     engine.dispose()
 
+    # A cap on a conversation's model calls in all, as the benchmark caps an
+    # episode's steps (scripts/service_sweep.py sets it to them).
+    engine, url = database("sqlite", "steps")
+    with client(make_app(engine, url, conversation_max_steps=2)) as c:
+        h = tenant(c, "acme")
+        cid = c.post("/v1/conversations", headers=h, json={"user_id": "U001"}).json()[
+            "conversation_id"]
+        r = c.post(f"/v1/conversations/{cid}/messages", headers=h,
+                   json={"content": "cancel O1001, digits 6789"}).json()
+        r2 = c.post(f"/v1/conversations/{cid}/messages", headers=h,
+                    json={"content": "hello?"}).json()
+        check("a conversation's cap on model calls in all holds inside a turn and across "
+              "turns: two in the first, none in the next, each ended as max_steps",
+              (r["stop_reason"], r["usage"]["model_calls"], r2["stop_reason"],
+               r2["usage"]["model_calls"]) == ("max_steps", 2, "max_steps", 0)
+              and r["fallback"], (r["stop_reason"], r["usage"], r2["stop_reason"]))
+    engine.dispose()
+
+
+def test_market():
+    print("market")
+    from pasarbench.harness.prompts import system_prompt
+    engine, url = database("sqlite", "market")
+    with client(make_app(engine, url)) as c:
+        h = tenant(c, "acme")
+        own = c.post("/v1/conversations", headers=h, json={"user_id": "U001"}).json()
+        there = c.post("/v1/conversations", headers=h,
+                       json={"user_id": "U001", "market": "ID"}).json()
+        shown = c.get(f"/v1/conversations/{there['conversation_id']}/messages"
+                      f"?include_system=true", headers=h).json()[0]["content"]
+        check("a conversation is in her own country's market unless the storefront says "
+              "another, and the agent is told the one it is in (WHAT_FAILED #67)",
+              own["market"] == "MY" and there["market"] == "ID"
+              and shown == system_prompt("U001", "ID", "preload"), (own["market"],
+                                                                     there["market"]))
+        bad = c.post("/v1/conversations", headers=h, json={"user_id": "U001", "market": "ZZ"})
+        odd = c.post("/v1/conversations", headers=h, json={"user_id": "U001", "market": "id"})
+        check("…a market no world has is refused (400), one not written as one is invalid "
+              "(422)", (bad.status_code, odd.status_code) == (400, 422),
+              (bad.status_code, odd.status_code))
+    engine.dispose()
+
 
 def test_provider_failure():
     print("provider failure")
@@ -1319,6 +1433,7 @@ def main() -> int:
         test_api()
         test_turn_control()
         test_limits_and_budgets()
+        test_market()
         test_provider_failure()
         test_bad_arguments("sqlite")
         test_nul("sqlite")
@@ -1328,6 +1443,7 @@ def main() -> int:
         test_zero_usage_is_estimated()
         test_logs_hold_no_message()
         test_parity("sqlite")
+        test_episodes("sqlite")
         if PG:
             test_migrations("postgres")
             test_concurrency("postgres")
@@ -1336,6 +1452,7 @@ def main() -> int:
             test_order("postgres")
             test_postgres_api()
             test_parity("postgres")
+            test_episodes("postgres")
         else:
             skip("PostgreSQL: migrations, concurrency, parity",
                  "set PASAR_TEST_POSTGRES_URL to a database these tests may wipe")
