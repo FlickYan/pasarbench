@@ -97,6 +97,9 @@ class OpenConversation(BaseModel):
                          "agent, as the policy says")
     model: Text | None = Field(None, max_length=200,
                                description="default: PASAR_DEFAULT_MODEL")
+    market: str | None = Field(None, pattern=r"^[A-Z]{2}$",
+                               description="the market she is shopping in, which the agent "
+                               "is told: SG, MY, ID, TH, VN or PH (default: her country)")
 
 
 class CustomerMessage(BaseModel):
@@ -474,7 +477,7 @@ def create_app(settings: Settings | None = None, engine: Engine | None = None) -
             return stored
         try:
             out = sent(Conversation, runtime.open_conversation(tenant_id, body.user_id,
-                                                               body.model))
+                                                               body.model, body.market))
         except BaseException:
             # One transaction, rolled back: nothing happened, and the key is free.
             if idempotency_key:

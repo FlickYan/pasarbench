@@ -214,8 +214,15 @@ class Runtime:
             raise E.NotFound(f"no conversation {cid!r}")
         return row
 
-    def open_conversation(self, tenant_id: str, user_id: str,
-                          model: str | None = None) -> dict[str, Any]:
+    def open_conversation(self, tenant_id: str, user_id: str, model: str | None = None,
+                          market: str | None = None) -> dict[str, Any]:
+        """`market`: the storefront's market the customer is shopping in, which
+        the agent is told (the system prompt) -- by default her own country.
+        A customer from Malaysia on the Indonesian site is in the Indonesian
+        market, as the benchmark's task T09 has it (WHAT_FAILED #67)."""
+        from ..generate import MARKETS
+        if market is not None and market not in MARKETS:
+            raise E.BadRequest(f"no market {market!r}: one of {', '.join(sorted(MARKETS))}")
         name = model or self.settings.default_model
         try:
             spec = self.registry.resolve(name)
@@ -231,12 +238,13 @@ class Runtime:
                                                            cu.c.user_id == user_id)).first()
             if cust is None:
                 raise E.NotFound(f"no customer {user_id!r}")
-            prompt = system_prompt(user_id, cust.country, self.settings.policy_mode)
+            market = market or cust.country
+            prompt = system_prompt(user_id, market, self.settings.policy_mode)
             cid = "cv_" + uuid.uuid4().hex[:24]
             now = utcnow()
             conn.execute(sql_insert(S.conversations).values(
                 conversation_id=cid, tenant_id=tenant_id, user_id=user_id,
-                market=cust.country, status="open", model=spec.name,
+                market=market, status="open", model=spec.name,
                 model_settings=spec.settings(), policy_mode=self.settings.policy_mode,
                 prompt_digest=digest(prompt), policy_digest=POLICY_DIGEST,
                 tools_digest=TOOLS_DIGEST, tool_checks=CHECKS,
@@ -504,7 +512,9 @@ class Turn:
         tokens = int(self.row.prompt_tokens + self.row.completion_tokens)
 
         while True:
-            if steps >= s.max_steps_per_turn:
+            if steps >= s.max_steps_per_turn or (
+                    s.conversation_max_steps
+                    and int(self.row.steps) + steps >= s.conversation_max_steps):
                 stop = "max_steps"
                 break
             if time.monotonic() - t0 >= s.max_turn_seconds:

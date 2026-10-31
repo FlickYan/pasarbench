@@ -135,7 +135,8 @@ class Registry:
         return key_for(spec.base_url, override=None)
 
     def check_ready(self, spec: ModelSpec) -> None:
-        if spec.api in APIS and self.key(spec) in ("", "EMPTY") and "localhost" not in spec.base_url:
+        from ..sweep import _local          # localhost, 127.0.0.1: a local server needs no key
+        if spec.api in APIS and self.key(spec) in ("", "EMPTY") and not _local(spec.base_url):
             from ..sweep import key_hint
             raise ModelError(f"model {spec.name!r} has no API key on this server: "
                              f"{key_hint(spec.base_url, override=None)}")

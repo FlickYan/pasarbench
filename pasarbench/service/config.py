@@ -19,6 +19,8 @@ registry (models.py), each from its own provider's variables only.
     PASAR_MAX_TURNS               40 customer turns a conversation
     PASAR_CONVERSATION_BUDGET_USD 0.50 a conversation, all its model calls
     PASAR_CONVERSATION_MAX_TOKENS 2000000
+    PASAR_CONVERSATION_MAX_STEPS  0: model calls a conversation may make in all (0: no cap;
+                                  scripts/service_sweep.py sets the benchmark's 30)
     PASAR_PROVIDER_CONCURRENCY    16 calls in flight to one provider, per process
     PASAR_PROVIDER_ACQUIRE_TIMEOUT 30 seconds to wait for one of them
     PASAR_MAX_CONCURRENT_TURNS    48 turns at once, per process; past it, 503
@@ -65,6 +67,7 @@ class Settings:
     max_turns: int = 40
     conversation_budget_picousd: int = usd_to_picousd("0.50")
     conversation_max_tokens: int = 2_000_000
+    conversation_max_steps: int = 0
     provider_concurrency: int = 16
     provider_acquire_timeout: float = 30.0
     max_concurrent_turns: int = 48
@@ -98,6 +101,7 @@ class Settings:
             conversation_budget_picousd=usd_to_picousd(_env("PASAR_CONVERSATION_BUDGET_USD",
                                                             "0.50")),
             conversation_max_tokens=int(_env("PASAR_CONVERSATION_MAX_TOKENS", "2000000")),
+            conversation_max_steps=int(_env("PASAR_CONVERSATION_MAX_STEPS", "0")),
             provider_concurrency=int(_env("PASAR_PROVIDER_CONCURRENCY", "16")),
             provider_acquire_timeout=float(_env("PASAR_PROVIDER_ACQUIRE_TIMEOUT", "30")),
             max_concurrent_turns=int(_env("PASAR_MAX_CONCURRENT_TURNS", "48")),
