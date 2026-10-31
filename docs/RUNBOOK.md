@@ -3418,6 +3418,74 @@ few words that differ between the Malay and the Indonesian moves the decision,
 and whether the floor holds under a policy in her language or without the
 names, is not tested.
 
+### 1z. Does the service change what the agent does? A real model through the API (API only, no GPU)
+
+The service runs the benchmark's tools, policy, prompt and model backends
+unchanged, and the parity test shows it on all 313 tasks — with each task's
+reference solution as the agent, which never reads its prompt and never
+hesitates. A real model reads everything the service shows it, and its turns
+take seconds: this runs the sweep's episodes with the agent behind the
+service's HTTP API, so the same agent meets the same customer through a server,
+a database, locks, a ledger and the network (`scripts/service_sweep.py`,
+`pasarbench/service/episodes.py`). Two questions. Does the agent do as well
+there as in the sweep? And what does the service measure on the way: the
+agent's cost per conversation from its ledger, the cache's share of the
+prompt, and how much of a turn's time is the service's.
+
+**The run.** 1s's parts again, through the service, each paired by task with
+its recording: the 39 parts of the hard edition, k=3, customer 3 on
+qwen3.8-flash; thinking off. Two agents: deepseek-flash, which passed all 117
+of `V-dsk-flash-parts` (does the service lose anything?), and deepseek-v4-pro,
+which passed 93 of `V-dsk-parts` (room to move either way). Check the setup
+for free first, with a stand-in provider on 127.0.0.1 and no key:
+
+```bash
+pip install -r requirements-service.txt          # once: the service's own dependencies
+python scripts/service_sweep.py --self-test      # the whole path, no key, no cost: ~1 minute
+set -a; . ./.env; set +a      # the agent's key (DEEPSEEK_API_KEY), the customer's (DASHSCOPE_API_KEY)
+python scripts/service_sweep.py --model deepseek-flash \
+  --simulator openai --sim-model qwen3.8-flash \
+  --sim-url https://dashscope-intl.aliyuncs.com/compatible-mode/v1 \
+  --sim-extra-body '{"reasoning_effort":"low"}' --customer 3 \
+  --suite generated \
+  --traps duplicate_refund_escalate,out_of_window_offer_voucher,cancel_while_processing \
+  -k 3 --run-id S-dsk-flash-parts --workers 8 \
+  --compare traces/V-dsk-flash-parts/full
+# the same with --model deepseek-v4-pro --run-id S-dsk-parts --compare traces/V-dsk-parts/full
+```
+
+117 conversations each. Recorded, deepseek-flash's sent 33,500 prompt tokens a
+conversation, 93% from the cache, and 612 completion: $0.19 for all 117 at the
+price book's rates (2026-10-13); deepseek-v4-pro's, $0.50. The customer's
+2,700 prompt tokens a conversation cost less. `--max-usd` (default $5) starts
+no episode past it. The service's process gets one key, DEEPSEEK_API_KEY; the
+customer's stays in the script's process. The money guard is off
+(`--strict-money` turns it on), as the sweep has none. The recordings are from
+2026-10-12: should a difference appear, run 1s's sweep command again the same
+day before reading it as the service's, so that a model update cannot pass
+for one.
+
+**What to read**, in `traces/S-dsk-flash-parts/report.md`:
+
+1. **The checks.** The model was shown the benchmark's own system prompt and
+   tool schemas in every conversation; every trace re-scores to the service's
+   verdict, the benchmark's tools replaying the calls the service ran; every
+   tenant replays identically. A check that fails is a difference between the
+   service and the benchmark, and comes before any rate.
+2. **The comparison**, `compare_cells.py`'s paired line: tasks better and
+   worse, and its p. At 39 tasks only a large difference resolves; the same
+   rate within noise is what "the service does not change the agent" can mean
+   here.
+3. **The service's numbers**: the agent's cost per conversation and per
+   resolved one, from the ledger; tokens and the cache's share; a turn's time
+   split into the model's, the tools' and the service's (the turn as the
+   client saw it, less the model's and the tools' time the service recorded).
+   These go into docs/SERVICE.md, measured, beside the mock's.
+
+`--resume` runs what a provider's error ended, or Ctrl-C left. A second agent
+runs the same command with its own `--model` and `--run-id`, and
+`--compare traces/V-<agent>-parts/full`.
+
 ### Publishing the traces (v44)
 
 Every recorded run as a Hugging Face dataset: one JSON line per episode, its
@@ -4297,6 +4365,7 @@ Phase 4  on 1x B200 (Modal or Lambda, GPU_GUIDE.md):   ~10-20 hours
          grpo, from round 2's adapters (v45)            ~4-6 hours
          customer3, then edition3 (v47, v48)            ~2 hours
 Phase 1  the hard edition against its parts (1s)       per agent, 225 episodes
+Phase 1  the parts again, through the service (1z)      per agent, 117 episodes, under $1
 Phase 3  serving, one stage on the same node (v68)      optional, ~1 h
 ```
 

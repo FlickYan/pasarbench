@@ -2478,6 +2478,32 @@ escalations, three stored messages).
 **Lesson.** A fix is new code with the original's blind spots. Review it as
 code, against the same spec — here the policy the benchmark already had.
 
+## 67. The service told the agent the wrong market
+
+**What happened.** The system prompt's second line tells the agent where it
+is: "user_id **U001** in the ID market". The service filled in the
+customer's country from her profile; the benchmark fills in the task's market.
+They differ once in 313 tasks: T09, a Malaysian customer whose mouldy dates
+came from the Indonesian site, paid in rupiah. Through the service, a real
+model would have been told she was in the Malaysian market. The parity test
+sent every reference solution through the API and found the verdicts, the
+worlds and the action logs equal, all 313 — and a scripted agent never reads
+its prompt. The first run of the real-model kit (`scripts/service_sweep.py`,
+RUNBOOK 1z), which compares each conversation's prompt digest with the
+benchmark's, found it: 214 of 215.
+
+**Fix.** The market is the storefront's to say: `POST /v1/conversations`
+takes `market`, one of the six markets the worlds know, by default the
+customer's country, and the kit passes the task's. The parity test now
+compares the prompt itself, byte for byte, on all 313 tasks; `test_market`
+covers the default, a market given, and one that does not exist. Found on the
+way: a model served from `http://127.0.0.1` was refused as having no key —
+the check knew only the word "localhost"; it now asks what the sweep asks.
+
+**Lesson.** A parity test covers what its stand-in reads. The scripted agent
+reads the tool results, so that is what parity covered; a real model reads the
+whole conversation, the prompt first.
+
 ---
 
 ## What this list is for

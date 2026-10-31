@@ -30,6 +30,12 @@ What holds it together, and how each claim is checked:
 - **The model is an untrusted client.** Its arguments pass the tools' checks,
   the platform's guards (money, isolation, values) and the database's own rules;
   whatever fails is answered as a refusal, and the turn goes on.
+- **A real model sees what the benchmark shows it.** The system prompt and the
+  tool schemas, byte for byte, on all 313 tasks; and the benchmark's own
+  episodes run through the API — a real model as the agent, the benchmark's
+  simulated customer — are traced in the benchmark's format, so its tools
+  re-score them and its comparisons read them (`scripts/service_sweep.py`,
+  [below](#with-a-real-model)).
 
 An independent review of the service before release reported thirteen defects
 — a model's bad arguments could crash a turn, a key could be freed after its
@@ -41,7 +47,8 @@ PostgreSQL. Each is fixed and pinned by a test ([WHAT_FAILED](WHAT_FAILED.md)
 
 ```
 pip install -r requirements-service.txt      # the benchmark itself still needs nothing
-python -m tests.test_service                 # 91 checks on SQLite; PASAR_TEST_POSTGRES_URL, 23 more
+python -m tests.test_service                 # 98 checks on SQLite; PASAR_TEST_POSTGRES_URL, 27 more
+python scripts/service_sweep.py --self-test  # the real-model kit on a stand-in provider: no key
 ```
 
 ---
@@ -93,7 +100,7 @@ running compose has it set, and only the variables the file names
 KEY=psk_...
 J=(-H "Authorization: Bearer $KEY" -H "Content-Type: application/json")
 curl -s localhost:8000/v1/conversations "${J[@]}" -H "Idempotency-Key: open-7f3" \
-     -d '{"user_id": "U002"}'
+     -d '{"user_id": "U002"}'           # "market": "ID" if she shops on another site
 #  {"conversation_id": "cv_2c8a...", "model": "mock", "provenance": {"prompt_digest": ...}, ...}
 
 curl -s localhost:8000/v1/conversations/cv_2c8a.../messages "${J[@]}" -H "Idempotency-Key: msg-1" \
@@ -335,7 +342,8 @@ runs it:
 
 | what | how |
 |---|---|
-| parity with the benchmark | all 313 reference solutions through the HTTP API; verdict, final world and action log against the benchmark's own episode; on SQLite and PostgreSQL |
+| parity with the benchmark | all 313 reference solutions through the HTTP API; verdict, final world and action log against the benchmark's own episode, and the system prompt the model is shown, byte for byte; on SQLite and PostgreSQL |
+| the benchmark's episodes through the API | the episode driver behind `scripts/service_sweep.py`: each traced step for step as the benchmark traces the same episode (calls, arguments, the answers' digests, replies, context length), re-scored to the same verdict; the whole kit on a stand-in provider with no key (`--self-test`, in CI): the model's real HTTP path, the customer's, the ledger, replay, and no key in the server's process |
 | replay | a quarter of those tenants replayed; a tampered row found; every load run replayed |
 | concurrency | eight refunds raced; the lock removed and the double refund shown; a stale cancellation retried by the version check (PostgreSQL) |
 | isolation | another customer's order invisible, a credit naming it refused, two tenants' rows apart |
@@ -466,6 +474,53 @@ What it says:
    p50 1,207 ms, reads (no lock) 145 ms, 64 clients on 64 different customers.
 6. **Under all of it, every tool call replayed identically.**
 
+### With a real model
+
+The load test runs the service's own mock agent, so that what it measures is
+the service. `scripts/service_sweep.py` runs a real one: the benchmark's sweep
+with the agent behind the HTTP API — the same tasks, the benchmark's simulated
+customer (a second model, as in the sweep), and the task's verifier reading
+the tenant's world and action log from the database
+(`pasarbench/service/episodes.py`). Each episode is traced in the benchmark's
+format, its steps rebuilt from the service's own records, so
+`compare_cells.py` pairs it, task by task, with the sweep's recording of the
+same agent.
+
+```bash
+pip install -r requirements-service.txt
+python scripts/service_sweep.py --self-test        # a stand-in provider on 127.0.0.1: no key, no cost
+set -a; . ./.env; set +a
+python scripts/service_sweep.py --model deepseek-flash --customer 3 \
+  --suite generated --traps duplicate_refund_escalate,out_of_window_offer_voucher,cancel_while_processing \
+  -k 3 --run-id S-dsk-flash-parts --workers 8 --compare traces/V-dsk-flash-parts/full
+```
+
+What it reports, from the service's records: the pass rates; the agent's cost
+per conversation and per resolved one, from the ledger; the prompt tokens and
+the cache's share; and a turn's time split three ways — the model's (the calls
+the service timed), the tools' (their transactions) and the service's (the
+rest of what the client waited for: HTTP, admission, the lease, the
+transactions around them). Before any of it, three checks: the benchmark's own
+prompt and tools in every conversation; every trace re-scored to the
+service's verdict by the benchmark's tools, replaying the calls the service
+ran; every tenant replayed by the service, identically. The service is
+configured with the benchmark's caps — 30 model calls a conversation
+(`PASAR_CONVERSATION_MAX_STEPS`), 120,000 tokens, 180 seconds a turn, 20
+customer turns — so a turn stops where the episode would have; the money guard
+is off, as the sweep has none; the server's process holds the agent's key and
+no other.
+
+**Not measured yet: RUNBOOK 1z**, deepseek-flash and deepseek-v4-pro on 1s's
+39 parts, k=3, each against its recording. The recordings' own numbers, at the
+price book's rates, are what to expect: $0.0016 a conversation for flash (117
+of 117 passed) and $0.0043 for v4-pro (93 of 117), with 93% and 98% of the
+prompt from DeepSeek's cache. What has run: the self-test, the whole path on
+the stand-in; and all 215 tasks of the first two editions through the kit with
+each task's reference solution as the agent — every one passed, every check
+holding (215 prompts as the benchmark's, 215 traces re-scored to the same
+verdict, 640 tool calls replayed identically). That run is what found
+[WHAT_FAILED #67](WHAT_FAILED.md).
+
 ---
 
 ## Operating it
@@ -482,6 +537,7 @@ What it says:
 | `PASAR_RATE` / `PASAR_BURST` | 10 / 40 | requests a second per tenant, per process |
 | `PASAR_MAX_STEPS_PER_TURN` / `..._TOOL_CALLS_PER_TURN` / `PASAR_MAX_TURN_SECONDS` | 16 / 24 / 120 | a turn's caps |
 | `PASAR_CONVERSATION_BUDGET_USD` | 0.50 | |
+| `PASAR_CONVERSATION_MAX_STEPS` | 0 | model calls a conversation may make in all; 0 is no cap (the kit sets the benchmark's 30) |
 | `PASAR_LEASE_SECONDS` | 60 | renewed every third of it while a turn runs; a dead process frees its conversation within one |
 | `PASAR_IDEMPOTENCY_HOURS` | 24 | |
 | `PASAR_STRICT_MONEY` | 1 | the platform's money guard |
