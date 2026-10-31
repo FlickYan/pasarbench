@@ -8,20 +8,22 @@ tenants may use the same order id and never see each other's. The service's
 own tables hold what a live deployment needs and the benchmark never did:
 tenants and their keys, conversations and their messages, the audit log of
 every tool call, idempotency keys, the usage ledger, the price book, the id
-counter and the outbox.
+counter and the outbox -- and, since v82, what the processes of a deployment
+share: who is serving, a request bucket a tenant, and the breakers open.
 
 Money is integer minor units in its currency, as in the benchmark (IDR and VND
 have no minor unit); model cost is integer picodollars (costs.py). Times of the
 world are kept as the benchmark writes them, "YYYY-MM-DD HH:MM" in Singapore
 time, because the tools read them that way; the service's own times are
-timestamps with a zone.
+timestamps with a zone -- but for what the processes share, seconds since the
+epoch on the database's clock, which one statement does arithmetic on.
 """
 
 from __future__ import annotations
 
-from sqlalchemy import (JSON, BigInteger, Boolean, CheckConstraint, Column, DateTime, Float,
-                        ForeignKeyConstraint, Index, Integer, MetaData, String, Table, Text,
-                        func)
+from sqlalchemy import (DDL, JSON, BigInteger, Boolean, CheckConstraint, Column, DateTime,
+                        Float, ForeignKeyConstraint, Index, Integer, MetaData, String, Table,
+                        Text, event, func)
 from sqlalchemy.dialects.postgresql import JSONB
 
 # Stable constraint names, so a migration names what it creates the same way on
@@ -599,3 +601,49 @@ outbox = Table(
     _tenant_fk("outbox"),
 )
 Index("ix_outbox_pending", outbox.c.delivered_at, outbox.c.event_id)
+
+# ---------------------------------------------------------------------------
+# What the processes of a deployment share (v82, limits.py). UNLOGGED on
+# PostgreSQL: none of it is worth a disk write a request, and after a crash it
+# starts again empty -- every bucket full, every process back at its next
+# heartbeat, every breaker closed.
+# ---------------------------------------------------------------------------
+
+# Every process serving, written as it starts and at every heartbeat, until
+# when it is counted: three of its own heartbeats on, whatever the others'.
+service_nodes = Table(
+    "service_nodes", metadata,
+    Column("node", String(64), primary_key=True),
+    Column("host", String(255), nullable=False),
+    Column("pid", Integer, nullable=False),
+    Column("version", String(32), nullable=False),
+    Column("started_at", Float, nullable=False),
+    Column("seen_at", Float, nullable=False),
+    Column("expires_at", Float, nullable=False),
+)
+
+# A tenant's requests, for every process: how many its bucket holds -- the
+# requests admitted, drained at the rate since -- and when that was written.
+# In requests, not seconds, so that processes with other settings (a rolling
+# change of PASAR_RATE) agree on what it holds.
+rate_limits = Table(
+    "rate_limits", metadata,
+    Column("bucket", String(128), primary_key=True),
+    Column("level", Float, nullable=False),
+    Column("at", Float, nullable=False),
+)
+
+# A provider's breaker, opened by one process until `open_until`, which every
+# other holds open as long.
+provider_breakers = Table(
+    "provider_breakers", metadata,
+    Column("provider", String(64), primary_key=True),
+    Column("open_until", Float, nullable=False),
+    Column("opened_at", Float, nullable=False),
+    Column("opened_by", String(64), nullable=False),
+)
+
+SHARED = (service_nodes, rate_limits, provider_breakers)
+for _t in SHARED:
+    event.listen(_t, "after_create",
+                 DDL(f"ALTER TABLE {_t.name} SET UNLOGGED").execute_if(dialect="postgresql"))

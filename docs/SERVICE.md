@@ -50,6 +50,14 @@ What holds it together, and how each claim is checked:
   waiting on a ten-second model at once are served on 94 threads and 179 MB,
   where v80 needed 1,984 threads and 261 MB, at the same throughput and with
   shorter turns ([below](#turns-that-wait-without-a-thread-v81)).
+- **One limit for the deployment.** Two servers in front of a provider that
+  takes 8 calls at once: with each limit a process's own, as through v81, they
+  had 16 in flight, the provider refused 59–61% of their calls, and under a
+  third of the turns were answered; with the limits shared through the
+  database (v82), never more than 8, nothing refused, every turn answered —
+  6.4–6.5 a second against 3.9–4.2 ([below](#one-limit-for-the-deployment-v82)). A
+  tenant's rate holds whichever server it reaches, and a provider failing for
+  one server is not called from the other 11–16 ms on.
 
 An independent review of the service before release reported thirteen defects
 — a model's bad arguments could crash a turn, a key could be freed after its
@@ -57,11 +65,14 @@ turn had written, PostgreSQL returned rows in another order — twelve reproduce
 with a script, the thirteenth with two local servers. Its second pass, over the
 fixes, found three more that the fixes had made, and NUL characters on
 PostgreSQL. Each is fixed and pinned by a test ([WHAT_FAILED](WHAT_FAILED.md)
-#59–#66).
+#59–#66). The review of v82's shared limits reproduced seven more — what they
+did when the database was not migrated, not answering or busy behind a
+writer — and its second pass one that a fix had made; each is fixed and
+tested before release (#71).
 
 ```
 pip install -r requirements-service.txt      # the benchmark itself still needs nothing
-python -m tests.test_service                 # 127 checks on SQLite; PASAR_TEST_POSTGRES_URL, 37 more
+python -m tests.test_service                 # 146 checks on SQLite; PASAR_TEST_POSTGRES_URL, 50 more
 python scripts/service_sweep.py --self-test  # the real-model kit on a stand-in provider: no key
 ```
 
@@ -272,12 +283,14 @@ table below); a tampered row found.
   `test_ids` holds one customer's write open and times another's).
 - **Reads take no lock** and see one snapshot (REPEATABLE READ).
 - **Backpressure, not queues.** Per process: at most `PASAR_MAX_CONCURRENT_TURNS`
-  turns (else 503 at once, Retry-After); per provider, at most
-  `PASAR_PROVIDER_CONCURRENCY` calls in flight (a turn waits up to 30 s for a
-  slot, then ends with a fallback reply, `provider_unavailable`); per tenant, a
-  token bucket (429). A provider that fails five times in a row is not called
-  for 30 s (circuit breaker); transient errors are retried with full jitter,
-  three tries.
+  turns (else 503 at once, Retry-After). Per provider, at most
+  `PASAR_PROVIDER_CONCURRENCY` calls in flight — the deployment's, each process
+  taking its share (v82) — and a turn waits up to 30 s for a slot, then ends
+  with a fallback reply, `provider_unavailable`. Per tenant, a bucket every
+  process shares (429). A provider that fails five times in a row is not
+  called for 30 s, from any process (circuit breaker); transient errors are
+  retried with full jitter, three tries, and no call is sent while its
+  provider's breaker is open.
 - **One turn at a time per conversation**, across processes: a lease row with
   an expiry (60 s), taken with the row it protects (`UPDATE ... RETURNING`),
   renewed by a heartbeat every 20 s while the turn runs and checked by every
@@ -364,7 +377,8 @@ table below); a tampered row found.
   by construction: an exception is logged as its type, SQLSTATE and frames, not
   its message (a database's can quote the row it refused), the engines keep
   bound values out of their errors, and uvicorn's loggers share the formatter.
-  `/v1/admin/profile` samples where the process's CPU goes, every thread
+  `/v1/admin/profile` samples where the process's CPU goes, every thread, and
+  `/v1/admin/nodes` lists the processes that share the deployment's limits
   (Operating it).
 - **Keys go to their provider and stop there.** Each from its provider's own
   variables, to that provider's endpoint; a redirect is refused, not followed
@@ -393,15 +407,17 @@ runs it:
 | a customer's slice, kept | a second read with her write_seq unchanged uses the first's slice (one read of her tables, the same answer); a write makes the next read read again, and it sees the write; rows keyed by plain str; `copy_world` equal to `deepcopy`, a nested value included, and nothing the copy changes reaching the original; off at 0; on both databases |
 | the pool | a connection back within seconds is lent with no round trip, one idle longer is pinged, and one whose session the server ended (`pg_terminate_backend`) is replaced either way before it is lent: the next transaction runs, on a new session (PostgreSQL) |
 | turns that wait | 24 turns at once on 4 worker threads, three model calls of 0.5 s each, done together in 1.7 s, not the 9 they would take a thread each; a running turn finishes in 0.6 s while every other handler's thread is held for three; a turn cancelled while it waits for a thread gives its slot back; the gate's slots shared by threads and coroutines, its retries the same from either |
+| limits a deployment shares | 16 calls at once shared out 6, 5 and 5, and given back by a process that leaves at once and by one that dies within three heartbeats; a limit resized under waiting threads and coroutines, and shrunk below the slots in use; a tenant's bucket for two processes refusing the 4th request where each process's own admitted 6, remembering a refusal until the time it gave, draining a bucket spent under a slower rate at the new one, two processes with different rates on one bucket admitting no more than the looser allows, and on a database not migrated counting alone, as v81 did; a stop held on a heartbeat that never ends going within its timeout, and no row written after it; a breaker opening in one process held open in the other and adopted once; a call not sent, nor sent again, once its provider's breaker is open, and not counted the provider's failure; two servers on one database refusing a tenant's 3rd request whichever it reaches; `auto` sharing on PostgreSQL, and on SQLite for `serve --workers 2`; a malformed `PASAR_WORKERS` stopping `serve` alone; on PostgreSQL, with heartbeats 30 s apart, a join, a leave and an opening heard at once, a listener whose session is ended listening again with nothing logged outside the service's lines, and the tables UNLOGGED — on both databases |
 | a model call's transport | the same request through urllib and httpx side by side — the body byte for byte, the key, the content type, the user agent — the same answer, three calls over one connection kept alive; the same failures (a 503 and a 400 word for word, retried and not; a timeout, a refused connection); a redirect followed nowhere, the key never reaching the host it names |
 | the profiler | against threads whose CPU is known: a long call charged 0.392 s of its 0.400, short bursts between waits 0.165 of 0.166, a thread waiting throughout nothing, and the stacks' sum the process's CPU; the endpoint is the operator's, runs one at a time (409), ends on DELETE; the CLI's summary and folded stacks |
-| schema | migration to head equals `schema.py`; down and up again; 0002 on a database that has tenants: each gets its sequence after its counter, and down again the counter takes the last value back |
+| schema | migration to head equals `schema.py`, 0003's shared tables included; down and up again; 0002 on a database that has tenants: each gets its sequence after its counter, and down again the counter takes the last value back |
 | the API's shape | the route list pinned; every `/v1` operation documents its problem responses |
 | the image | on every push, run as a user runs it (`scripts/smoke_image.sh`): its CLI migrates and makes a tenant; its HEALTHCHECK says healthy; it runs as a user other than root and holds no `.env`; over real HTTP a turn, the turn retried under its key (the same bytes, no second turn), a stream, the audit log (`scripts/smoke_api.py`); every call replayed; stopped by SIGTERM. Published only after it passes |
 
 `scripts/load_test.py` measures a real server (uvicorn in its own process,
 real HTTP) — its throughput, its latencies and the CPU a turn costs it — and
-replays what it made. `scripts/smoke_api.py` checks any running
+replays what it made; `scripts/limits_check.py` measures two of them on one
+database, against a stand-in provider that counts what it is sent (v82). `scripts/smoke_api.py` checks any running
 server, a deployed one included, on a tenant made for it.
 
 ### 6. Cost accounting
@@ -721,7 +737,6 @@ at a random moment of the first twenty seconds (`--ramp-s 20`).
 | 64 clients, 400 ms a mock call, gate 64 | v80 | 31.0 (28.5–31.7) | 20.1 (19.4–22.3) | 1,553 / 2,116 / 2,394 | 22 / 111 | 133 | 104 |
 |  | v81 | 31.0 (27.6–32.7) | 19.9 (19.1–24.3) | 1,541 / 2,113 / 2,303 | 19 / 140 | 49 | 100 |
 
-ramp v80t1000 2 replay [6858, 6849] True [{'200': 2990}, {'200': 2989}] retries [15, 8] machine [89.6, 80.4] client [40.7, 39.5] secs [196.39, 190.19]
 
 What it says:
 
@@ -762,6 +777,173 @@ What it says:
    (`PASAR_KEEP_ALIVE_SECONDS`), and the load test counts every request it
    loses — run again, v81 lost none of 3,000 where v80, still at 5 s, lost 16
    (#69).
+
+### One limit for the deployment (v82)
+
+A process is limited by its CPU alone since v81, so more turns come from more
+processes — `serve --workers N`, or replicas behind a load balancer — and
+through v81 every limit was a process's own: N processes allowed a tenant N
+times its rate, a provider N times the calls it takes at once, and had N
+breakers, each of which had to see a provider fail before it stopped calling
+it. v82 shares them through the database the processes already share
+(`limits.py`). `PASAR_LIMITS=auto`, the default, shares them on PostgreSQL and
+keeps them each process's own on SQLite, one machine's file (below), unless
+`serve --workers N` runs several processes on it, which share them;
+`deployment` and `process` say which outright, `process` being v81's.
+
+- **Who is serving.** Each process writes its row of `service_nodes` as it
+  starts and every `PASAR_HEARTBEAT_SECONDS` (5), saying until when to count
+  it: three of its own heartbeats on. One that shuts down deletes its row,
+  after any heartbeat in flight and waiting at most 5 s for the database; one
+  that dies stops being counted 15 s on.
+- **A provider's calls, shared out.** Each process takes its share of
+  `PASAR_PROVIDER_CONCURRENCY` by its rank among the rows — 16 over three
+  processes is 6, 5 and 5 — with no statement a call. A share that shrinks
+  takes no slot from a call that holds one (`Slots.resize`).
+- **A tenant's bucket, one for all.** One row a tenant (`rate_limits`) and one
+  statement a request, on the database's clock: the bucket holds requests,
+  drains at the rate a second, and admits while, drained to now, it holds at
+  most burst − 1 (GCRA, counted in requests). Sent through psycopg on a pooled
+  connection in autocommit, a request's check costs about 100 µs of CPU
+  (99–105), where through SQLAlchemy a statement of its shape cost 208. In
+  requests and not seconds, so that processes with other settings agree on
+  what a bucket holds: during a rolling change of `PASAR_RATE` each admission
+  adds one whoever makes it, and the deployment admits no more than the
+  looser setting allows; a bucket filled under a slower rate drains at the new
+  one at once. A refusal is remembered until the time it gives — the bucket
+  only drains with time — so a client sending past its limit as fast as it
+  can costs the database a statement for each request that arrives as a
+  refusal runs out, not one a request.
+- **A breaker's opening, for all.** A process whose breaker opens writes until
+  when (`provider_breakers`), and the others hold theirs open as long — each
+  opening once, so that a call there that succeeds after still closes it. And
+  a call is not sent, nor sent again, while its provider's breaker is open —
+  opened while it waited for its slot or its backoff, here or elsewhere — and a
+  call the breaker stops is not counted the provider's failure.
+- **Heard at once on PostgreSQL.** A join, a leave or an opening is a NOTIFY;
+  each process LISTENs on a connection of its own, out of the pool, and counts
+  again when it hears. On SQLite, or behind a pooler in transaction mode that
+  drops notifications, the next heartbeat carries it.
+- **Nothing worth a disk write.** The three tables are UNLOGGED on PostgreSQL:
+  a commit that wrote only to them does not wait for the log to reach the
+  disk, and after a crash they start again empty — every bucket full, every
+  process back at its next heartbeat, every breaker closed.
+- **A database not yet migrated** to 0003, or a statement that fails: a v82
+  process keeps each limit its own, as v81 did — a tenant's bucket for 5 s at
+  a time, then the database asked again — and says so, in its log, in
+  `pasar_limits_errors_total` and in `GET /v1/admin/nodes`. A database that
+  does not answer at all holds a request's check as it holds the request's
+  every other statement: none has a client-side bound yet (roadmap).
+- **What stays a process's own** is what one process holds: its turns at once
+  (`PASAR_MAX_CONCURRENT_TURNS`) and its threads.
+
+`scripts/limits_check.py` measures it: two servers on one PostgreSQL database,
+each client talking to one of them, in front of a stand-in provider — an
+OpenAI-compatible server on the same machine that answers as the mock agent
+does, after 400 ms ±30%, and counts what it is sent. Each part ran with every
+limit a process's own and with them shared, on the same two vCPUs,
+2026-11-01; the ranges are the runs'.
+
+| two servers, one database | each limit the process's own (`PASAR_LIMITS=process`, as v81) | shared (`deployment`, v82) |
+|---|---|---|
+| ***A provider that takes 8 calls at once***, and refuses past it (429), each server told 8; 32 clients for 30 s; five runs | | |
+| calls in flight, the two servers together, at most | 16 | 8 |
+| calls the provider refused | 862–891 of 1,450–1,492: 59–61% | none, of 605–614 |
+| turns answered | 116–127: 3.9–4.2 a second | 191–194, every one: 6.4–6.5 a second |
+| turns that ended unanswered | 250–291 | none |
+| an answered turn, p50 / p95 (s) | 2.9–3.1 / 4.0–4.1 | 4.9 / 6.5–6.7 |
+| ***A tenant allowed 5 requests a second***, bursts of 5; 8 clients as fast as they can for 10 s; three runs | | |
+| requests admitted | 104–106: 10.4–10.6 a second | 52–53: 5.2–5.3 a second, of the 55 allowed |
+| requests answered, 200 or 429 | 7,063–8,736 | 7,700–8,784 |
+| ***A provider that fails every call*** (503), 45 s; 14 clients on one server, 1 on the other, 16 calls at once allowed; three runs | | |
+| calls sent to it | 59–62 | 33–38 |
+| … by the light server | 18 | 3–8 |
+| the light server's breaker | opened by its own failures, 2.3–4.1 s after the other's | held open for the other's, 11–16 ms after it opened |
+| the light server's turns fail fast from | 4.0–6.1 s | 2.4–2.9 s |
+| ***Processes coming and going***, heartbeats 5 s apart; three runs | | |
+| one killed (SIGKILL): the other takes the whole limit | — | 14.9–15.1 s on |
+| one started: counted by the other | — | 0.05 s after it is ready |
+| one stopped (SIGTERM): counted out | — | 0.05–0.09 s on |
+
+What it costs one process — the load test, alternating, three runs on
+PostgreSQL and two on SQLite (median, and the range):
+
+| one process | each limit its own | shared |
+|---|---|---|
+| PostgreSQL, 16 clients, no model latency: turns a second | 46.3 (40.6–47.2) | 46.0 (40.8–48.6) |
+| … the server's CPU a turn (ms) | 17.8 (17.4–20.4) | 17.6 (16.7–20.1) |
+| SQLite, 1 client: turns a second | 72.1 (71.8–72.4) | 68.3 (66.3–70.3) |
+| … the server's CPU a turn (ms) | 11.4 (11.4–11.4) | 12.0 (11.8–12.1) |
+
+What it says:
+
+1. **Limits that are each process's own are no limit for the deployment.**
+   Each server kept to its 8, and together they had 16 calls in flight at a
+   provider that takes 8. The provider refused 59–61% of their calls, and the
+   turns those calls belonged to — tried three times, refused each time —
+   ended unanswered: 250–291 of them, against 116–127 answered. With the limit
+   shared, the two never had more than 8 in flight, the provider refused
+   nothing, and every turn was answered, at the rate the provider allows:
+   6.4–6.5 a second against 3.9–4.2. An answered turn took longer, 4.9 s at the
+   median against 2.9–3.1, because it waited for a slot instead of being
+   refused one. In one of four earlier runs — the gate then still counted a call its
+   breaker stopped as the provider's failure — breakers opened on the
+   refusals and stayed open: the provider was hardly called, refusing 29 of
+   573, and 3,075 turns were turned away unanswered at once, each sent again
+   as soon as it came back.
+2. **A tenant's rate is the tenant's, whichever server it reaches.** At 5 a
+   second with bursts of 5, each server admitted its own 52–53 in ten seconds —
+   10.4–10.6 a second between them; sharing the bucket they admitted 52–53, of
+   the 55 the rate allows. The refusals cost no statement each: about as many
+   requests were answered in the ten seconds, 7,700–8,784, as with each
+   server's own bucket in memory (7,063–8,736).
+3. **A provider that fails for one server fails for the other.** With every
+   call failing, the heavy server's breaker opened 2.0–2.4 s in, and the light
+   one held its own open 11–16 ms later; its turns failed fast from 2.4–2.9 s.
+   With a breaker of its own it had to see five of its own calls fail first,
+   three attempts each, and opened 2.3–4.1 s after the other, its turns
+   failing fast from 4.0–6.1 s. The deployment sent the dead provider 33–38
+   calls where it sent 59–62; most of them were the heavy server's calls in
+   flight as the outage began, which no breaker stops. When the openings
+   ended, 30 s on, the first trial to fail opened the other server's breaker
+   again within 10–60 ms.
+4. **A process's count follows the others.** One killed with no word stopped
+   being counted 14.9–15.1 s on — three heartbeats of 5 s — and the other then
+   took the provider's whole 8; one started or stopped was counted at once,
+   within 0.1 s (LISTEN/NOTIFY).
+5. **One process pays nothing it can see on PostgreSQL**: 46.0 turns a second
+   with the limits shared against 46.3, and 17.6 ms of the server's CPU a turn
+   against 17.8, inside the runs' noise — a request's statement is 104 µs, 0.6%
+   of a turn. On SQLite, where the statement is a write transaction of its
+   own, half a millisecond of a turn's 11.4: 68.3 turns a second at one client
+   against 72.1. Every run replayed identically.
+
+What sharing does not do:
+
+- **A share follows the count, not the load.** A process with more turns
+  waiting than its share does not borrow the slots another leaves idle; with
+  clients spread unevenly over the processes, the deployment calls its
+  provider less than it may. (Roadmap.)
+- **While the count changes**, the deployment can exceed a provider's limit
+  by a process's old share, for as long as the calls begun under it take: a
+  share that shrinks waits for its calls to finish, and the others learn of a
+  new process when it starts. Past `PASAR_PROVIDER_CONCURRENCY` processes each
+  still takes one slot, more than the limit.
+- **Each process makes its own trial call** when an opening ends — two
+  servers, two trials — and the first to fail opens it again for the others.
+- **A rolling change of the settings admits at the looser.** Two processes on
+  one bucket, one at 10 requests a second and one at 1, admitted 139 in ten
+  seconds where the faster allows 140 and the slower 50: the bucket drains at
+  the rate of whichever process writes it, and the one with the faster rate
+  writes it most.
+- **A request's check is a statement.** On PostgreSQL, 104 µs of CPU and a
+  round trip: no difference outside the load test's noise. On SQLite it is a
+  write transaction of its own, and SQLite has one writer: half a millisecond
+  of a turn's 11.4 at one client, and a wait behind every long write — while
+  a tenant of 4,000 customers was made, in one 5–7 s transaction, a client
+  got 91 answers in place of 562 (#71). So on SQLite each limit is a
+  process's own unless `PASAR_LIMITS=deployment` says otherwise, for several
+  processes on one machine's file.
 
 ### With a real model
 
@@ -849,8 +1031,10 @@ found [WHAT_FAILED #67](WHAT_FAILED.md).
 | `PASAR_DEFAULT_MODEL` | `mock` | |
 | `PASAR_MODELS_FILE` | — | more models (`deploy/models.example.json`) |
 | `PASAR_MAX_CONCURRENT_TURNS` / `PASAR_THREADS` | 256 / 64 | turns at once, per process — a turn waiting on its model holds no thread (v81) — and the worker threads that run its transactions and every other handler |
-| `PASAR_PROVIDER_CONCURRENCY` | 16 | model calls in flight per provider, per process: set from the provider's rate limit ÷ processes |
-| `PASAR_RATE` / `PASAR_BURST` | 10 / 40 | requests a second per tenant, per process |
+| `PASAR_PROVIDER_CONCURRENCY` | 16 | model calls in flight per provider, for the deployment: each process takes its share (v82) |
+| `PASAR_RATE` / `PASAR_BURST` | 10 / 40 | requests a second per tenant, and at once, for the deployment |
+| `PASAR_LIMITS` | `auto` | `deployment` on PostgreSQL, and on SQLite for `serve --workers N`; else `process`: each limit a process's own, as before v82 — N processes allow N times each |
+| `PASAR_HEARTBEAT_SECONDS` | 5 | how often a process says it is serving; one silent for three is not counted |
 | `PASAR_MAX_STEPS_PER_TURN` / `..._TOOL_CALLS_PER_TURN` / `PASAR_MAX_TURN_SECONDS` | 16 / 24 / 120 | a turn's caps |
 | `PASAR_CONVERSATION_BUDGET_USD` | 0.50 | |
 | `PASAR_CONVERSATION_MAX_STEPS` | 0 | model calls a conversation may make in all; 0 is no cap (the kit sets the benchmark's 30) |
@@ -867,6 +1051,26 @@ daily for expired Idempotency-Keys; `replay <tenant>` after a deploy that
 touches the tools or the policy, and after anything touches the database by
 hand; the outbox relay acknowledges what it delivered. Back up PostgreSQL as
 usual; the world, the conversations and the ledger are all in it.
+
+### Several processes
+
+`serve --workers N` (or `PASAR_WORKERS`, which `deploy/compose.yaml` passes
+on), or N replicas of the image on one PostgreSQL database, share every limit
+but a process's own turns and threads (v82); on SQLite the workers of one
+`serve` do, and separate processes on one file with `PASAR_LIMITS=deployment`. `GET /v1/admin/nodes` answers for the
+process the request reached: the processes as the database has them, which
+it counts, its share of each provider's calls at once, the breakers open, and
+whether it hears the others at once; the metrics are
+`pasar_service_nodes`, `pasar_provider_concurrency_share`,
+`pasar_breaker_openings_total{by}` and `pasar_limits_errors_total{part}`, and
+`python -m pasarbench.service nodes` prints the rows without the operator's
+token. Migrate to 0003 before v82 starts, or as it does: until then a v82 process
+keeps each limit its own and says so. Behind a pooler in transaction mode
+(PgBouncer's), notifications do not reach a listener, and the processes hear
+of each other at their next heartbeat. A process killed is counted 15 s more,
+and its share of each provider waits that long: stop processes with SIGTERM,
+as an orchestrator does, and the others take it up at once — a process
+stopping waits at most 5 s for the database to hear it.
 
 ### Where its CPU goes
 
@@ -918,15 +1122,16 @@ no such variable.
 ## Not built yet, in the order they matter
 
 Built since this list was first written: ids without a tenant-wide lock
-(v79), a turn's CPU cut by three fifths (v80), and turns that wait on their
-model without a thread (v81; all above).
+(v79), a turn's CPU cut by three fifths (v80), turns that wait on their model
+without a thread (v81), and one limit for the deployment (v82; all above).
 
-1. **Limits shared across processes.** A process is now limited by its CPU
-   alone — one core's worth of Python — and more turns come from more
-   processes (`--workers`, or replicas), which multiply every per-process
-   limit with them: the token bucket, the provider gate and the breaker (N
-   processes allow N times the rate). Redis (or PostgreSQL advisory locks) for
-   one limit per deployment.
+1. **A database that goes silent.** No statement has a client-side bound:
+   behind a partition a request waits as long as the network holds its
+   connection, and so does a turn's every transaction (v82's review found it
+   in the shared bucket; it was already true of everything else).
+   `tcp_user_timeout` and keepalives on the pool's connections, and a
+   `statement_timeout` for each kind of transaction, would turn it into an
+   error the service already answers.
 2. **Fewer statements a step.** A turn is 42.8 statements (v80); an event could
    be written with the row it reports, in one statement on PostgreSQL.
 3. **Tokens streamed from the provider.** Events are per step today; the
@@ -946,3 +1151,8 @@ model without a thread (v81; all above).
    (RUNBOOK 1y ran at the second); the price book holds one rate a model and a
    date, the peak, so a conversation run off-peak is charged above its bill.
    1z's figures are at the peak rate, whatever hour they ran in.
+9. **A share that follows the load.** A process's share of a provider's
+   limit is fixed by how many processes there are, not by their turns (v82):
+   with clients spread unevenly, one process's turns wait for slots another
+   leaves idle. Slots leased from the database and renewed with the heartbeat
+   would let a busy process borrow them, at a statement a lease.

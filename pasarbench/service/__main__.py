@@ -4,10 +4,13 @@
                                  [--daily-budget-usd 25]  a tenant, its world, its first key
     python -m pasarbench.service create-key acme         another key (shown once)
     python -m pasarbench.service revoke-key key_...
-    python -m pasarbench.service serve [--host 0.0.0.0] [--port 8000] [--workers 1]
+    python -m pasarbench.service serve [--host 0.0.0.0] [--port 8000] [--workers N]
+                                 N: PASAR_WORKERS, else 1 -- processes sharing the limits
     python -m pasarbench.service replay acme             re-run every tool call; exit 1 on a mismatch
     python -m pasarbench.service usage acme [--group-by model|day|conversation]
     python -m pasarbench.service gc                      forget expired Idempotency-Keys
+    python -m pasarbench.service nodes                   the processes serving on this database,
+                                 which are counted, and the breakers open (v82)
     python -m pasarbench.service profile p.json [--turns N] [--folded p.folded]
                                  what a profile (GET /v1/admin/profile) adds up to
 
@@ -18,6 +21,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -36,6 +40,14 @@ def _sqlite_dir(url: str) -> None:
     """sqlite:///data/pasar.db: make data/ first."""
     if url.startswith("sqlite:///") and not url.startswith("sqlite:///:memory:"):
         Path(url[len("sqlite:///"):]).parent.mkdir(parents=True, exist_ok=True)
+
+
+def shared_on_sqlite(limits: str, url: str, workers: int) -> bool:
+    """`serve --workers N` on one SQLite file with PASAR_LIMITS=auto: N
+    processes are a deployment, and their limits are shared -- `auto` keeps
+    them a process's own on SQLite for the one process it usually is, never
+    to hand N of them N times each (WHAT_FAILED #71)."""
+    return workers > 1 and url.startswith("sqlite") and limits == "auto"
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -58,13 +70,17 @@ def main(argv: list[str] | None = None) -> int:
     s = sub.add_parser("serve")
     s.add_argument("--host", default="127.0.0.1")
     s.add_argument("--port", type=int, default=8000)
-    s.add_argument("--workers", type=int, default=1)
+    # Processes: each its own event loop and threads, every limit shared with
+    # the others through the database (PASAR_LIMITS, v82).
+    s.add_argument("--workers", type=int, help="default: PASAR_WORKERS, else 1")
     p = sub.add_parser("replay", help="re-run every tool call of a tenant and compare")
     p.add_argument("tenant_id")
     u = sub.add_parser("usage")
     u.add_argument("tenant_id")
     u.add_argument("--group-by", default="model", choices=("model", "day", "conversation"))
     sub.add_parser("gc", help="forget expired Idempotency-Keys")
+    sub.add_parser("nodes", help="the processes serving on this database, which are counted, "
+                                 "and the breakers open (v82)")
     pr = sub.add_parser("profile", help="what a profile (GET /v1/admin/profile) adds up to")
     pr.add_argument("files", nargs="+", help="profiles, as the endpoint answers them (JSON)")
     pr.add_argument("--turns", type=int, help="the turns served while it ran: CPU per turn")
@@ -85,14 +101,25 @@ def main(argv: list[str] | None = None) -> int:
     _sqlite_dir(url)
 
     if args.cmd == "serve":
-        import os
-
         import uvicorn
 
         from .observability import uvicorn_log_config
+        workers = args.workers
+        if workers is None:
+            raw = os.environ.get("PASAR_WORKERS", "").strip() or "1"
+            if not raw.isdigit() or int(raw) < 1:
+                print(f"error: PASAR_WORKERS={raw!r}: a number of processes, 1 or more",
+                      file=sys.stderr)
+                return 2
+            workers = int(raw)
+        if shared_on_sqlite(settings.limits, url, workers):
+            os.environ["PASAR_LIMITS"] = "deployment"
+            print(f"note: {workers} processes on one SQLite file share their limits "
+                  f"(PASAR_LIMITS=deployment): each request's check is a write transaction",
+                  file=sys.stderr)
         os.environ["PASAR_DATABASE_URL"] = url
         uvicorn.run("pasarbench.service.app:create_app", factory=True, host=args.host,
-                    port=args.port, workers=args.workers, log_level="warning",
+                    port=args.port, workers=workers, log_level="warning",
                     log_config=uvicorn_log_config(), proxy_headers=True,
                     timeout_keep_alive=settings.keep_alive_seconds)
         return 0
@@ -140,6 +167,10 @@ def main(argv: list[str] | None = None) -> int:
         elif args.cmd == "gc":
             from .auth import Idempotency
             print(f"{Idempotency(engine, settings.idempotency_hours).purge()} expired keys removed")
+        elif args.cmd == "nodes":
+            from .limits import processes
+            rows, opened = processes(engine)
+            print(json.dumps({"processes": rows, "breakers_open": opened}, indent=2))
     except Exception as e:  # noqa: BLE001 -- a CLI says what went wrong, in one line
         print(f"error: {type(e).__name__}: {e}", file=sys.stderr)
         return 2

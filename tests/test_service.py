@@ -1021,6 +1021,389 @@ def test_profiler():
           and lines and all(ln.rsplit(" ", 1)[1].isdigit() for ln in lines), out.getvalue()[:300])
 
 
+def test_shared_limits(kind: str):
+    """What a deployment's processes share through the database (limits.py,
+    v82): who is serving and each one's share of a provider's limit, a
+    tenant's bucket, and a breaker's opening -- each checked against what
+    the same processes did with every limit their own."""
+    print(f"shared limits [{kind}]")
+    import asyncio
+    from collections import Counter
+    from types import SimpleNamespace
+    from sqlalchemy import text
+    from pasarbench.service.limits import Deployment, SharedRate, processes, split
+    from pasarbench.service.resilience import (CircuitBreaker, CircuitOpen, Gates, ProviderGate,
+                                               Slots, TenantLimits)
+
+    if kind == "sqlite":
+        shares = {n: [split(16, n, r) for r in range(n)] for n in range(1, 20)}
+        check("a provider's 16 calls at once, shared out: 6, 5 and 5 over three processes, as "
+              "even as whole numbers go, adding up to 16 -- and past 16 processes one each, "
+              "never none", shares[3] == [6, 5, 5]
+              and all(sum(v) == 16 for n, v in shares.items() if n <= 16)
+              and shares[19] == [1] * 19 and split(0, 2, 1) == 0, shares[3])
+
+        # A share that moves (Slots.resize): waiters let in as it grows, a
+        # holder never robbed as it shrinks.
+        s = Slots(1)
+        s.acquire(0)
+        waited = []
+        t = threading.Thread(target=lambda: waited.append(s.acquire(2.0)))
+        t.start()
+        time.sleep(0.05)
+        s.resize(2)
+        t.join(3)
+
+        async def coroutine_waits() -> bool:
+            got = asyncio.ensure_future(s.aacquire(2.0))
+            await asyncio.sleep(0.05)
+            await asyncio.get_running_loop().run_in_executor(None, s.resize, 3)
+            return await got
+
+        let_in = asyncio.run(coroutine_waits())
+        s.resize(1)                              # three held, one allowed
+        refused = s.acquire(0.05)
+        s.release()
+        s.release()
+        refused_still = s.acquire(0.05)
+        s.release()
+        then = s.acquire(0.05)
+        check("a limit resized: growing lets a waiting thread and a waiting coroutine in; "
+              "shrinking below the slots in use takes none away, and no one gets one until "
+              "enough are released", waited == [True] and let_in and not refused
+              and not refused_still and then, (waited, let_in, refused, refused_still, then))
+
+        now = [0.0]
+        told = []
+        b = CircuitBreaker(threshold=2, reset_s=30, clock=lambda: now[0],
+                           on_open=told.append)
+        b.record(False)
+        b.record(False)
+        b.record(False)                          # a call in flight failing after: no news
+        now[0] = 31
+        trial = b.allow()
+        b.record(False)                          # the trial failed: opened again
+        check("a breaker says when it opens -- after its failures, and again when its trial "
+              "fails -- and not for each call failing while it is open",
+              told == [30, 30] and trial is None, told)
+        h = CircuitBreaker(reset_s=30, clock=lambda: now[0])
+        held = h.hold(12)
+        blocked = h.blocked()
+        now[0] += 12.5
+        after = (h.state, h.allow())
+        own = CircuitBreaker(threshold=1, reset_s=30, clock=lambda: now[0])
+        own.record(False)
+        kept = not own.hold(5) and abs(own.blocked() - 30) < 1e-9
+        check("held open for another process's breaker: no call for 12 s, then one trial as "
+              "after an opening of its own; an opening of its own that lasts longer stays",
+              held and abs(blocked - 12) < 1e-9 and after == ("half_open", None) and kept,
+              (held, blocked, after, kept))
+
+        tries = []
+        g = ProviderGate("p", concurrency=1, attempts=3,
+                         sleep=lambda _s: g.breaker.hold(30))
+
+        def down():
+            tries.append(1)
+            raise RuntimeError("HTTP 503 from https://provider: down")
+
+        try:
+            g.call(down)
+            stopped = None
+        except CircuitOpen as e:
+            stopped = e
+        check("a call waiting to try again stops if its provider's breaker opens meanwhile "
+              "-- here or in another process: one attempt, not three",
+              stopped is not None and tries == [1], (stopped, tries))
+
+        g2 = ProviderGate("p", concurrency=1, acquire_timeout=5)
+        holding, free = threading.Event(), threading.Event()
+
+        def holder():                            # its own call fails too: a success would close it
+            holding.set()
+            free.wait(5)
+            raise RuntimeError("HTTP 400 from https://provider: no")
+
+        def hold_slot():
+            try:
+                g2.call(holder)
+            except RuntimeError:
+                pass
+
+        t = threading.Thread(target=hold_slot)
+        t.start()
+        holding.wait(5)
+        sent, outcome = [], []
+
+        def waiter():
+            try:
+                g2.call(lambda: sent.append(1))
+                outcome.append("sent")
+            except CircuitOpen:
+                outcome.append("open")
+
+        w = threading.Thread(target=waiter)
+        w.start()
+        time.sleep(0.05)
+        g2.breaker.hold(30)                      # opened while it waited for the slot
+        free.set()
+        t.join(5)
+        w.join(5)
+        check("…and so does a call that waited for its slot while the breaker opened: not "
+              "sent at all, and not counted a failure of the provider's (one: the holder's)",
+              outcome == ["open"] and not sent and g2.breaker.failures == 1,
+              (outcome, sent, g2.breaker.failures))
+
+    # --- the database's part ------------------------------------------------
+    engine, url = database(kind, "shared-limits")
+    a, b2 = SharedRate(engine, 2.0, 3), SharedRate(engine, 2.0, 3)
+    got = [(a if i % 2 == 0 else b2).take("acme") for i in range(4)]
+    other = a.take("globex")
+    asked = []
+    for x in (a, b2):
+        inner = x._sqlite_take if kind == "sqlite" else x._pg_take
+        setattr(x, "_sqlite_take" if kind == "sqlite" else "_pg_take",
+                lambda bucket, f=inner: (asked.append(bucket), f(bucket))[1])
+    again = [b2.take("acme") for _ in range(20)]
+    time.sleep(0.55)
+    later = b2.take("acme")
+    own = [TenantLimits(2.0, 3), TenantLimits(2.0, 3)]
+    alone = [own[i % 2].take("acme") for i in range(6)]
+    check(f"[{kind}] one bucket a tenant for two processes: of 4 requests in turn to each at "
+          f"2 a second, bursts of 3, the 4th is refused, told to wait half a second -- where "
+          f"each process's own bucket admitted 6; another tenant's is its own",
+          got[:3] == [None] * 3 and got[3] is not None and 0.3 < got[3] <= 0.51
+          and other is None and later is None and alone == [None] * 6, (got, other, later))
+    check(f"[{kind}] …and a refusal is remembered until the time it gave: 20 more requests "
+          f"refused with no statement, the next after it with one",
+          all(w is not None and w <= got[3] for w in again) and asked == ["acme"],
+          (again[:3], asked))
+    from pasarbench.service.limits import _clock
+    with engine.begin() as conn:                 # 40 just spent, at 0.1 a second
+        conn.execute(text(f"INSERT INTO rate_limits (bucket, level, at) VALUES "
+                          f"('spent', 40, {_clock(engine)})"))
+    fresh = SharedRate(engine, 10.0, 40)
+    first_wait = fresh.take("spent")
+    time.sleep(0.12)
+    then_in = fresh.take("spent")
+    check(f"[{kind}] a bucket spent under other settings -- 40 requests at 0.1 a second -- "
+          f"drains at these: at 10 a second refused a tenth of a second, then admitted, "
+          f"where a bucket kept in seconds would have refused for 400",
+          first_wait is not None and first_wait <= 0.11 and then_in is None,
+          (first_wait, then_in))
+    # A rolling change of PASAR_RATE: two processes, two settings, one bucket.
+    old, new = SharedRate(engine, 10.0, 40), SharedRate(engine, 1.0, 40)
+    admitted = Counter()
+    stop_at = time.monotonic() + 1.0
+
+    def hammer(r, name):
+        while time.monotonic() < stop_at:
+            if r.take("rolling") is None:
+                admitted[name] += 1
+
+    ts = [threading.Thread(target=hammer, args=(r, n)) for r, n in ((old, "old"), (new, "new"))]
+    for t in ts:
+        t.start()
+    for t in ts:
+        t.join()
+    total = sum(admitted.values())
+    check(f"[{kind}] two processes with different settings on one bucket -- a rolling "
+          f"change from 10 a second to 1 -- admit no more in a second than the looser allows "
+          f"(40 at once and 10 more), each admission counted by whoever made it",
+          40 <= total <= 52, dict(admitted))
+
+    if kind == "sqlite":
+        from pasarbench.service.config import Settings
+        from pasarbench.service.store import make_engine
+        bare = make_engine(sqlite_url("not-migrated"))
+        broken = SharedRate(bare, 1.0, 2)
+        alone = [broken.take("acme") for _ in range(3)]
+        try:
+            Settings(limits="cluster").validate()
+            refused = False
+        except ValueError:
+            refused = True
+        check("a bucket that cannot be read -- a database not migrated to 0003 -- is this "
+              "process's own, as before v82: 2 admitted at bursts of 2, the 3rd refused, the "
+              "failure counted once (the database asked again 5 s on); PASAR_LIMITS is auto, "
+              "deployment or process",
+              alone[:2] == [None, None] and alone[2] is not None and broken.errors["rate"] == 1
+              and refused and Settings().limits == "auto", (alone, dict(broken.errors)))
+        bare.dispose()
+
+    beat = 0.2
+    cfg = SimpleNamespace(heartbeat_seconds=beat, provider_concurrency=16, rate=10.0, burst=40)
+
+    def node(name: str) -> Deployment:
+        return Deployment(engine, cfg, Gates(16, 0.5), node=name)
+
+    d = [node("n1"), node("n2"), node("n3")]
+    for x in d:
+        x.start()
+    for x in d:
+        x.sync()
+    first = [x.share for x in d]
+    resized = all(x.gates.get("p").concurrency == x.share for x in d)
+    d[2].stop()
+    moved = until(lambda: [x.share for x in d[:2]] == [8, 8], 3)
+    d[1]._stop.set()                             # dies: no row deleted, no word
+    d[1]._wake.set()
+    d[1]._thread.join(3)
+    t0 = time.monotonic()
+    alone_again = until(lambda: d[0].share == 16 and d[0].nodes == ["n1"], 6)
+    gone_after = time.monotonic() - t0
+    check(f"[{kind}] three processes take 6, 5 and 5 of a provider's 16 calls at once; one "
+          f"that leaves gives its share back at once, and one that dies within three "
+          f"heartbeats (0.6 s here)",
+          first == [6, 5, 5] and resized and moved and alone_again and gone_after < 2.5,
+          (first, resized, moved, [x.share for x in d], round(gone_after, 2)))
+    view = d[0].view()
+    check(f"[{kind}] GET /v1/admin/nodes: the processes as the database has them, the one "
+          f"no longer counted marked so, and this one's share",
+          view["processes"] == 1 and view["provider_concurrency"] == {"deployment": 16,
+                                                                     "this_process": 16}
+          and {n["node"]: n["counted"] for n in view["nodes"]} == {"n1": True, "n2": False},
+          view)
+    d[0].stop()
+    hung = node("hung")
+    hung.start()
+    hung._beat.acquire()                         # a heartbeat the database never answers
+    t0 = time.monotonic()
+    hung.stop(timeout=0.5)
+    took = time.monotonic() - t0
+    hung._beat.release()
+    gone = until(lambda: "hung" not in [r["node"] for r in processes(engine)[0]], 3)
+    hung.sync()
+    with engine.connect() as conn:
+        after = conn.execute(text("SELECT count(*) FROM service_nodes WHERE node = 'hung'")
+                             ).scalar()
+    check(f"[{kind}] a process stopping waits for the database at most its timeout (0.5 s "
+          f"here: the process goes, and its row expires on its own); the heartbeat it was "
+          f"waiting for ends before the row is deleted, and none after it writes the row back",
+          took < 0.9 and gone and after == 0, (round(took, 2), gone, after))
+
+    # On PostgreSQL the word comes at once: heartbeats 30 s apart, here.
+    slow = SimpleNamespace(**{**vars(cfg), "heartbeat_seconds": 30.0 if kind == "postgres"
+                              else beat})
+    p1, p2 = (Deployment(engine, slow, Gates(16, 0.5), node=n) for n in ("p1", "p2"))
+    p1.start()
+    p2.start()
+    joined = until(lambda: p1.share == p2.share == 8, 1.5)
+    for _ in range(5):
+        p1.gates.get("prov").breaker.record(False)
+    heard = until(lambda: p2.gates.get("prov").breaker.state == "open", 1.5)
+    calls = []
+    try:
+        p2.gates.get("prov").call(lambda: calls.append(1))
+        fast = False
+    except CircuitOpen:
+        fast = True
+    p2.gates.get("prov").breaker.record(True)    # a call of its own got through after all
+    p2.sync()
+    p2.sync()
+    once = p2.gates.get("prov").breaker.state == "closed"
+    check(f"[{kind}] a breaker that opens in one process opens in the other"
+          f"{' at once (LISTEN/NOTIFY)' if kind == 'postgres' else ', by its next heartbeat'}: "
+          f"its calls fail fast, unsent -- and the same opening, read again, does not open it "
+          f"again once a call there has closed it",
+          heard and fast and not calls and once, (heard, fast, calls, once))
+    listening = p1.view()["hears_at_once"]
+    p2.stop()
+    left = until(lambda: p1.share == 16, 1.5)
+    if kind == "postgres":
+        check("[postgres] …and a process joining or leaving is heard of at once, not at the "
+              "next heartbeat 30 s on: each of two counts the other as it joins, and the one "
+              "left takes all 16 as the other leaves", joined and left and listening,
+              (joined, left, listening))
+    p1.stop()
+    if kind == "sqlite":
+        import contextlib
+        import io
+        from pasarbench.service.__main__ import main as cli
+        os.environ["PASAR_WORKERS"] = "4x"
+        try:
+            out, err = io.StringIO(), io.StringIO()
+            with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+                listed = cli(["--database-url", url, "nodes"])
+                served = cli(["--database-url", url, "serve"])
+        finally:
+            del os.environ["PASAR_WORKERS"]
+        check("a malformed PASAR_WORKERS stops `serve` with one line, and no other command: "
+              "`nodes` lists the processes and the breakers open",
+              listed == 0 and served == 2 and "PASAR_WORKERS" in err.getvalue()
+              and json.loads(out.getvalue())["breakers_open"] is not None,
+              (listed, served, err.getvalue()[:200]))
+        from pasarbench.service.__main__ import shared_on_sqlite
+        check("`serve --workers 2` on one SQLite file with PASAR_LIMITS=auto shares the "
+              "limits; one process, PostgreSQL, or a PASAR_LIMITS said outright, as set",
+              shared_on_sqlite("auto", "sqlite:///x.db", 2)
+              and not shared_on_sqlite("auto", "sqlite:///x.db", 1)
+              and not shared_on_sqlite("process", "sqlite:///x.db", 2)
+              and not shared_on_sqlite("auto", "postgresql+psycopg://h/db", 2))
+    if kind == "postgres":
+        import logging as _logging
+        caught = []
+
+        class Catch(_logging.Handler):
+            def emit(self, record):
+                caught.append(record)
+
+        pool_log = _logging.getLogger("sqlalchemy.pool")
+        catch = Catch()
+        pool_log.addHandler(catch)
+        q = Deployment(engine, cfg, Gates(16, 0.5), node="q1")
+        q.start()
+        first_pid = q.listener_pid
+        with engine.begin() as conn:
+            conn.execute(text("SELECT pg_terminate_backend(:p)"), {"p": first_pid})
+        back = until(lambda: q.listening and q.listener_pid not in (None, first_pid), 5)
+        q.stop()
+        pool_log.removeHandler(catch)
+        check("[postgres] a listener whose session the server ends listens again on a new "
+              "one, a heartbeat on, with nothing logged outside the service's own lines",
+              back and not caught, (back, [r.getMessage()[:80] for r in caught]))
+        with engine.connect() as conn:
+            kinds = dict(conn.execute(text(
+                "SELECT relname, relpersistence FROM pg_class WHERE relname IN "
+                "('service_nodes', 'rate_limits', 'provider_breakers')")).all())
+        check("[postgres] the shared tables are UNLOGGED: no disk write a request",
+              kinds == {"service_nodes": "u", "rate_limits": "u", "provider_breakers": "u"},
+              kinds)
+
+    # Two apps -- two processes -- on one database.
+    h = None
+    auto = make_app(engine, url).state.deployment
+    check(f"[{kind}] PASAR_LIMITS=auto shares the limits on PostgreSQL and keeps them each "
+          f"process's own on SQLite",
+          (auto is not None) == (kind == "postgres"), auto)
+    apps = [make_app(engine, url, rate=1.0, burst=2, provider_concurrency=16,
+                     heartbeat_seconds=beat, limits="deployment") for _ in range(2)]
+    with client(apps[0]) as c1, client(apps[1]) as c2:
+        h = tenant(c1, "shared")
+        codes = [(c1 if i % 2 == 0 else c2).get("/v1/conversations", headers=h)
+                 for i in range(3)]
+        until(lambda: all(c.get("/v1/admin/nodes", headers=OP).json()["processes"] == 2
+                          for c in (c1, c2)), 3)
+        nodes = [c.get("/v1/admin/nodes", headers=OP).json() for c in (c1, c2)]
+    apart = [make_app(engine, url, rate=1.0, burst=2, limits="process") for _ in range(2)]
+    with client(apart[0]) as c1, client(apart[1]) as c2:
+        h2 = tenant(c1, "apart")
+        own_codes = [(c1 if i % 2 == 0 else c2).get("/v1/conversations", headers=h2).status_code
+                     for i in range(5)]
+        apart_view = c1.get("/v1/admin/nodes", headers=OP).json()
+    check(f"[{kind}] two servers on one database: a tenant at 1 a second, bursts of 2, is "
+          f"refused its 3rd request whichever server it reaches, told when to come back; "
+          f"each counts two processes, 8 calls at once each of 16 -- with PASAR_LIMITS=process "
+          f"each server admitted 2 of its own",
+          [r.status_code for r in codes] == [200, 200, 429]
+          and codes[2].headers.get("retry-after") == "1"
+          and [n["processes"] for n in nodes] == [2, 2]
+          and [n["provider_concurrency"]["this_process"] for n in nodes] == [8, 8]
+          and own_codes == [200, 200, 200, 200, 429] and apart_view["limits"] == "process",
+          ([r.status_code for r in codes], [n.get("processes") for n in nodes], own_codes))
+    engine.dispose()
+
+
 # ---------------------------------------------------------------------------
 # The HTTP API
 # ---------------------------------------------------------------------------
@@ -1035,7 +1418,7 @@ ROUTES = {
     ("POST", "/v1/admin/tenants"), ("POST", "/v1/admin/tenants/{tenant_id}/keys"),
     ("POST", "/v1/admin/keys/{key_id}/revoke"), ("GET", "/v1/admin/tenants/{tenant_id}/replay"),
     ("GET", "/v1/admin/outbox"), ("POST", "/v1/admin/outbox/ack"), ("GET", "/v1/admin/gates"),
-    ("GET", "/v1/admin/profile"), ("DELETE", "/v1/admin/profile"),
+    ("GET", "/v1/admin/profile"), ("DELETE", "/v1/admin/profile"), ("GET", "/v1/admin/nodes"),
 }
 
 
@@ -2118,6 +2501,7 @@ def main() -> int:
         test_logs_hold_no_message()
         test_slices("sqlite")
         test_profiler()
+        test_shared_limits("sqlite")
         test_parity("sqlite")
         test_episodes("sqlite")
         test_kit_messages()
@@ -2127,6 +2511,7 @@ def main() -> int:
             test_ids("postgres")
             test_slices("postgres")
             test_liveness()
+            test_shared_limits("postgres")
             test_bad_arguments("postgres")
             test_nul("postgres")
             test_order("postgres")

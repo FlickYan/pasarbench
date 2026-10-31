@@ -23,8 +23,12 @@ busy (the OpenCode Go runs met both, RUNBOOK 1s). Each provider gets a gate:
 And each tenant gets a token bucket on its requests (app.py): a burst, then a
 steady rate; past it, 429 with Retry-After.
 
-All of it is per process. Several replicas behind a load balancer each keep
-their own (docs/SERVICE.md: what moves to Redis, and when).
+What is here is one process's. Since v82 a deployment of several processes
+shares them through its database (limits.py): each process takes its share
+of a provider's limit (`Gates.resize`), a tenant has one bucket for all of
+them (limits.SharedRate), and a breaker that opens in one opens in every
+other (`CircuitBreaker.hold`). PASAR_LIMITS=process keeps them all a
+process's own, as before.
 
 A turn is a coroutine (v81): its model calls go through the gate as
 coroutines (`ProviderGate.acall`), waiting on its limit without holding a
@@ -35,6 +39,7 @@ against the one limit.
 from __future__ import annotations
 
 import asyncio
+import logging
 import random
 import re
 import threading
@@ -44,6 +49,7 @@ from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable, TypeVar
 
 T = TypeVar("T")
+log = logging.getLogger("pasar.resilience")
 
 # What a provider's failure says when trying again may work. The backends
 # raise RuntimeError("HTTP 503 from ...") and urllib's own errors.
@@ -171,6 +177,21 @@ class Slots:
             self._cond.notify()
             self._wake_next()
 
+    def resize(self, n: int) -> None:
+        """Change the limit to `n` (v82: a process's share of a deployment's
+        limit moves as processes join and leave). Growing wakes as many
+        waiters; shrinking takes nothing away from a holder -- the slots in
+        use past the new limit end as their holders release them, and until
+        then no one else gets one."""
+        with self._cond:
+            grow = n - self.n
+            self.n = n
+            self._free += grow
+            if grow > 0:
+                self._cond.notify(grow)
+                for _ in range(grow):
+                    self._wake_next()
+
     def _wake_next(self) -> None:
         """Wake the first coroutine still waiting (under the lock)."""
         while self._waiters:
@@ -202,13 +223,18 @@ def _wake(fut: asyncio.Future) -> None:
 @dataclass
 class CircuitBreaker:
     """Closed until `threshold` failures in a row; open for `reset_s`; then
-    half-open: one call is let through, and its outcome closes or re-opens it."""
+    half-open: one call is let through, and its outcome closes or re-opens it.
+
+    `on_open(seconds)` is told when it opens -- from closed, or again from
+    half-open -- and not when a call in flight fails after: a deployment tells
+    its other processes (limits.py), which `hold` theirs open as long."""
     threshold: int = 5
     reset_s: float = 30.0
     clock: Callable[[], float] = time.monotonic
     failures: int = 0
     opened_at: float | None = None
     trial: bool = False
+    on_open: Callable[[float], None] | None = None
     _lock: threading.Lock = field(default_factory=threading.Lock)
 
     @property
@@ -230,9 +256,19 @@ class CircuitBreaker:
             if st == "half_open" and not self.trial:
                 self.trial = True
                 return None
-            return max(0.0, self.reset_s - (self.clock() - (self.opened_at or 0.0))) or 1.0
+            return self._left()
+
+    def _left(self) -> float:
+        return max(0.0, self.reset_s - (self.clock() - (self.opened_at or 0.0))) or 1.0
+
+    def blocked(self) -> float | None:
+        """Seconds until a call may go if the breaker is open, else None --
+        asking changes nothing (a call about to try again asks: v82)."""
+        with self._lock:
+            return self._left() if self._state() == "open" else None
 
     def record(self, ok: bool) -> None:
+        opened = False
         with self._lock:
             self.trial = False
             if ok:
@@ -240,8 +276,25 @@ class CircuitBreaker:
                 self.opened_at = None
             else:
                 self.failures += 1
+                was = self._state()
                 if self.failures >= self.threshold or self.opened_at is not None:
                     self.opened_at = self.clock()
+                    opened = was != "open"
+        if opened and self.on_open is not None:
+            self.on_open(self.reset_s)
+
+    def hold(self, seconds: float) -> bool:
+        """Open for `seconds` from now, as another process's breaker is (v82):
+        no call goes until then, and then one trial, as after an opening of its
+        own. An opening of its own that lasts longer stays. True if it
+        changed anything."""
+        with self._lock:
+            until = self.clock() + seconds
+            if self.opened_at is not None and self.opened_at + self.reset_s >= until:
+                return False
+            self.opened_at = until - self.reset_s
+            self.trial = False
+            return True
 
 
 class ProviderGate:
@@ -266,9 +319,35 @@ class ProviderGate:
         self.in_flight = 0
         self.retries = 0
 
+    def resize(self, n: int) -> None:
+        """This process's share of the provider's limit, now `n` (v82)."""
+        self.concurrency = n
+        self._slots.resize(n)
+
     def _counted(self, _attempt: int, _e: BaseException, _w: float) -> None:
         with self._lock:
             self.retries += 1
+
+    def _unless_open(self) -> None:
+        """Before every attempt: not while the breaker is open -- opened by
+        other calls' failures while this one waited for its slot or its
+        backoff, here or (v82) in another process. Nothing would answer it.
+        (A trial call finds it half-open, and goes.)"""
+        wait = self.breaker.blocked()
+        if wait is not None:
+            raise CircuitOpen(self.name, wait)
+
+    def _attempts(self, fn: Callable[[], T]) -> Callable[[], T]:
+        def attempt() -> T:
+            self._unless_open()
+            return fn()
+        return attempt
+
+    def _aattempts(self, fn: Callable[[], Awaitable[T]]) -> Callable[[], Awaitable[T]]:
+        async def attempt() -> T:
+            self._unless_open()
+            return await fn()
+        return attempt
 
     def _start(self) -> None:
         wait = self.breaker.allow()
@@ -285,7 +364,10 @@ class ProviderGate:
         with self._lock:
             self.in_flight += 1
         try:
-            out = retry(fn, attempts=self.attempts, sleep=self._sleep, on_retry=self._counted)
+            out = retry(self._attempts(fn), attempts=self.attempts, sleep=self._sleep,
+                        on_retry=self._counted)
+        except CircuitOpen:
+            raise                       # stopped by the breaker: not the provider's failure
         except Exception:
             self.breaker.record(False)
             raise
@@ -306,8 +388,10 @@ class ProviderGate:
         with self._lock:
             self.in_flight += 1
         try:
-            out = await aretry(fn, attempts=self.attempts, sleep=self._asleep,
+            out = await aretry(self._aattempts(fn), attempts=self.attempts, sleep=self._asleep,
                                on_retry=self._counted)
+        except CircuitOpen:
+            raise                       # stopped by the breaker: not the provider's failure
         except Exception:
             self.breaker.record(False)
             raise
@@ -327,13 +411,18 @@ def _awaited(sleep: Callable[[float], None]) -> Callable[[float], Awaitable[None
 
 
 class Gates:
-    """The process's gates, one per provider, made on first use."""
+    """The process's gates, one per provider, made on first use.
+
+    `concurrency` is the process's share of each provider's limit -- all of
+    it, unless a deployment shares it out (`resize`, limits.py) -- and
+    `on_open(provider, seconds)`, if set, is told when a breaker here opens."""
 
     def __init__(self, concurrency: int = 16, acquire_timeout: float = 30.0,
                  sleep: Callable[[float], None] = time.sleep,
                  breaker: Callable[[], CircuitBreaker] = CircuitBreaker):
         self.concurrency = concurrency
         self.acquire_timeout = acquire_timeout
+        self.on_open: Callable[[str, float], None] | None = None
         self._sleep = sleep
         self._breaker = breaker
         self._gates: dict[str, ProviderGate] = {}
@@ -343,15 +432,37 @@ class Gates:
         with self._lock:
             g = self._gates.get(provider)
             if g is None:
+                b = self._breaker()
+                b.on_open = lambda seconds, name=provider: self._opened(name, seconds)
                 g = self._gates[provider] = ProviderGate(
                     provider, self.concurrency, self.acquire_timeout,
-                    breaker=self._breaker(), sleep=self._sleep)
+                    breaker=b, sleep=self._sleep)
             return g
+
+    def _opened(self, provider: str, seconds: float) -> None:
+        log.warning(f"model provider {provider!r}: its breaker opened here, after its "
+                    f"calls failed; not called for {seconds:.0f}s")
+        hook = self.on_open
+        if hook is None:
+            return
+        try:
+            hook(provider, seconds)
+        except Exception:  # noqa: BLE001 -- telling the others never fails the call
+            pass
+
+    def resize(self, n: int) -> None:
+        """Every provider's limit here, now `n`: this process's share (v82)."""
+        with self._lock:
+            self.concurrency = n
+            gates = list(self._gates.values())
+        for g in gates:
+            g.resize(n)
 
     def snapshot(self) -> dict[str, Any]:
         with self._lock:
-            return {n: {"in_flight": g.in_flight, "retries": g.retries,
-                        "breaker": g.breaker.state} for n, g in self._gates.items()}
+            return {n: {"in_flight": g.in_flight, "concurrency": g.concurrency,
+                        "retries": g.retries, "breaker": g.breaker.state}
+                    for n, g in self._gates.items()}
 
 
 class TokenBucket:

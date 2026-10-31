@@ -21,7 +21,8 @@ registry (models.py), each from its own provider's variables only.
     PASAR_CONVERSATION_MAX_TOKENS 2000000
     PASAR_CONVERSATION_MAX_STEPS  0: model calls a conversation may make in all (0: no cap;
                                   scripts/service_sweep.py sets the benchmark's 30)
-    PASAR_PROVIDER_CONCURRENCY    16 calls in flight to one provider, per process
+    PASAR_PROVIDER_CONCURRENCY    16 calls in flight to one provider: the deployment's,
+                                  shared out between its processes (PASAR_LIMITS)
     PASAR_PROVIDER_ACQUIRE_TIMEOUT 30 seconds to wait for one of them
     PASAR_MAX_CONCURRENT_TURNS    256 turns at once, per process; past it, 503. A turn
                                   waiting on its model holds no thread (v81): this
@@ -29,7 +30,18 @@ registry (models.py), each from its own provider's variables only.
     PASAR_ADMISSION_TIMEOUT       2 seconds a turn waits to be admitted
     PASAR_THREADS                 64 worker threads: a turn's transactions, and every
                                   handler but a turn's
-    PASAR_RATE / PASAR_BURST      10 requests a second a tenant, bursts of 40
+    PASAR_RATE / PASAR_BURST      10 requests a second a tenant, bursts of 40: the
+                                  deployment's (PASAR_LIMITS)
+    PASAR_LIMITS                  auto: deployment on PostgreSQL, and on SQLite for
+                                  `serve --workers N`; else process.
+                                  deployment: the processes that share the database share
+                                  the provider limits, the tenants' buckets and the
+                                  breakers' openings (limits.py, v82); process: each its
+                                  own, as before v82 -- N processes allow N times each.
+                                  On SQLite a shared bucket is a write transaction a
+                                  request, behind any long write (WHAT_FAILED #71)
+    PASAR_HEARTBEAT_SECONDS       5: how often a process says it is serving; one silent for
+                                  three heartbeats is not counted
     PASAR_LEASE_SECONDS           60: a turn's hold on its conversation, renewed every
                                   third of it while the turn runs; a dead process's
                                   turn frees its conversation within one
@@ -93,6 +105,8 @@ class Settings:
     pool_size: int = 10
     max_overflow: int = 20
     slice_cache: int = 2000
+    limits: str = "auto"
+    heartbeat_seconds: float = 5.0
     mock_latency_ms: int = 0
     mock_jitter: float = 0.0
     keep_alive_seconds: float = 75.0
@@ -130,6 +144,8 @@ class Settings:
             pool_size=int(_env("PASAR_POOL_SIZE", "10")),
             max_overflow=int(_env("PASAR_MAX_OVERFLOW", "20")),
             slice_cache=int(_env("PASAR_SLICE_CACHE", "2000")),
+            limits=_env("PASAR_LIMITS", "auto").lower(),
+            heartbeat_seconds=float(_env("PASAR_HEARTBEAT_SECONDS", "5")),
             mock_latency_ms=int(_env("PASAR_MOCK_LATENCY_MS", "0")),
             mock_jitter=float(_env("PASAR_MOCK_JITTER", "0")),
             keep_alive_seconds=float(_env("PASAR_KEEP_ALIVE_SECONDS", "75")),
@@ -144,6 +160,10 @@ class Settings:
                              f"preload-named")
         if self.max_concurrent_turns < 1 or self.threads < 1:
             raise ValueError("PASAR_MAX_CONCURRENT_TURNS and PASAR_THREADS are at least 1")
+        if self.limits not in ("auto", "deployment", "process"):
+            raise ValueError(f"PASAR_LIMITS {self.limits!r}: auto, deployment or process")
+        if self.heartbeat_seconds <= 0:
+            raise ValueError("PASAR_HEARTBEAT_SECONDS is more than 0")
         for f in fields(self):
             v = getattr(self, f.name)
             if isinstance(v, (int, float)) and not isinstance(v, bool) and v < 0:

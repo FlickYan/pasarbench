@@ -52,12 +52,13 @@ from . import schema as S
 from .auth import Idempotency, KeyCache, create_key, request_hash, revoke_key
 from .config import Settings, usd_to_picousd
 from .costs import seed_prices, usage_report
+from .limits import Deployment
 from .observability import Metrics, configure_logging, watch_loop
 from .profiling import MAX_SECONDS, Busy, Sampler, running
 from .replay import replay_tenant
 from .resilience import TenantLimits
 from .runtime import LeaseLost, Runtime, Turn, iso, utcnow
-from .store import make_engine, seed_tenant, slices, transaction
+from .store import is_sqlite, make_engine, seed_tenant, slices, transaction
 
 log = logging.getLogger("pasar.http")
 PROBLEM = "application/problem+json"
@@ -321,7 +322,14 @@ def create_app(settings: Settings | None = None, engine: Engine | None = None) -
     slices(engine).size = settings.slice_cache
     metrics = Metrics()
     runtime = Runtime(engine, settings, metrics=metrics)
-    limits = TenantLimits(settings.rate, settings.burst)
+    # The provider limits, the tenants' buckets and the breakers' openings:
+    # the deployment's, shared through the database (v82), or this process's
+    # -- by default on SQLite, one machine's file, where a request's check
+    # would wait on its one write lock (WHAT_FAILED #71).
+    shared = settings.limits == "deployment" or (settings.limits == "auto"
+                                                 and not is_sqlite(engine))
+    deployment = Deployment(engine, settings, runtime.gates, metrics) if shared else None
+    limits = deployment.rate if deployment else TenantLimits(settings.rate, settings.burst)
     keys = KeyCache(engine)
     idem = Idempotency(engine, settings.idempotency_hours, settings.lease_seconds)
     streams: set[asyncio.Task] = set()          # streamed turns, each a task of its own
@@ -336,6 +344,8 @@ def create_app(settings: Settings | None = None, engine: Engine | None = None) -
                 log.info(f"price book: {added} rows added")
         except Exception:  # noqa: BLE001 -- not migrated yet: /readyz says so
             log.warning("price book not seeded: is the database migrated?")
+        if deployment is not None:
+            await anyio.to_thread.run_sync(deployment.start)
         lag = asyncio.get_running_loop().create_task(watch_loop(metrics))
         yield
         lag.cancel()
@@ -343,6 +353,8 @@ def create_app(settings: Settings | None = None, engine: Engine | None = None) -
         # before the process goes, as long as a turn may run.
         if streams:
             await asyncio.wait(set(streams), timeout=settings.max_turn_seconds)
+        if deployment is not None:
+            await anyio.to_thread.run_sync(deployment.stop)
         await runtime.registry.transport.aclose()
 
     app = FastAPI(title="PasarBench Agent Service", version=__version__, lifespan=lifespan,
@@ -350,6 +362,7 @@ def create_app(settings: Settings | None = None, engine: Engine | None = None) -
                               "conversations, streamed turns, an audited and replayable "
                               "record of every tool call, and a cost ledger.")
     app.state.runtime, app.state.settings, app.state.metrics = runtime, settings, metrics
+    app.state.deployment = deployment
     app.state.engine = engine
     app.add_middleware(Observe, metrics=metrics)
 
@@ -713,8 +726,24 @@ def create_app(settings: Settings | None = None, engine: Engine | None = None) -
 
     @app.get("/v1/admin/gates", tags=["admin"], dependencies=[Operator], responses=ERRORS)
     def gates() -> dict[str, Any]:
-        """Each model provider's gate: calls in flight, retries, its breaker."""
+        """Each model provider's gate in this process: calls in flight, this
+        process's share of its limit, retries, its breaker."""
         return {"providers": runtime.gates.snapshot(), "turns_in_flight": runtime.in_flight}
+
+    @app.get("/v1/admin/nodes", tags=["admin"], dependencies=[Operator], responses=ERRORS)
+    def nodes() -> dict[str, Any]:
+        """The processes that share the deployment's limits, as the database
+        has them, and what this one -- the process the request reached --
+        counts: its share of each provider's limit, the breakers it holds open
+        for another (v82)."""
+        if deployment is None:
+            return {"limits": "process", "setting": settings.limits, "node": runtime.node,
+                    "processes": None,
+                    "provider_concurrency": {"deployment": None,
+                                             "this_process": settings.provider_concurrency},
+                    "tenant_rate": {"per_second": settings.rate, "burst": settings.burst,
+                                    "shared": False}}
+        return deployment.view()
 
     @app.get("/v1/admin/profile", tags=["admin"], dependencies=[Operator], responses=ERRORS)
     def profile(seconds: Annotated[float, Query(gt=0, le=MAX_SECONDS)] = 30,

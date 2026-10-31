@@ -68,6 +68,19 @@ class Metrics:
         self.loop_lag = Histogram("pasar_event_loop_lag_seconds",
                                   "How late the event loop ran a timer due on it",
                                   buckets=LAG, registry=r)
+        # What the processes of a deployment share (v82, limits.py).
+        self.service_nodes = Gauge("pasar_service_nodes",
+                                   "Processes sharing the deployment's limits, this one "
+                                   "among them", registry=r)
+        self.provider_share = Gauge("pasar_provider_concurrency_share",
+                                    "This process's share of each provider's calls at once",
+                                    registry=r)
+        self.breaker_openings = Counter("pasar_breaker_openings_total",
+                                        "Provider breakers opened here, by this process's "
+                                        "calls or another's", ["provider", "by"], registry=r)
+        self.limits_errors = Counter("pasar_limits_errors_total",
+                                     "Shared limits that could not be read or written",
+                                     ["part"], registry=r)
 
     # --- what the runtime reports -------------------------------------------
     def model_call(self, provider: str, model: str, seconds: float, prompt: int, cached: int,

@@ -51,6 +51,9 @@ services:
       PASAR_MODELS: ${PASAR_MODELS:-mock,scripted:*}
       PASAR_DEFAULT_MODEL: ${PASAR_DEFAULT_MODEL:-mock}
       PASAR_MOCK_LATENCY_MS: ${PASAR_MOCK_LATENCY_MS:-0}
+      # Server processes (uvicorn workers): they share the provider limits,
+      # the tenants' buckets and the breakers through the database (v82).
+      PASAR_WORKERS: ${PASAR_WORKERS:-1}
       # Real models: each provider's key, from the shell, to that provider only.
       DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
       OPENCODE_API_KEY: ${OPENCODE_API_KEY:-}

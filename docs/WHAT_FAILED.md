@@ -2591,6 +2591,123 @@ latencies that vary, and count every request the client sent.
 
 ---
 
+## 70. A test of shared limits passed on the path it was not testing
+
+**What happened.** v82 shares a deployment's limits through its database
+(`limits.py`). On PostgreSQL a process is to hear at once that another has
+joined, left or opened a provider's breaker: a NOTIFY, received on a
+connection of its own that LISTENs, taken out of the pool. The test that a
+breaker opening in one process opens in the other passed on PostgreSQL the
+first time it ran, and the listener had never listened. SQLAlchemy hands out
+a pooled connection's driver connection only while the connection belongs to
+the pool; the code detached it first and asked for it after, got None, failed
+on its first use, logged that, and fell back to the heartbeats — which in the
+test came every 0.2 seconds, so the opening still arrived well within the
+test's three. The warning was in the test's output, three times, between
+lines that said ok.
+
+Making the test's heartbeats 30 seconds apart on PostgreSQL, so that only a
+notification could arrive in time, failed it at once; asking for the driver
+connection before detaching it fixed it. The same 30 seconds then found a
+fault in the design: each process counted the rows written within three of
+*its own* heartbeats, so a process whose heartbeat was longer counted a dead
+process for longer — 90 seconds here, against the dead one's 0.6 — and
+processes that counted differently took shares that did not add up to the
+limit.
+
+**Fix.** The listener takes its connection before detaching it. Each process
+writes until when it is to be counted — three of its own heartbeats on — and
+every process counts the rows not yet past theirs, so all count alike. On
+PostgreSQL the test runs its two processes 30 seconds apart in heartbeats and
+checks that each counts the other as it joins, that the one left takes the
+whole limit as the other leaves, and that each says it hears at once
+(`GET /v1/admin/nodes`, `hears_at_once`); its breaker check is held to 1.5 s.
+Measured with two real servers, a breaker opening in one was held open in the
+other 11–16 ms after (docs/SERVICE.md, v82).
+
+**Lesson.** A fast path with a slow fallback passes a test on the fallback
+unless the test's deadline is one only the fast path can meet. When a path
+exists for speed, give the test a fallback too slow to pass.
+
+---
+
+## 71. Shared limits that did not keep their word when the database did not
+
+**What happened.** An independent review of v82, before release, read the
+shared limits against what docs/SERVICE.md said of them and reproduced seven
+defects, each with a script, and two more it could only suspect.
+
+- **A database not migrated to 0003 had no rate limit at all.** The docs said
+  a v82 process on such a database keeps each limit its own, as v81 did; the
+  shared bucket, failing to find its table, admitted every request instead —
+  10 of 10 at 1 a second with bursts of 2, where v81's bucket admitted 2. The
+  same on any failed statement: a database that blinked, a pool that ran dry.
+- **A process told to stop never stopped if the database did not answer.**
+  Leaving deleted its row from the server's shutdown with nothing to bound it;
+  behind a proxy gone silent, a server in `deployment` was still running 60 s
+  after SIGTERM, stuck in that DELETE, where in `process` it went in 0.2 s.
+- **On SQLite every request waited for the write lock.** A shared bucket on
+  SQLite is a write transaction a request — BEGIN IMMEDIATE, the database's
+  one writer — so reads queued behind any long write: while an operator made
+  a tenant of 4,000 synthetic customers (5–7 s in one transaction), a client
+  got 91 answers in place of 562, the slowest 3.2 s in place of 0.7. SQLite
+  is the image's default.
+- **A heartbeat in flight could write a leaving process back.** `stop`
+  deleted the row while the heartbeat thread was already past its last check,
+  inside its upsert; the process that left was counted 15 s more (21 of 300
+  leaves on PostgreSQL when another process's word came 0–3 ms before).
+- **A bucket outlived the settings it was made under.** At 0.1 a second a
+  tenant's spent burst set its bucket 400 s ahead; restarted at 10 a second,
+  it was refused for 396 s, and after a rate of 0, for 95 years.
+- **The listener's dropped session logged a traceback of SQLAlchemy's**,
+  outside the service's JSON lines, at every PostgreSQL restart; and a
+  malformed `PASAR_WORKERS` broke every CLI command, not just `serve`.
+
+Not reproduced, fixed anyway: a process's name held 24 random bits, and
+replicas share a hostname's first characters and, in containers, a PID; the
+refusal cache was a dict two threads could change at once.
+
+**Fix.** A bucket that cannot be read is the process's own for 5 s at a time
+(resilience.TenantLimits, v81's), then asked again. Leaving waits for the
+heartbeat in flight, writes nothing after, and gives up after 5 s, leaving the
+row to expire. `PASAR_LIMITS=auto` is the default: shared on PostgreSQL, a
+process's own on SQLite, where `deployment` is for several processes on one
+machine's file and costs that write lock. The listener has a connection of
+its own, psycopg's, not the pool's; `PASAR_WORKERS` is read by `serve` alone,
+and a bad one is one line. Names carry 48 random bits; the refusal cache, a
+lock.
+
+**The second pass.** The review read the fixes as new code, and one was. The
+stale bucket was first fixed by pulling a bucket back to the furthest ahead
+the reading process's own settings could put it — and two processes with
+different settings, as in any rolling change of `PASAR_RATE`, then pulled
+each other's admissions back at every refusal: from 10 to 1 a second, 493
+and 555 requests admitted in ten seconds (PostgreSQL, SQLite) where 140 were
+the most either setting allowed; from a burst of 40 to 10, 2,785 and 2,796.
+The bucket is now kept in requests, not seconds — how many it holds and when that was
+written, drained at the writer's rate — so that every process agrees on what
+it holds whatever its settings: the same three changes admit 139, under the
+looser setting's 140, and a bucket filled at 0.1 a second drains at 10 at
+once, with nothing to bring back. The same pass found the new claim that a
+database "not answering" falls back to the process's own bucket untrue — a
+silent database holds a request without an error, as it holds every other
+statement (now on the roadmap) — and that `auto` gave each of `serve
+--workers 2`'s processes on SQLite its own limits, which it now shares. The
+image's smoke test runs its API checks on the image as it is, and its count
+of processes on a second start with the limits shared. Each has a check in
+`test_shared_limits` (a database not migrated, a bucket spent at a slower
+rate, two rates on one bucket, a stop held on a heartbeat that never ends, a
+terminated listener, `auto` on both databases and for `--workers 2`, a
+malformed `PASAR_WORKERS`).
+
+**Lesson.** A limit shared through a database is only as good as what it does
+when the database is not there — not migrated, not answering, or slow behind a
+writer — and when the processes sharing it disagree. Each of these had a
+sentence in the docs; none had a test that took the database away, or gave two
+processes two settings.
+
+---
+
 ## What this list is for
 
 Two things.
