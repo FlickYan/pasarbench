@@ -138,6 +138,20 @@ def _plan_host(host: str) -> bool:
     return any(host == h or host.endswith("." + h) for h in PLAN_HOSTS)
 
 
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    """A model provider answers a request; it does not redirect it. urllib
+    follows a redirect to whatever host it names -- a POST as a GET -- with the
+    request's headers, its key's Authorization among them (v75; WHAT_FAILED
+    #63). Here a redirect is the HTTP error it would be, and nothing is sent on."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):  # noqa: ANN001, ANN201
+        return None
+
+
+# Every request that carries a key goes through this opener (and add_model's).
+OPENER = urllib.request.build_opener(_NoRedirect())
+
+
 def _post(url: str, payload: dict, headers: dict, timeout: float = 120.0) -> dict:
     host = _host(url)
     if host in _HALTED:
@@ -146,7 +160,7 @@ def _post(url: str, payload: dict, headers: dict, timeout: float = 120.0) -> dic
     body = json.dumps(payload).encode()
     req = urllib.request.Request(url, data=body, headers=headers, method="POST")
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as r:
+        with OPENER.open(req, timeout=timeout) as r:
             return json.loads(r.read().decode())
     except urllib.error.HTTPError as e:
         detail = e.read().decode()[:500]

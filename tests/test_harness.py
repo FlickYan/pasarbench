@@ -2253,7 +2253,57 @@ def test_gateway_backends():
           (resp[1][-300:], msg[1][-300:], own[1][-300:]))
 
 
+def test_no_redirects():
+    """v75 (WHAT_FAILED #63): urllib follows a redirect to any host, with the
+    request's headers. A key must not: a provider that redirects is refused."""
+    import threading
+    from http.server import BaseHTTPRequestHandler, HTTPServer
+    from pasarbench.harness.backends import _post
+    seen = []
+
+    class Elsewhere(BaseHTTPRequestHandler):
+        def log_message(self, *a):
+            pass
+
+        def do_GET(self):
+            seen.append(self.headers.get("Authorization"))
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(b"{}")
+        do_POST = do_GET
+
+    other = HTTPServer(("127.0.0.1", 0), Elsewhere)
+
+    class Redirect(BaseHTTPRequestHandler):
+        def log_message(self, *a):
+            pass
+
+        def do_POST(self):
+            self.rfile.read(int(self.headers.get("Content-Length") or 0))
+            self.send_response(307)
+            self.send_header("Location", f"http://127.0.0.1:{other.server_port}/v1/steal")
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+
+    first = HTTPServer(("127.0.0.1", 0), Redirect)
+    for srv in (other, first):
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+    try:
+        _post(f"http://127.0.0.1:{first.server_port}/v1/chat/completions", {"x": 1},
+              {"Authorization": "Bearer sk-must-stay", "Content-Type": "application/json"},
+              timeout=5)
+        err = ""
+    except RuntimeError as e:
+        err = str(e)
+    finally:
+        for srv in (other, first):
+            srv.shutdown()
+    check("a provider that redirects a request is refused: the key never reaches the host "
+          "the redirect names (v75)", "HTTP 307" in err and seen == [], (err, seen))
+
+
 def main() -> int:
+    test_no_redirects()
     test_reference_through_loop()
     test_budgets_bite()
     test_error_degrades()

@@ -708,13 +708,13 @@ def held_by_other(key: str, own: tuple[str, ...]) -> list[str]:
 def listed_models(url: str, key: str) -> list[str] | str:
     """The model ids the key can use (GET /models), or why they could not be
     listed."""
-    from pasarbench.harness.backends import USER_AGENT, gateway
+    from pasarbench.harness.backends import OPENER, USER_AGENT, gateway
     headers = {"Authorization": f"Bearer {key}"}
     if gateway(url):
         headers["User-Agent"] = USER_AGENT      # a gateway that asks a client to name itself
     req = urllib.request.Request(url.rstrip("/") + "/models", headers=headers)
     try:
-        with urllib.request.urlopen(req, timeout=30) as r:
+        with OPENER.open(req, timeout=30) as r:     # a redirect is refused, not followed
             data = json.loads(r.read().decode())
     except urllib.error.HTTPError as e:
         return _hide(f"HTTP {e.code}: {e.read().decode()[:200]}", key)
