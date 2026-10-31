@@ -15,6 +15,8 @@ how much of a turn's time is the service's.
         --compare traces/V-dsk-flash-parts/full
 
     python scripts/service_sweep.py --self-test     no key, no cost: the whole path, checked
+    python scripts/service_sweep.py --run-id S-dsk-flash-parts --report \\
+        --compare traces/V-dsk-flash-parts/full     its report again, from its traces
 
 (RUNBOOK 1z.) It starts the service in a process of its own on 127.0.0.1, its
 database in the run's directory (or --database-url), and gives that process one
@@ -133,6 +135,8 @@ def parse(argv: list[str] | None) -> argparse.Namespace:
     ap.add_argument("--compare", default="",
                     help="a recorded cell to compare with (scripts/compare_cells.py)")
     ap.add_argument("--resume", action="store_true")
+    ap.add_argument("--report", action="store_true",
+                    help="write the run's report again from its traces; nothing is run")
     ap.add_argument("--self-test", action="store_true",
                     help="a local stand-in provider, no key: check the whole path")
     return ap.parse_args(argv)
@@ -448,6 +452,10 @@ def report(cell: Path, served: list[str] | None = None, replay: dict | None = No
     model = (head.get("service") or {}).get("model") or "?"
     out = {
         "cell": str(cell), "episodes": n, "unfinished": unfinished,
+        # Counts, so a rate is printed once from them (pass_hat_k's are rounded
+        # to four places; rounded again to three, 116 of 117 read 0.992).
+        "passed": len(passed), "tasks_all_passed": sum(all(v.passed for v in vs)
+                                                       for vs in by_task.values()),
         "model": "scripted" if model.startswith("scripted:") else model,
         "backend": head.get("backend"),
         "simulator": head.get("simulator"), "policy_mode": head.get("policy_mode"),
@@ -509,7 +517,9 @@ def markdown(r: dict) -> str:
         "| prompt tokens / conversation (cached) | turn p50 / p95 | of a turn: model, tools, "
         "service | service ms / turn p50 / p95 |",
         "|---|---|---|---|---|---|---|---|",
-        f"| {r.get('pass^1', 0):.3f} | {r.get('pass^k', 0):.3f} "
+        f"| {r['passed'] / r['episodes']:.3f} ({r['passed']}/{r['episodes']}) "
+        f"| {r['tasks_all_passed'] / max(1, r.get('n_tasks', 0)):.3f} "
+        f"({r['tasks_all_passed']}/{r.get('n_tasks', 0)}) "
         f"| {c['per_conversation_mean']}, {c['per_conversation_p95']} "
         f"| {c['per_passed_conversation']} "
         f"| {t['prompt']:,.0f} ({(t['cache_share'] or 0):.1%}) "
@@ -603,6 +613,29 @@ def sweep(args) -> int:
                   "max_steps": args.max_steps, "token_budget": args.token_budget,
                   "strict_money": args.strict_money, "workers": args.workers,
                   "database": db_url.split(":", 1)[0].split("+")[0]}
+    return write_report(args, run_dir, cell, r)
+
+
+def report_only(args) -> int:
+    """--report: the run's report.md, service.json and summary.json written again
+    from its traces -- nothing is run or sent, no key is read. The replay, the
+    served models and what was not run are the run's own, from its service.json."""
+    run_dir = Path(args.trace_root) / args.run_id
+    cell = run_dir / "full"
+    if not args.run_id or not any(cell.glob("*.jsonl")):
+        raise SystemExit(f"--report: no traces in {cell}")
+    old_path = run_dir / "service.json"
+    old = json.loads(old_path.read_text()) if old_path.exists() else {}
+    r = report(cell, old.get("served_models") or [], (old.get("checks") or {}).get("replay"))
+    r["skipped"] = old.get("skipped") or {}
+    r["server_holds"] = old.get("server_holds") or []
+    r["crashed"] = old.get("crashed") or []
+    r["setup"] = old.get("setup") or {}
+    args.token_budget = (r["setup"] or {}).get("token_budget", args.token_budget)
+    return write_report(args, run_dir, cell, r)
+
+
+def write_report(args, run_dir: Path, cell: Path, r: dict) -> int:
     md = markdown(r)
     if args.compare:
         cmp = subprocess.run([sys.executable, str(ROOT / "scripts" / "compare_cells.py"),
@@ -760,7 +793,19 @@ def self_test(args) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
+    import importlib.util
     args = parse(argv)
+    missing = [m for m in ("fastapi", "sqlalchemy", "alembic", "httpx", "uvicorn",
+                           "prometheus_client") if importlib.util.find_spec(m) is None]
+    if missing:
+        # Said before anything starts or is sent, not as a traceback halfway in.
+        print(f"The service's dependencies are not installed for {sys.executable} "
+              f"({', '.join(missing)} missing). In the repo:\n\n"
+              f"    python3 -m venv .venv\n    . .venv/bin/activate\n"
+              f"    pip install -r requirements-service.txt\n")
+        return 2
+    if args.report:
+        return report_only(args)
     return self_test(args) if args.self_test else sweep(args)
 
 

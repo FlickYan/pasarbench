@@ -461,6 +461,52 @@ def test_episodes(kind: str, every: int = 8):
     engine.dispose()
 
 
+def test_kit_messages():
+    """scripts/service_sweep.py: what it says before it starts anything, and a
+    rate as its report prints it."""
+    print("the real-model kit's messages")
+    import contextlib
+    import io
+    from pathlib import Path
+    spec = importlib.util.spec_from_file_location(
+        "service_sweep", Path(__file__).resolve().parent.parent / "scripts" / "service_sweep.py")
+    kit = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(kit)
+    real = importlib.util.find_spec
+    importlib.util.find_spec = (lambda name, *a, **kw:
+                                None if name == "sqlalchemy" else real(name, *a, **kw))
+    said = io.StringIO()
+    try:
+        with contextlib.redirect_stdout(said):
+            code = kit.main(["--self-test"])
+    finally:
+        importlib.util.find_spec = real
+    check("the real-model kit without the service's packages says which are missing and how "
+          "to install them, before it starts anything (exit 2)",
+          code == 2 and "sqlalchemy" in said.getvalue()
+          and "pip install -r requirements-service.txt" in said.getvalue(), said.getvalue()[:300])
+    usd = "$0.001525"
+    r = {"model": "deepseek-flash", "backend": "openai-compat:deepseek-flash", "simulator": "c",
+         "policy_mode": "preload", "episodes": 117, "passed": 116, "tasks_all_passed": 38,
+         "n_tasks": 39, "k": 3, "pass^1": 0.9915, "pass^k": 0.9744, "unfinished": 0,
+         "stops": {"done": 117}, "per_trap": {},
+         "cost": {"total": usd, "per_conversation_mean": usd, "per_conversation_p50": usd,
+                  "per_conversation_p95": usd, "per_passed_conversation": usd},
+         "tokens_per_conversation": {"prompt": 33786.0, "cached": 31624.0, "completion": 571.0,
+                                     "cache_share": 0.936},
+         "per_conversation": {"model_calls": 7.1, "tool_calls": 4.8, "customer_turns": 3.3},
+         "turn_ms": {"p50": 2251.0, "p95": 5507.0},
+         "time_share": {"model": 0.992, "tools": 0.001, "service": 0.007},
+         "service_ms_per_turn": {"p50": 18.0, "p95": 36.0},
+         "customer_tokens_per_conversation": {"prompt": 2608.9, "completion": 288.5},
+         "checks": {"prompt_and_tools_as_the_benchmark": 117,
+                    "rescored_to_the_same_verdict": 117, "not_rescorable": {}, "replay": None},
+         "served_models": ["deepseek-flash"]}
+    md = kit.markdown(r)
+    check("…and its report prints a rate from the counts: 116 of 117 is 0.991, not the 0.992 "
+          "that rounding pass^1 twice gave", "| 0.991 (116/117) | 0.974 (38/39) |" in md, md[:400])
+
+
 # ---------------------------------------------------------------------------
 # Storage under concurrency
 # ---------------------------------------------------------------------------
@@ -1444,6 +1490,7 @@ def main() -> int:
         test_logs_hold_no_message()
         test_parity("sqlite")
         test_episodes("sqlite")
+        test_kit_messages()
         if PG:
             test_migrations("postgres")
             test_concurrency("postgres")
