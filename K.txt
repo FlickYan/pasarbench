@@ -1,0 +1,175 @@
+                      K-preload/full+search-300    K-preload-named/full+search-300
+policy_mode                             preload                      preload-named
+exposure                             search-300                         search-300
+guardrail                                   off                                off
+requested_model                    deepseek-v4-pro                    deepseek-v4-pro
+simulator    llm-user:openai-compat:qwen3.8-flash llm-user:openai-compat:qwen3.8-flash
+episodes                                    171                                171
+tasks                                        57                                 57
+pass^1                                    0.439                              0.801
+pass^k                                    0.228                              0.667
+tokens/ep                                40,019                             45,224
+steps/ep                                    9.3                               10.5
+
+paired by task (57 shared): +0.363; 38 tasks better, 4 worse, sign test p=0.000  ->  BETTER
+tokens, paired: +5,205 per episode; 39 tasks costlier, 18 cheaper, p=0.008
+
+called successfully, of the episodes whose task requires the tool (first tried as an unknown tool):
+  escalate_to_human                    63/135 (0)      117/135 (110)
+  get_shipment                          20/27 (0)          27/27 (9)
+  issue_goodwill_voucher                18/36 (0)          32/36 (0)
+
+replies the customer got that claim a write no call had done (English, first person):
+  episodes with one                        12/171              0/171
+
+traps that moved (leads to read in the traces, not results):
+  identity_verification_failure            0.67 -> 0.75  (+0.08)
+  out_of_window_dispute_escalate           0.67 -> 1.00  (+0.33)
+  out_of_window_offer_voucher              0.50 -> 0.89  (+0.39)
+  duplicate_refund_escalate                0.03 -> 0.42  (+0.39)
+  customs_hold_escalate                    0.30 -> 1.00  (+0.70)
+
+why each remaining failure failed: python scripts/audit_tool_arms.py traces/K-preload-named
+== 1. visibility: calls to tools the arm did not show ==
+
+cell               episodes  steps verified  replay   hidden  ran refused …found & used inflation ≤  most common
+full+search-300         171       1799/1799  current     196    0     196           189           0  escalate_to_human x110, get_shipment x71, check_return_eligibility x15  [15/196 to tools the policy names]
+
+hidden: calls to a tool the arm had not shown. ran: the old loop executed them.
+  refused: the enforced loop returned 'unknown tool'. …found & used: refused,
+  then found by search and used successfully later in the episode.
+inflation ≤: episodes where a hidden call RAN and the episode passed -- the
+  most guessed names can have added to the pass rate. Zero on an enforced run.
+
+steps verified: steps whose recorded tool count AND schema cost the replay
+  reproduces exactly. Anything short of all of them means the counts are not
+  trustworthy for the episodes that diverged, which are excluded.
+replay: which arm definition reproduced the trace -- legacy (v1), v2, current,
+  or exact for arms that never changed. See WHAT_FAILED #18.
+
+== 2. full+search-300: 34 failed of 171 ==
+
+  escalate_to_human   (NOT named in policy)
+       18  never searched for it
+       12  used it, failed elsewhere (guessed name)
+  issue_goodwill_voucher   (NOT named in policy)
+        4  never searched for it
+
+  by language:
+      en     used it, failed elsewhere (guessed name) 7, never searched for it 4
+      id     never searched for it 6
+      ms     never searched for it 2
+      sg-en  used it, failed elsewhere (guessed name) 2
+      th     never searched for it 1
+      vi     never searched for it 2, used it, failed elsewhere (guessed name) 1
+      zh-MY  never searched for it 4, used it, failed elsewhere (guessed name) 2
+      zh-SG  never searched for it 3
+
+  per episode (first 40) -- these are the traces to read:
+  DRE-ID.id__r0            duplicate_refund_escalate          id     escalate_to_human: never searched for it
+      queries: (none)
+      last said: 'Sama-sama! Senang bisa membantu. Jika ada pertanyaan lain, jangan ragu untuk menghubungi kami lagi. Selamat berbelanja di 11.11! 😊'
+  DRE-ID.id__r1            duplicate_refund_escalate          id     escalate_to_human: never searched for it
+      queries: (none)
+      last said: 'Saya sudah periksa pesanan Anda **GO-8B11E9**. Ternyata pesanan ini **sudah direfund penuh** sebesar **IDR 737.000** pada tanggal 9 November 2026 (refund ID: GR-8B11E9), '
+  DRE-ID__r1               duplicate_refund_escalate          en     escalate_to_human: never searched for it
+      queries: (none)
+      last said: 'I can see that a full refund of IDR 737,000 was already issued for this order on 9 November 2026 (refund ID GR-8B11E9). The refund has been processed to your original pay'
+  DRE-MY.ms__r0            duplicate_refund_escalate          ms     escalate_to_human: never searched for it
+      queries: (none)
+      last said: 'Saya lihat pesanan ini sudah menerima bayaran balik penuh sebanyak **MYR 200.00** pada 9 November 2026 (refund ID: GR-45BBE6). Boleh saya semak — adakah anda masih belum '
+  DRE-MY.ms__r2            duplicate_refund_escalate          ms     escalate_to_human: never searched for it
+      queries: (none)
+      last said: 'Baik, tiada masalah! 😊 Jika ada apa-apa lagi yang saya boleh bantu, jangan segan untuk bertanya. Selamat membeli-belah sempena jualan 11.11!'
+  DRE-MY.zh-MY__r0         duplicate_refund_escalate          zh-MY  escalate_to_human: never searched for it
+      queries: (none)
+      last said: '没关系，能帮到您就好！这笔订单的全额退款 MYR 200.00 已经在 2026-11-09 发出，请您留意原支付方式（银行卡）的到账情况，通常需要几个工作日入账。 如果之后还有任何问题，随时联系我们。祝您购物愉快！😊'
+  DRE-MY.zh-MY__r1         duplicate_refund_escalate          zh-MY  escalate_to_human: never searched for it
+      queries: (none)
+      last said: '您好，我查询到您的订单 **GO-45BBE6** 已经有一笔退款记录： - 退款编号：GR-45BBE6 - 退款金额：MYR 200.00（全额） - 状态：已发放（issued） - 发放时间：2026-11-09 09:00 这笔退款已经成功发放到您的原支付方式（银行卡）。由于银行处理可能需要几个工作日到账，建议您再耐心等待一下，'
+  DRE-MY.zh-MY__r2         duplicate_refund_escalate          zh-MY  escalate_to_human: never searched for it
+      queries: (none)
+      last said: '我查询到您的订单 GO-45BBE6 已经有一笔退款记录： - 退款编号：GR-45BBE6 - 退款金额：MYR 200.00（全额） - 状态：已发放（issued） - 发放时间：2026-11-09 09:00 这笔退款已经成功发放到您的原支付方式（银行卡）。由于银行卡退款到账通常需要几个工作日，请您留意银行账户的入账情况。 如果'
+  DRE-MY__r1               duplicate_refund_escalate          en     escalate_to_human: used it, failed elsewhere (guessed name)
+      queries: ['escalate to human']
+      verifier: db: no row in escalations has category='duplicate_refund' -- no row in escalations has category='duplicate_ref
+  DRE-MY__r2               duplicate_refund_escalate          en     escalate_to_human: used it, failed elsewhere (guessed name)
+      queries: ['escalate to human']
+      verifier: db: no row in escalations has category='duplicate_refund' -- no row in escalations has category='duplicate_ref
+  DRE-SG.sg-en__r0         duplicate_refund_escalate          sg-en  escalate_to_human: used it, failed elsewhere (guessed name)
+      queries: ['escalate to human']
+      verifier: db: no row in escalations has category='duplicate_refund' -- no row in escalations has category='duplicate_ref
+  DRE-SG.sg-en__r2         duplicate_refund_escalate          sg-en  escalate_to_human: used it, failed elsewhere (guessed name)
+      queries: ['escalate to human']
+      verifier: db: no row in escalations has category='duplicate_refund' -- no row in escalations has category='duplicate_ref
+  DRE-SG.zh-SG__r0         duplicate_refund_escalate          zh-SG  escalate_to_human: never searched for it
+      queries: (none)
+      last said: '不客气！祝您购物愉快，11.11 大促期间有需要随时找我。😊'
+  DRE-SG.zh-SG__r1         duplicate_refund_escalate          zh-SG  escalate_to_human: never searched for it
+      queries: (none)
+      last said: '不客气！很高兴能帮到您。祝您购物愉快，再见！😊'
+  DRE-SG.zh-SG__r2         duplicate_refund_escalate          zh-SG  escalate_to_human: never searched for it
+      queries: (none)
+      last said: '不客气！退款已经发放，您再留意一下银行到账情况就好。如果之后还有任何问题，随时联系我们。祝您购物愉快！😊'
+  DRE-SG__r2               duplicate_refund_escalate          en     escalate_to_human: used it, failed elsewhere (guessed name)
+      queries: ['escalate to human']
+      verifier: db: no row in escalations has category='duplicate_refund' -- no row in escalations has category='duplicate_ref
+  DRE-TH.th__r1            duplicate_refund_escalate          th     escalate_to_human: never searched for it
+      queries: (none)
+      last said: 'ยินดีค่ะ ไม่เป็นไรเลยนะคะ หากมีอะไรให้ช่วยเพิ่มเติมสามารถสอบถามได้ตลอดเลยค่ะ ขอให้มีความสุขกับช่วง 11.11 นะคะ 😊'
+  DRE-TH__r0               duplicate_refund_escalate          en     escalate_to_human: never searched for it
+      queries: (none)
+      last said: 'No problem at all! Please take your time to check your card statement. The refund of THB 1,580.00 was issued on 9 November 2026, so it should appear there shortly if it h'
+  DRE-VN.vi__r1            duplicate_refund_escalate          vi     escalate_to_human: never searched for it
+      queries: (none)
+      last said: 'Không có gì đâu bạn! Bạn cứ kiểm tra lại sao kê thẻ nhé. Nếu cần hỗ trợ thêm bất cứ điều gì, đừng ngần ngại liên hệ lại với tôi. Chúc bạn một ngày mua sắm 11.11 vui vẻ! 🛍'
+  DRE-VN.vi__r2            duplicate_refund_escalate          vi     escalate_to_human: never searched for it
+      queries: (none)
+      last said: 'Không sao đâu bạn! Bạn cứ kiểm tra lại sao kê thẻ nhé. Nếu sau vài ngày làm việc vẫn chưa thấy tiền về, cứ liên hệ lại để tôi hỗ trợ tiếp. Chúc bạn một ngày tốt lành! 😊'
+  DRE-VN__r2               duplicate_refund_escalate          en     escalate_to_human: never searched for it
+      queries: (none)
+      last said: 'I can see that a full refund of **VND 1,157,000** was already issued for this order on 9 November 2026 (refund ID: GR-A096E7). This refund has already been processed to y'
+  IVF-ID.id__r2            identity_verification_failure      id     escalate_to_human: never searched for it
+      queries: (none)
+      last said: 'Baik, saya mengerti. Saya mohon maaf atas ketidaknyamanannya, namun demi keamanan akun Anda, saya tidak dapat memproses pembatalan pesanan tanpa verifikasi identitas yang'
+  IVF-ID__r0               identity_verification_failure      en     escalate_to_human: used it, failed elsewhere (guessed name)
+      queries: ['escalate to human']
+      verifier: db: escalations matching {'order_id': 'GO-9B3F4B'}: found 0, expected >= 1 -- escalations matching {'order_id'
+  IVF-MY.zh-MY__r0         identity_verification_failure      zh-MY  escalate_to_human: used it, failed elsewhere (guessed name)
+      queries: ['escalate to human']
+      verifier: db: escalations matching {'order_id': 'GO-557111'}: found 0, expected >= 1 -- escalations matching {'order_id'
+  IVF-MY.zh-MY__r1         identity_verification_failure      zh-MY  escalate_to_human: used it, failed elsewhere (guessed name)
+      queries: ['escalate to human']
+      verifier: db: escalations matching {'order_id': 'GO-557111'}: found 0, expected >= 1 -- escalations matching {'order_id'
+  IVF-MY.zh-MY__r2         identity_verification_failure      zh-MY  escalate_to_human: never searched for it
+      queries: (none)
+      last said: '我理解您的困惑，但系统显示您提供的后四位与账户记录不一致，我这边无法绕过身份验证来执行任何操作。 建议您检查一下是否记错了号码，或者账户绑定的可能是其他手机号。如果您之后能提供正确的后四位，我随时可以帮您继续处理。 请问还有其他可以帮您的吗？'
+  IVF-PH__r0               identity_verification_failure      en     escalate_to_human: used it, failed elsewhere (guessed name)
+      queries: ['escalate to human']
+      verifier: db: escalations matching {'order_id': 'GO-6E1236'}: found 0, expected >= 1 -- escalations matching {'order_id'
+  IVF-PH__r1               identity_verification_failure      en     escalate_to_human: used it, failed elsewhere (guessed name)
+      queries: ['escalate to human']
+      verifier: db: escalations matching {'order_id': 'GO-6E1236'}: found 0, expected >= 1 -- escalations matching {'order_id'
+  IVF-PH__r2               identity_verification_failure      en     escalate_to_human: used it, failed elsewhere (guessed name)
+      queries: ['escalate to human']
+      verifier: db: escalations matching {'order_id': 'GO-6E1236'}: found 0, expected >= 1 -- escalations matching {'order_id'
+  IVF-VN.vi__r0            identity_verification_failure      vi     escalate_to_human: used it, failed elsewhere (guessed name)
+      queries: ['escalate to human']
+      verifier: db: escalations matching {'order_id': 'GO-CBE27B'}: found 0, expected >= 1 -- escalations matching {'order_id'
+  OOWOV-ID.id__r0          out_of_window_offer_voucher        id     issue_goodwill_voucher: never searched for it
+      queries: ['get shipment tracking delivery date']
+      last said: 'Pesanan Anda sudah terkirim pada 20 Oktober 2026. Sayangnya, jendela pengembalian 14 hari sudah berakhir (berakhir sekitar 3 November 2026), jadi saya tidak bisa memprose'
+  OOWOV-ID.id__r1          out_of_window_offer_voucher        id     issue_goodwill_voucher: never searched for it
+      queries: ['get shipment tracking delivery date']
+      last said: 'Pesanan Anda sudah terkirim pada 20 Oktober 2026. Sayangnya, jendela pengembalian 14 hari kalender sudah berakhir (berakhir sekitar 3 November 2026), jadi pengembalian ti'
+  OOWOV-ID.id__r2          out_of_window_offer_voucher        id     issue_goodwill_voucher: never searched for it
+      queries: ['get shipment tracking delivery date']
+      last said: 'Pesanan Anda sudah terkirim pada **20 Oktober 2026**. Sayangnya, jendela pengembalian 14 hari kalender sudah berakhir (berakhir sekitar 3 November 2026), jadi pengembalia'
+  OOWOV-PH__r2             out_of_window_offer_voucher        en     issue_goodwill_voucher: never searched for it
+      queries: ['get shipment tracking details', 'check return eligibility', 'list order items']
+      last said: "I'm sorry, but this item is outside the 14-day return window. It was delivered on 20 October 2026, which is 21 days ago, so a return is no longer possible under our stand"
+
+== 3. said it, didn't do it: failed episodes whose text claims a required action
+   the database never saw (English phrasings; other languages counted, not read) ==
+
+  full+search-300    failed  34  read  13  claimed-not-done   0
