@@ -99,9 +99,12 @@ api_keys = Table(
     _tenant_fk("api_keys"),
 )
 
-# A tenant's ids for new rows (RET0001, REF0002, ...), one counter for every
+# A tenant's ids for new rows (RET0001, REF0002, ...), one count for every
 # prefix as the benchmark's Database has, so a conversation on a fresh tenant
-# names what it creates exactly as the benchmark does.
+# names what it creates exactly as the benchmark does. On SQLite this row is the
+# count. On PostgreSQL the tenant's sequence is (store.id_sequence, migration
+# 0002): it gives a value without a lock held to commit; this row stays at 0
+# there, and takes the sequence's value back if 0002 is undone.
 id_counters = Table(
     "id_counters", metadata,
     _tenant(),

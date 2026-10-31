@@ -19,12 +19,15 @@ the same transaction, so a call is either done and recorded, or neither.
                 sequence advanced
 
 Two conversations of one customer therefore write one at a time, and two
-customers never wait for each other -- but for the tenant's id counter, held
-from a write's first new id to its commit (docs/SERVICE.md: the measured cost,
-and the fix). The lock and the version check guard different things: the
-version check catches a read-modify-write of one row gone stale; only the lock
-stops two inserts that each read the same balance (two refunds, each under the
-order's total) -- tests/test_service.py races both on PostgreSQL.
+customers never wait for each other. A new row's id comes from the tenant's
+sequence on PostgreSQL, taken without a lock held to commit (v79; before it, a
+counter row that every creating write of the tenant waited on -- docs/SERVICE.md
+measures both); on SQLite, which has one writer anyway, from a counter row.
+
+The lock and the version check guard different things: the version check
+catches a read-modify-write of one row gone stale; only the lock stops two
+inserts that each read the same balance (two refunds, each under the order's
+total) -- tests/test_service.py races both on PostgreSQL.
 
 A slice is the customer's own rows: another customer's order does not exist
 for the tools, whatever the model asks -- authorization in the data layer, not
@@ -55,7 +58,7 @@ from fractions import Fraction
 from dataclasses import dataclass, field
 from typing import Any, Callable, Iterator
 
-from sqlalchemy import Connection, Engine, create_engine, event, insert, select, update
+from sqlalchemy import Connection, Engine, create_engine, event, insert, select, text, update
 from sqlalchemy.exc import DataError, IntegrityError
 
 from ..db import CURRENCY_EXPONENT, SGD_RATE, Action, Database, fmt_money, seed
@@ -109,6 +112,14 @@ def _json(obj: Any) -> str:
 
 def is_sqlite(engine: Engine) -> bool:
     return engine.dialect.name == "sqlite"
+
+
+def id_sequence(tenant_id: str) -> str:
+    """The PostgreSQL sequence a tenant's new ids come from. Named by a digest
+    of the tenant's id: a sequence's name is an identifier (63 bytes, no
+    hyphen unquoted), and a tenant's id may be 63 characters with hyphens.
+    Migration 0002 names them the same way; never change one without the other."""
+    return "ids_" + hashlib.sha256(tenant_id.encode()).hexdigest()[:24]
 
 
 def make_engine(url: str, *, pool_size: int = 10, max_overflow: int = 20,
@@ -235,6 +246,10 @@ def seed_tenant(engine: Engine, tenant_id: str, name: str, world: str,
                                               world_digest=digest,
                                               daily_budget_picousd=daily_budget_picousd))
         conn.execute(insert(S.id_counters).values(tenant_id=tenant_id, value=0))
+        if conn.dialect.name == "postgresql":
+            # Its new ids: a sequence (see _run_once), made with the tenant and
+            # gone with it if the seeding fails -- PostgreSQL's DDL is transactional.
+            conn.execute(text(f"CREATE SEQUENCE {id_sequence(tenant_id)} MINVALUE 1 START 1"))
         for table in S.WORLD_ORDER:
             rows = [{"tenant_id": tenant_id, "pos": i, **_row_values(table, r)}
                     for i, r in enumerate(tables.get(table, {}).values())]
@@ -701,9 +716,22 @@ def _run_once(engine: Engine, tenant_id: str, user_id: str, name: str, args: Any
                     raise StoreError(f"replay: the call asked for a {prefix} id where its "
                                      f"log holds {given[0]}")
                 return given.pop(0)
-            k = S.id_counters
-            n = conn.execute(update(k).where(k.c.tenant_id == tenant_id)
-                             .values(value=k.c.value + 1).returning(k.c.value)).scalar_one()
+            if is_sqlite(engine):
+                # One writer at a time: the counter's row costs nothing to hold.
+                k = S.id_counters
+                n = conn.execute(update(k).where(k.c.tenant_id == tenant_id)
+                                 .values(value=k.c.value + 1).returning(k.c.value)).scalar_one()
+            else:
+                # The tenant's sequence: its next value at once, with no lock held
+                # to commit. The counter's row was held from a write's first new id
+                # to its commit, and every write of the tenant that made a row
+                # waited behind it (docs/SERVICE.md, Measured). What a sequence
+                # gives is never taken back: a call rolled back -- a conflict run
+                # again -- leaves a gap, which replay does not mind (it gives each
+                # call its recorded ids), and a fresh tenant's one conversation
+                # still names what it makes as the benchmark's episode does.
+                n = conn.execute(text("SELECT nextval(CAST(:seq AS regclass))"),
+                                 {"seq": id_sequence(tenant_id)}).scalar_one()
             return f"{prefix}{int(n):04d}"
 
         db = StoreDatabase(conn, tenant_id, tables, allocate, cache)
