@@ -65,6 +65,8 @@ jobs:
         env:
           # a database the tests may wipe: they drop and recreate its schema
           PASAR_TEST_POSTGRES_URL: postgresql+psycopg://postgres:postgres@localhost:5432/pasar_test
+      - name: the real-model kit, end to end on a stand-in provider (no key, RUNBOOK 1z)
+        run: python scripts/service_sweep.py --self-test
       - name: the image builds
         run: docker build -t pasarbench-service:ci .
       - name: the image migrates, serves, answers a turn and replays it
