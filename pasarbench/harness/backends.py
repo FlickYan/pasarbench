@@ -152,21 +152,35 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
 OPENER = urllib.request.build_opener(_NoRedirect())
 
 
-def _post(url: str, payload: dict, headers: dict, timeout: float = 120.0) -> dict:
+def unsent(url: str) -> None:
+    """Raise if a request to `url` must not be sent: its gateway's plan
+    limit was reached earlier in this process."""
     host = _host(url)
     if host in _HALTED:
         raise RuntimeError(f"not sent: {_HALTED[host]} -- reached earlier in this run; run "
                            f"it again once the limit resets")
+
+
+def refused(url: str, code: int, body: bytes) -> RuntimeError:
+    """A provider's refusal (an HTTP status that is not success, a redirect
+    among them) as every transport raises it -- and a plan's limit noted, so
+    nothing more is sent to it."""
+    host = _host(url)
+    detail = body.decode()[:500]
+    if code in (402, 429) and _plan_host(host) and _LIMIT_WORDS.search(detail):
+        _HALTED[host] = f"the usage limit (HTTP {code} from {host}: {detail[:200]})"
+    return RuntimeError(f"HTTP {code} from {url}: {detail}")
+
+
+def _post(url: str, payload: dict, headers: dict, timeout: float = 120.0) -> dict:
+    unsent(url)
     body = json.dumps(payload).encode()
     req = urllib.request.Request(url, data=body, headers=headers, method="POST")
     try:
         with OPENER.open(req, timeout=timeout) as r:
             return json.loads(r.read().decode())
     except urllib.error.HTTPError as e:
-        detail = e.read().decode()[:500]
-        if e.code in (402, 429) and _plan_host(host) and _LIMIT_WORDS.search(detail):
-            _HALTED[host] = f"the usage limit (HTTP {e.code} from {host}: {detail[:200]})"
-        raise RuntimeError(f"HTTP {e.code} from {url}: {detail}") from e
+        raise refused(url, e.code, e.read()) from e
 
 
 def conversation_id(messages: list[dict[str, Any]]) -> str:
@@ -271,6 +285,13 @@ class OpenAICompatBackend:
         self.name = f"openai-compat:{model}"
 
     def chat(self, messages: list[Message], tools: list[dict[str, Any]]) -> ModelResponse:
+        return self.parse(_post(*self.request(messages, tools)))
+
+    def request(self, messages: list[Message], tools: list[dict[str, Any]]
+                ) -> tuple[str, dict[str, Any], dict[str, str]]:
+        """What a step sends -- the endpoint, the body, the headers -- for any
+        transport to send: chat() sends it with _post, the agent service
+        (v81) with its own asynchronous client, the same request."""
         payload = {
             "model": self.model,
             "messages": [self._msg(m, self.documented) for m in messages],
@@ -288,8 +309,10 @@ class OpenAICompatBackend:
         if self.sticky:
             headers["x-grok-conv-id"] = conversation_id(payload["messages"])
         headers.update(gateway_headers(self.base_url, _start(messages)))
-        data = _post(f"{self.base_url}/chat/completions", payload, headers)
+        return f"{self.base_url}/chat/completions", payload, headers
 
+    def parse(self, data: dict[str, Any]) -> ModelResponse:
+        """The provider's answer as the harness reads it."""
         choice = data["choices"][0]["message"]
         calls = []
         for tc in choice.get("tool_calls") or []:
@@ -371,6 +394,10 @@ class AnthropicBackend:
         self.name = f"anthropic:{model}"
 
     def chat(self, messages: list[Message], tools: list[dict[str, Any]]) -> ModelResponse:
+        return self.parse(_post(*self.request(messages, tools)))
+
+    def request(self, messages: list[Message], tools: list[dict[str, Any]]
+                ) -> tuple[str, dict[str, Any], dict[str, str]]:
         system = "\n\n".join(m.content for m in messages if m.role == "system")
         payload: dict[str, Any] = {
             "model": self.model,
@@ -394,8 +421,9 @@ class AnthropicBackend:
                    "x-api-key": self.api_key,
                    "anthropic-version": "2023-06-01"}
         headers.update(gateway_headers(self.base_url, _start(messages)))
-        data = _post(f"{self.base_url}/messages", payload, headers)
+        return f"{self.base_url}/messages", payload, headers
 
+    def parse(self, data: dict[str, Any]) -> ModelResponse:
         text, calls = "", []
         for block in data.get("content", []):
             if block["type"] == "text":
@@ -466,6 +494,10 @@ class ResponsesBackend:
         self.name = f"responses:{model}"
 
     def chat(self, messages: list[Message], tools: list[dict[str, Any]]) -> ModelResponse:
+        return self.parse(_post(*self.request(messages, tools)))
+
+    def request(self, messages: list[Message], tools: list[dict[str, Any]]
+                ) -> tuple[str, dict[str, Any], dict[str, str]]:
         system = "\n\n".join(m.content for m in messages if m.role == "system")
         payload: dict[str, Any] = {
             "model": self.model,
@@ -487,8 +519,9 @@ class ResponsesBackend:
         headers = {"Content-Type": "application/json",
                    "Authorization": f"Bearer {self.api_key}"}
         headers.update(gateway_headers(self.base_url, _start(messages)))
-        data = _post(f"{self.base_url}/responses", payload, headers)
+        return f"{self.base_url}/responses", payload, headers
 
+    def parse(self, data: dict[str, Any]) -> ModelResponse:
         text, calls = "", []
         for item in data.get("output") or []:
             kind = item.get("type")

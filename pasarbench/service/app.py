@@ -15,10 +15,11 @@ customers the agent.
 
 Every error is application/problem+json (errors.py) with its own type; 429
 and 503 carry Retry-After. Every request carries X-Request-ID back, and logs
-one JSON line (observability.py). Handlers are synchronous and run in a pool
-of PASAR_THREADS threads: a turn holds one while it waits on its model, and
-at most PASAR_MAX_CONCURRENT_TURNS turns run at once -- past that the service
-answers 503 at once rather than queueing without bound.
+one JSON line (observability.py). A turn is a coroutine (v81): it holds one of
+the PASAR_THREADS worker threads only while one of its transactions runs,
+none while it waits on its model, and at most PASAR_MAX_CONCURRENT_TURNS
+turns run at once -- past that the service answers 503 rather than queueing
+without bound. Every other handler is synchronous, in the same pool.
 
 (No `from __future__ import annotations` here: FastAPI reads the handlers'
 annotations at runtime, and the dependencies they name live in create_app.)
@@ -29,7 +30,6 @@ import hmac
 import json
 import logging
 import re
-import threading
 import time
 import uuid
 from contextlib import asynccontextmanager
@@ -37,7 +37,6 @@ from datetime import datetime, timezone
 from decimal import InvalidOperation
 from typing import Annotated, Any, AsyncIterator
 
-import anyio.from_thread
 import anyio.to_thread
 from fastapi import Depends, FastAPI, Header, Path, Query, Request
 from fastapi.exceptions import RequestValidationError
@@ -53,7 +52,7 @@ from . import schema as S
 from .auth import Idempotency, KeyCache, create_key, request_hash, revoke_key
 from .config import Settings, usd_to_picousd
 from .costs import seed_prices, usage_report
-from .observability import Metrics, configure_logging
+from .observability import Metrics, configure_logging, watch_loop
 from .profiling import MAX_SECONDS, Busy, Sampler, running
 from .replay import replay_tenant
 from .resilience import TenantLimits
@@ -325,13 +324,11 @@ def create_app(settings: Settings | None = None, engine: Engine | None = None) -
     limits = TenantLimits(settings.rate, settings.burst)
     keys = KeyCache(engine)
     idem = Idempotency(engine, settings.idempotency_hours, settings.lease_seconds)
-    loop_box: dict[str, asyncio.AbstractEventLoop] = {}
+    streams: set[asyncio.Task] = set()          # streamed turns, each a task of its own
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
         anyio.to_thread.current_default_thread_limiter().total_tokens = settings.threads
-        # The loop a streamed turn's thread hands its events to (post_message).
-        loop_box["loop"] = asyncio.get_running_loop()
         try:
             with transaction(engine, write=True) as conn:
                 added = seed_prices(conn)
@@ -339,7 +336,14 @@ def create_app(settings: Settings | None = None, engine: Engine | None = None) -
                 log.info(f"price book: {added} rows added")
         except Exception:  # noqa: BLE001 -- not migrated yet: /readyz says so
             log.warning("price book not seeded: is the database migrated?")
+        lag = asyncio.get_running_loop().create_task(watch_loop(metrics))
         yield
+        lag.cancel()
+        # A streamed turn whose client has gone runs on as a task: finished
+        # before the process goes, as long as a turn may run.
+        if streams:
+            await asyncio.wait(set(streams), timeout=settings.max_turn_seconds)
+        await runtime.registry.transport.aclose()
 
     app = FastAPI(title="PasarBench Agent Service", version=__version__, lifespan=lifespan,
                   description="The customer-service agent PasarBench measures, as a backend: "
@@ -425,6 +429,14 @@ def create_app(settings: Settings | None = None, engine: Engine | None = None) -
         if key:
             idem.complete(tenant_id, key, response.status_code, response.body.decode(),
                           request.state.idem_hash)
+        return response
+
+    async def kept(request: Request, tenant_id: str, key: str | None,
+                   response: JSONResponse) -> JSONResponse:
+        """answered(), from a coroutine: the key's write in one of the turns'
+        worker threads -- the last step of a turn."""
+        if key:
+            await runtime.in_thread(answered, request, tenant_id, key, response)
         return response
 
     def keepalive(tenant_id: str, key: str | None) -> Any:
@@ -532,72 +544,72 @@ def create_app(settings: Settings | None = None, engine: Engine | None = None) -
     @app.post("/v1/conversations/{cid}/messages", response_model=TurnResult,
               tags=["conversations"],
               responses={**ERRORS, 200: {"content": {"text/event-stream": {}}}})
-    def post_message(cid: Cid, body: CustomerMessage, request: Request, tenant_id: Tenant,
-                     idempotency_key: IdemKey = None, stream: bool = False) -> Any:
+    async def post_message(cid: Cid, body: CustomerMessage, request: Request,
+                           tenant_id: Tenant, idempotency_key: IdemKey = None,
+                           stream: bool = False) -> Any:
         """The customer's message. The answer is the agent's reply when the
         turn is done -- or, with `stream=true` (or Accept: text/event-stream),
         Server-Sent Events as it runs: turn.started, model.call, tool.result
         ..., turn.completed. A client that loses the stream loses nothing: the
         turn runs to its end, and GET .../events?after= has every event."""
         stream = stream or "text/event-stream" in request.headers.get("accept", "")
-        if (stored := idempotent(tenant_id, idempotency_key, request, body, stream)) is not None:
-            return stored
+        thread = anyio.to_thread.run_sync
+        if idempotency_key is not None:
+            stored = await thread(idempotent, tenant_id, idempotency_key, request, body, stream)
+            if stored is not None:
+                return stored
         try:
-            turn = runtime.begin_turn(tenant_id, cid)
+            turn = await runtime.abegin_turn(tenant_id, cid)
         except BaseException:
             # Turned away before anything was written: the key is free.
             if idempotency_key:
-                idem.abandon(tenant_id, idempotency_key)
+                await thread(idem.abandon, tenant_id, idempotency_key)
             raise
         if stream:
             return streamed(turn, body.content, tenant_id, idempotency_key, request)
         try:
-            response = JSONResponse(sent(TurnResult, turn.run(
+            response = JSONResponse(sent(TurnResult, await turn.arun(
                 body.content, keepalive=keepalive(tenant_id, idempotency_key))))
+        except asyncio.CancelledError:
+            # The process is going: its lease and its key's row expire as a
+            # crash's would, and the next turn answers what it left unanswered.
+            raise
         except BaseException as e:  # noqa: BLE001 -- answered, and the answer kept
             response = failed(e, request)
-        return answered(request, tenant_id, idempotency_key, response)
+        return await kept(request, tenant_id, idempotency_key, response)
 
     def streamed(turn: Turn, content: str, tenant_id: str, key: str | None,
                  request: Request) -> StreamingResponse:
-        """The turn on its own thread, started here -- not when the stream is
-        first read, which a client gone before the response starts never does:
-        the turn runs to its end, gives its lease and slot back and keeps its
-        answer under the key, whether or not anyone reads the stream."""
-        try:
-            # The loop the stream is read on: kept at startup, or asked of the
-            # loop itself from this worker thread when the server ran no
-            # startup (uvicorn --lifespan off).
-            loop = loop_box.get("loop") or anyio.from_thread.run_sync(asyncio.get_running_loop)
-        except BaseException:
-            turn.release()              # the slot and the lease back, not held to expiry
-            raise
+        """The turn as a task of its own, started here -- not when the stream
+        is first read, which a client gone before the response starts never
+        does: the turn runs to its end, gives its lease and slot back and keeps
+        its answer under the key, whether or not anyone reads the stream."""
         queue: asyncio.Queue[tuple[str, Any]] = asyncio.Queue()
 
-        def put(item: tuple[str, Any]) -> None:
+        async def work() -> None:
             try:
-                loop.call_soon_threadsafe(queue.put_nowait, item)
-            except RuntimeError:        # the loop is gone (shutdown): the turn still finishes
-                pass
-
-        def work() -> None:
-            try:
-                out = sent(TurnResult, turn.run(content, emit=lambda ev: put(("event", ev)),
-                                                keepalive=keepalive(tenant_id, key)))
-                answered(request, tenant_id, key, JSONResponse(out))
-                put(("done", out))
+                out = sent(TurnResult, await turn.arun(
+                    content, emit=lambda ev: queue.put_nowait(("event", ev)),
+                    keepalive=keepalive(tenant_id, key)))
+                await kept(request, tenant_id, key, JSONResponse(out))
+                queue.put_nowait(("done", out))
+            except asyncio.CancelledError:
+                queue.put_nowait(("done", None))
+                raise
             except BaseException as e:  # noqa: BLE001 -- told to the stream, and kept
                 response = failed(e, request)
                 try:
-                    answered(request, tenant_id, key, response)
+                    await kept(request, tenant_id, key, response)
                 finally:
-                    put(("error", response.body.decode()))
+                    queue.put_nowait(("error", response.body.decode()))
 
         try:
-            threading.Thread(target=work, name="pasar-turn", daemon=True).start()
+            task = asyncio.get_running_loop().create_task(work())
         except BaseException:
-            turn.release()
+            turn.release()              # the slot and the lease back, not held to expiry
             raise
+        streams.add(task)
+        task.add_done_callback(streams.discard)
 
         async def events() -> AsyncIterator[bytes]:
             while True:

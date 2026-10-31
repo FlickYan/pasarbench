@@ -2539,6 +2539,56 @@ with one lock its errors are not random: they land where threads wait, which
 is where an engineer is already inclined to blame the database. Test it on a
 workload whose answer is known before reading it on one whose answer is not.
 
+## 69. A load test made a regression out of its own arrivals, and hid its own errors
+
+**What happened.** v81 made a turn a coroutine, so that a turn waiting on its
+model holds no thread. The load test that was to show it started 1,000
+clients at once against a mock model that answered in exactly ten seconds,
+and v81's turns came back with a p95 of 58 s against v80's 48 — on the same
+throughput, with 110 threads where v80 had 2,005. Three explanations were
+tested and failed: that running turns' transactions queued behind new
+requests for the shared worker threads (a pool of their own for running
+turns, built for it, left the p95 where it was, 58.5 s and 58.7); that the
+event loop lagged (its p99 was 0.5 s, against 17 s to explain); and that 64
+threads contended for the interpreter's lock with the loop (16 made it worse,
+70 s). What it was: the turns came back in waves, every wave queued for the
+threads in the order it arrived, and a latency that never varied handed the
+next wave back in the same order — the same turns last in every wave, their
+waits adding up. v80's thousand threads, scheduled by the operating system,
+shuffled the order every time. With the clients arriving over 20 seconds and
+each call taking 7 to 13, as a real model's do, v81's tail was the shorter
+(p95 46 s against 49, p99 52 against 57).
+
+The same runs found the load test losing requests. At the staggered thousand,
+5 to 11 of 3,000 turns ended in "server disconnected without sending a
+response" — on both versions — and the load test counted none of them: a
+worker thread that raised died, its turn in no tally, and the run exited 0.
+uvicorn closes a connection idle for 5 seconds; a client thread starved of
+its own CPU (the load generator spent more CPU a turn than the server) sent
+its next request just as the server closed the connection.
+
+**Fix.** The load test can ramp its clients in (`--ramp-s`) and stray the
+mock's latency (`--mock-jitter`), and v81 is measured both ways
+(docs/SERVICE.md); it reports the server's own time of each turn beside the
+client's, the event loop's lag (`pasar_event_loop_lag_seconds`, a metric of
+the service's now), and counts a request that fails in transport as a failure,
+which fails the run. The server keeps an idle connection 75 seconds
+(`PASAR_KEEP_ALIVE_SECONDS`), longer than a load balancer's usual 60, so that
+the proxy in front of it closes first, as a proxy expects; run again, v81
+lost none of its 3,000 requests where v80, still at 5 seconds, lost 16, now
+counted. `scripts/smoke_api.py` leaves a connection idle six seconds and sends
+on it. The pool kept for
+running turns stayed — a test holds every other thread for three seconds,
+and a running turn still finishes in 0.6 — and so did a fix the review of it
+found: a turn cancelled while it waited for one of those threads kept its
+admission slot for good.
+
+**Lesson.** A load test's arrival pattern is part of the result. A thundering
+herd with a fixed latency is the worst case for any first-come queue, and
+says nothing of the traffic a service gets; a load test that drops what it
+cannot count reports a run better than it was. Measure with arrivals and
+latencies that vary, and count every request the client sent.
+
 ---
 
 ## What this list is for

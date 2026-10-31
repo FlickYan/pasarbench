@@ -93,7 +93,8 @@ def main(argv: list[str] | None = None) -> int:
         os.environ["PASAR_DATABASE_URL"] = url
         uvicorn.run("pasarbench.service.app:create_app", factory=True, host=args.host,
                     port=args.port, workers=args.workers, log_level="warning",
-                    log_config=uvicorn_log_config(), proxy_headers=True)
+                    log_config=uvicorn_log_config(), proxy_headers=True,
+                    timeout_keep_alive=settings.keep_alive_seconds)
         return 0
 
     from .store import make_engine, seed_tenant, transaction

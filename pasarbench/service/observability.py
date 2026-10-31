@@ -13,6 +13,7 @@ keep bound values out of theirs (store.make_engine, hide_parameters).
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import sys
@@ -23,6 +24,7 @@ from typing import Any
 from prometheus_client import CollectorRegistry, Counter, Gauge, Histogram
 
 LATENCY = (0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30, 60, 120)
+LAG = (0.001, 0.002, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10)
 
 
 class Metrics:
@@ -60,6 +62,12 @@ class Metrics:
         self.provider_in_flight = Gauge("pasar_provider_in_flight",
                                         "Model calls in flight, per provider", ["provider"],
                                         registry=r)
+        # How late the event loop runs what is due on it (v81): every waiting
+        # turn's next step -- its model's answer, a transaction's result -- is
+        # a callback on the one loop, and a loop behind delays them all.
+        self.loop_lag = Histogram("pasar_event_loop_lag_seconds",
+                                  "How late the event loop ran a timer due on it",
+                                  buckets=LAG, registry=r)
 
     # --- what the runtime reports -------------------------------------------
     def model_call(self, provider: str, model: str, seconds: float, prompt: int, cached: int,
@@ -82,6 +90,16 @@ class Metrics:
     def turn(self, stop_reason: str, seconds: float) -> None:
         self.turns.labels(stop_reason).inc()
         self.turn_seconds.observe(seconds)
+
+
+async def watch_loop(metrics: "Metrics", every: float = 0.1) -> None:
+    """The event loop's lag, measured as long as it runs: a timer every
+    `every` seconds, and how late it fired."""
+    loop = asyncio.get_running_loop()
+    while True:
+        t0 = loop.time()
+        await asyncio.sleep(every)
+        metrics.loop_lag.observe(max(0.0, loop.time() - t0 - every))
 
 
 class JsonFormatter(logging.Formatter):

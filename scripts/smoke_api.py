@@ -15,8 +15,9 @@ that her request to cancel O1002 with her digits has the agent verify her, look
 the order up and cancel it; that the same request sent again under its
 Idempotency-Key gets the same bytes back and runs no second turn; that a
 streamed turn runs from turn.started to turn.completed; that the audit log has
-every tool call, the cancellation as a write; and that the metrics count the
-turns. Exit 0 when all of it holds, 1 at the first that does not.
+every tool call, the cancellation as a write; that the metrics count the
+turns; and that a connection left idle six seconds still serves the next
+request. Exit 0 when all of it holds, 1 at the first that does not.
 
 Only the standard library, so it runs anywhere: CI runs it on the runner,
 against the image (scripts/smoke_image.sh).
@@ -148,6 +149,29 @@ def smoke(base: str, key: str) -> None:
 
     status, _, raw = call(base, "GET", "/metrics")
     check(status == 200 and b"pasar_turns_total" in raw, "GET /metrics counts the turns")
+
+    # A connection left idle past uvicorn's own five seconds still serves the
+    # next request (PASAR_KEEP_ALIVE_SECONDS): the proxy in front closes first.
+    import http.client
+    import time
+    from urllib.parse import urlparse
+    u = urlparse(base)
+    kind = http.client.HTTPSConnection if u.scheme == "https" else http.client.HTTPConnection
+    conn = kind(u.hostname, u.port, timeout=30)
+    try:
+        conn.request("GET", "/healthz")
+        first = conn.getresponse()
+        first.read()
+        time.sleep(6)
+        conn.request("GET", "/healthz")
+        second = conn.getresponse()
+        second.read()
+        kept = (first.status, second.status)
+    except (http.client.HTTPException, OSError) as e:
+        kept = (type(e).__name__,)
+    finally:
+        conn.close()
+    check(kept == (200, 200), "a connection idle six seconds serves the next request", kept)
 
 
 def main(argv: list[str]) -> int:

@@ -8,6 +8,9 @@ service itself, then the service under a model's latency.
         --turns 2000 --concurrency 32 --customers 200
     python scripts/load_test.py ... --hot            every worker on one customer
     python scripts/load_test.py ... --mock-latency-ms 400
+    python scripts/load_test.py ... --concurrency 1000 --mock-latency-ms 10000 \
+        --mock-jitter 0.3 --ramp-s 20     a thousand customers on a slow model, each
+                                          call 7-13 s, arriving over 20 s (v81)
 
 The database must be one the test may fill (it migrates it, and makes a tenant
 of its own each run). Each worker opens a conversation for its customer and
@@ -15,12 +18,15 @@ sends turns: half ask where an order is (reads), half ask for a voucher or a
 human (writes: an insert under the customer's lock, and an outbox ticket),
 each with the customer's digits. A conversation is replaced every 10 turns.
 
-It reports turns a second and the latency a client sees, p50/p95/p99, every
-status that was not 200, the time the tool calls spent in their transactions
-(from the audit log), the CPU a turn cost -- the server's, this client's, and
-the whole machine's, the database's among the rest (Linux: /proc) -- and then
-replays the tenant: every tool call the run made, run again against the
-rebuilt world, must answer and change the same.
+It reports turns a second and the latency a client sees, p50/p95/p99, beside
+the server's own time of each turn; every status that was not 200, and every
+request that failed in transport (both fail the run); the time the tool calls
+spent in their transactions (from the audit log); the CPU a turn cost -- the
+server's, this client's, and the whole machine's, the database's among the
+rest -- and the server's threads and memory at their peak (Linux: /proc); the
+event loop's lag (pasar_event_loop_lag_seconds); and then replays the tenant:
+every tool call the run made, run again against the rebuilt world, must answer
+and change the same.
 
     python scripts/load_test.py ... --profile p.json
 
@@ -34,6 +40,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import random
 import secrets
 import socket
 import statistics
@@ -87,6 +94,62 @@ def process_cpu(pid: int) -> float | None:
         return None
 
 
+def server_threads(pid: int) -> tuple[int, float] | None:
+    """The threads a process has now and its resident memory in MB (Linux:
+    /proc), its children's included."""
+    try:
+        threads, rss = 0, 0.0
+        for d in Path("/proc").iterdir():
+            if not d.name.isdigit():
+                continue
+            try:
+                status = (d / "status").read_text()
+            except OSError:
+                continue
+            fields = dict(line.split(":\t", 1) for line in status.splitlines() if ":\t" in line)
+            if int(d.name) == pid or fields.get("PPid", "").strip() == str(pid):
+                threads += int(fields.get("Threads", "0"))
+                rss += int(fields.get("VmRSS", "0 kB").split()[0]) / 1024
+        return threads, rss
+    except (OSError, ValueError):
+        return None
+
+
+def loop_lag(base: str) -> dict[str, float] | None:
+    """The server's event-loop lag histogram (pasar_event_loop_lag_seconds,
+    v81), as {upper bound: count so far}; None from a server without it."""
+    import httpx
+    try:
+        text = httpx.get(f"{base}/metrics", timeout=30).text
+    except httpx.HTTPError:
+        return None
+    out: dict[str, float] = {}
+    for line in text.splitlines():
+        if line.startswith("pasar_event_loop_lag_seconds_bucket{"):
+            le = line.split('le="', 1)[1].split('"', 1)[0]
+            out[le] = float(line.rsplit(" ", 1)[1])
+    return out or None
+
+
+def lag_between(a: dict[str, float] | None, b: dict[str, float] | None) -> dict | None:
+    """The lag while the turns ran: its median and p99 (a bucket's upper
+    bound, in ms) and the share of timers more than 100 ms late."""
+    if not a or not b:
+        return None
+    bounds = sorted(b, key=lambda le: float("inf") if le == "+Inf" else float(le))
+    cum = [(le, b[le] - a.get(le, 0.0)) for le in bounds]
+    n = cum[-1][1]
+    if n <= 0:
+        return None
+
+    def q(p: float) -> str:
+        le = next(le for le, c in cum if c >= p * n)
+        return ">10000" if le == "+Inf" else f"{float(le) * 1000:g}"
+    late = n - dict(cum).get("0.1", n)
+    return {"timers": int(n), "p50_ms": q(0.5), "p99_ms": q(0.99),
+            "over_100ms": round(late / n, 4)}
+
+
 def machine_cpu() -> float | None:
     """The CPU seconds every process on the machine has used (/proc/stat),
     idle and I/O wait not counted."""
@@ -109,8 +172,16 @@ def main() -> int:
     ap.add_argument("--concurrency", type=int, default=16)
     ap.add_argument("--customers", type=int, default=50, help="synthetic customers (x6)")
     ap.add_argument("--hot", action="store_true", help="every worker on one customer")
+    ap.add_argument("--ramp-s", type=float, default=0.0,
+                    help="each client starts at a random moment in the first this many seconds, "
+                         "rather than all at once")
     ap.add_argument("--mock-latency-ms", type=int, default=0)
-    ap.add_argument("--threads", type=int, default=64)
+    ap.add_argument("--mock-jitter", type=float, default=0.0,
+                    help="each mock call's latency strays by up to this fraction of it")
+    ap.add_argument("--threads", type=int, default=64,
+                    help="the server's worker threads (PASAR_THREADS); every client's turn "
+                         "is admitted (PASAR_MAX_CONCURRENT_TURNS), waiting on its model "
+                         "without one (v81)")
     ap.add_argument("--workers", type=int, default=1, help="server processes (uvicorn)")
     ap.add_argument("--tenants", type=int, default=1,
                     help="spread the workers over this many tenants (each its own id counter)")
@@ -133,9 +204,10 @@ def main() -> int:
     token = secrets.token_urlsafe(16)
     env = {k: v for k, v in os.environ.items() if not k.endswith("_API_KEY")}  # no key goes anywhere
     env.update(PASAR_DATABASE_URL=args.database_url, PASAR_ADMIN_TOKEN=token,
-               PASAR_MOCK_LATENCY_MS=str(args.mock_latency_ms), PASAR_RATE="100000",
+               PASAR_MOCK_LATENCY_MS=str(args.mock_latency_ms),
+               PASAR_MOCK_JITTER=str(args.mock_jitter), PASAR_RATE="100000",
                PASAR_BURST="100000", PASAR_THREADS=str(args.threads),
-               PASAR_MAX_CONCURRENT_TURNS=str(min(args.threads, max(args.concurrency, 1))),
+               PASAR_MAX_CONCURRENT_TURNS=str(max(args.concurrency, 1)),
                PASAR_PROVIDER_CONCURRENCY=str(args.provider_concurrency),
                PASAR_LOG_LEVEL="WARNING", PYTHONDONTWRITEBYTECODE="1")
     py = sys.executable
@@ -178,6 +250,7 @@ def main() -> int:
                      for i in range(1, args.customers + 1) for u, digits, orders in people]
 
         latencies: list[float] = []
+        served: list[float] = []                # the turn's own time, as the server timed it
         statuses: Counter = Counter()
         stops: Counter = Counter()
         lock = threading.Lock()
@@ -186,6 +259,8 @@ def main() -> int:
         def worker(w: int) -> None:
             user, digits, orders = customers[0 if args.hot else w % len(customers)]
             h = tenants[w % len(tenants)][1]
+            if args.ramp_s:
+                time.sleep(random.uniform(0, args.ramp_s))
             with httpx.Client(base_url=base, headers=h, timeout=300) as c:
                 cid, used = None, 0
                 while True:
@@ -194,24 +269,40 @@ def main() -> int:
                         if n >= args.turns:
                             return
                         next_turn[0] += 1
-                    if cid is None or used >= 10:
-                        cid = c.post("/v1/conversations", json={"user_id": user}).json()[
-                            "conversation_id"]
-                        used = 0
+                    try:
+                        if cid is None or used >= 10:
+                            cid = c.post("/v1/conversations", json={"user_id": user}).json()[
+                                "conversation_id"]
+                            used = 0
+                    except (httpx.HTTPError, KeyError, ValueError) as e:
+                        # Counted, not lost: a turn the client could not send is a failure.
+                        with lock:
+                            statuses[f"no conversation: {type(e).__name__}"] += 1
+                        cid = None
+                        continue
                     order = orders[n % len(orders)]
                     text = [f"where is my order {order}?",
                             f"can I get a voucher for the delay on {order}? digits {digits}",
                             f"track {order} please",
                             f"I want a human agent for {order}, my digits are {digits}"][n % 4]
                     t0 = time.perf_counter()
-                    resp = c.post(f"/v1/conversations/{cid}/messages", json={"content": text})
+                    try:
+                        resp = c.post(f"/v1/conversations/{cid}/messages",
+                                      json={"content": text})
+                    except httpx.HTTPError as e:
+                        with lock:
+                            statuses[f"transport: {type(e).__name__}"] += 1
+                        cid = None                  # the turn may have run: a new conversation
+                        continue
                     dt = time.perf_counter() - t0
                     used += 1
                     with lock:
                         statuses[resp.status_code] += 1
                         if resp.status_code == 200:
                             latencies.append(dt)
-                            stops[resp.json()["stop_reason"]] += 1
+                            body = resp.json()
+                            stops[body["stop_reason"]] += 1
+                            served.append(body["latency_ms"] / 1000)
 
         profiled: dict[str, Any] = {}
 
@@ -223,7 +314,19 @@ def main() -> int:
         profiler = threading.Thread(target=profile) if args.profile else None
         if profiler is not None:
             profiler.start()
+        lag0 = loop_lag(base)
         cpu0 = (process_cpu(server.pid), own_cpu(), machine_cpu())
+        peak = [0, 0.0]
+        watching = threading.Event()
+
+        def watch() -> None:
+            while not watching.wait(0.5):
+                now = server_threads(server.pid)
+                if now:
+                    peak[0], peak[1] = max(peak[0], now[0]), max(peak[1], now[1])
+
+        watcher = threading.Thread(target=watch, daemon=True)
+        watcher.start()
         t0 = time.perf_counter()
         threads = [threading.Thread(target=worker, args=(w,)) for w in range(args.concurrency)]
         for t in threads:
@@ -232,6 +335,9 @@ def main() -> int:
             t.join()
         wall = time.perf_counter() - t0
         cpu1 = (process_cpu(server.pid), own_cpu(), machine_cpu())
+        lag = lag_between(lag0, loop_lag(base))
+        watching.set()
+        watcher.join()
         if profiler is not None:
             for _ in range(200):               # the profile may not have begun yet
                 if httpx.delete(f"{base}/v1/admin/profile", headers=op).status_code == 204 \
@@ -271,13 +377,19 @@ def main() -> int:
             "database": db, "turns": sum(statuses.values()), "ok": statuses.get(200, 0),
             "concurrency": args.concurrency, "customers": 1 if args.hot else
             min(len(customers), args.concurrency), "hot": args.hot,
-            "mock_latency_ms": args.mock_latency_ms, "server_processes": args.workers,
+            "mock_latency_ms": args.mock_latency_ms, "mock_jitter": args.mock_jitter,
+            "ramp_s": args.ramp_s,
+            "server_processes": args.workers,
             "tenants": args.tenants, "provider_concurrency": args.provider_concurrency,
             "cpus": os.cpu_count(), "seconds": round(wall, 2),
             "turns_per_s": round(statuses.get(200, 0) / wall, 1),
             "turn_ms": {f"p{p}": round(pct(latencies, p) * 1000, 1) for p in (50, 95, 99)},
             "turn_ms_mean": round(statistics.mean(latencies) * 1000, 1) if latencies else None,
+            "server_turn_ms": {f"p{p}": round(pct(served, p) * 1000, 1) for p in (50, 95, 99)},
             "cpu_ms_per_turn": cpu_per_turn,
+            "event_loop_lag": lag,
+            "server_threads_peak": peak[0] or None,
+            "server_rss_mb_peak": round(peak[1], 1) or None,
             "statuses": dict(statuses), "stops": dict(stops),
             "tool_calls": len(rows), "writes": len(writes),
             "read_ms": {f"p{p}": pct(reads, p) for p in (50, 99)},

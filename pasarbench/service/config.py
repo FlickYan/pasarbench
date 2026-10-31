@@ -23,9 +23,12 @@ registry (models.py), each from its own provider's variables only.
                                   scripts/service_sweep.py sets the benchmark's 30)
     PASAR_PROVIDER_CONCURRENCY    16 calls in flight to one provider, per process
     PASAR_PROVIDER_ACQUIRE_TIMEOUT 30 seconds to wait for one of them
-    PASAR_MAX_CONCURRENT_TURNS    48 turns at once, per process; past it, 503
+    PASAR_MAX_CONCURRENT_TURNS    256 turns at once, per process; past it, 503. A turn
+                                  waiting on its model holds no thread (v81): this
+                                  bounds memory and the CPU a burst can ask for
     PASAR_ADMISSION_TIMEOUT       2 seconds a turn waits to be admitted
-    PASAR_THREADS                 64 worker threads for request handlers
+    PASAR_THREADS                 64 worker threads: a turn's transactions, and every
+                                  handler but a turn's
     PASAR_RATE / PASAR_BURST      10 requests a second a tenant, bursts of 40
     PASAR_LEASE_SECONDS           60: a turn's hold on its conversation, renewed every
                                   third of it while the turn runs; a dead process's
@@ -36,6 +39,13 @@ registry (models.py), each from its own provider's variables only.
                                   each was read at (store.Slices); 0 where another
                                   system writes the world tables
     PASAR_MOCK_LATENCY_MS         0: the mock model's simulated latency
+    PASAR_MOCK_JITTER             0: how far each call's latency strays from it, a
+                                  fraction (0.3: anywhere from 70% to 130%), as a
+                                  provider's does
+    PASAR_KEEP_ALIVE_SECONDS      75: how long `serve` keeps an idle connection open --
+                                  longer than a load balancer's usual 60, so that the
+                                  balancer closes first (uvicorn's own default, 5,
+                                  races a client sending its next request)
     PASAR_LOG_LEVEL               INFO
 """
 
@@ -73,7 +83,7 @@ class Settings:
     conversation_max_steps: int = 0
     provider_concurrency: int = 16
     provider_acquire_timeout: float = 30.0
-    max_concurrent_turns: int = 48
+    max_concurrent_turns: int = 256
     admission_timeout: float = 2.0
     threads: int = 64
     rate: float = 10.0
@@ -84,6 +94,8 @@ class Settings:
     max_overflow: int = 20
     slice_cache: int = 2000
     mock_latency_ms: int = 0
+    mock_jitter: float = 0.0
+    keep_alive_seconds: float = 75.0
     log_level: str = "INFO"
     extra: dict[str, str] = field(default_factory=dict)
 
@@ -108,7 +120,7 @@ class Settings:
             conversation_max_steps=int(_env("PASAR_CONVERSATION_MAX_STEPS", "0")),
             provider_concurrency=int(_env("PASAR_PROVIDER_CONCURRENCY", "16")),
             provider_acquire_timeout=float(_env("PASAR_PROVIDER_ACQUIRE_TIMEOUT", "30")),
-            max_concurrent_turns=int(_env("PASAR_MAX_CONCURRENT_TURNS", "48")),
+            max_concurrent_turns=int(_env("PASAR_MAX_CONCURRENT_TURNS", "256")),
             admission_timeout=float(_env("PASAR_ADMISSION_TIMEOUT", "2")),
             threads=int(_env("PASAR_THREADS", "64")),
             rate=float(_env("PASAR_RATE", "10")),
@@ -119,6 +131,8 @@ class Settings:
             max_overflow=int(_env("PASAR_MAX_OVERFLOW", "20")),
             slice_cache=int(_env("PASAR_SLICE_CACHE", "2000")),
             mock_latency_ms=int(_env("PASAR_MOCK_LATENCY_MS", "0")),
+            mock_jitter=float(_env("PASAR_MOCK_JITTER", "0")),
+            keep_alive_seconds=float(_env("PASAR_KEEP_ALIVE_SECONDS", "75")),
             log_level=_env("PASAR_LOG_LEVEL", "INFO").upper(),
         )
         s.validate()
@@ -128,9 +142,8 @@ class Settings:
         if self.policy_mode not in ("preload", "jit", "preload-named"):
             raise ValueError(f"PASAR_POLICY_MODE {self.policy_mode!r}: preload, jit or "
                              f"preload-named")
-        if self.max_concurrent_turns > self.threads:
-            raise ValueError("PASAR_MAX_CONCURRENT_TURNS above PASAR_THREADS: a turn holds a "
-                             "worker thread, and admitted turns would wait for one")
+        if self.max_concurrent_turns < 1 or self.threads < 1:
+            raise ValueError("PASAR_MAX_CONCURRENT_TURNS and PASAR_THREADS are at least 1")
         for f in fields(self):
             v = getattr(self, f.name)
             if isinstance(v, (int, float)) and not isinstance(v, bool) and v < 0:

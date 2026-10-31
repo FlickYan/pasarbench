@@ -25,13 +25,24 @@ A model needs a price: a conversation is never opened on a model the price
 book cannot charge for. A real model needs its provider's key, read from that
 provider's own variables only (pasarbench.sweep.key_for, without the run-wide
 PASARBENCH_API_KEY): a key never goes to another provider's endpoint.
+
+A model call is a coroutine (v81, `achat`): the benchmark's backend builds the
+request and reads the answer, as it does in a run, and the service's
+Transport sends it -- asynchronously, so a turn waiting on its model holds no
+thread, and over connections kept alive. A backend with no request() of its
+own (a test's, the harness's fakes) is called in a worker thread.
 """
 
 from __future__ import annotations
 
+import asyncio
 import json
 import re
+import ssl
+import sys
+import threading
 import time
+import urllib.error
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -98,13 +109,93 @@ def solutions() -> dict[str, list]:
     return _SOLUTIONS
 
 
+# urllib's own user agent, which every request of the benchmark's runs carried
+# unless its backend set one (a gateway's): the same here.
+URLLIB_AGENT = "Python-urllib/%d.%d" % sys.version_info[:2]
+
+
+class Transport:
+    """How the service sends a backend's request: what the benchmark's
+    backends._post sends -- the backend's body and headers, its timeout, no
+    redirect followed, the system's certificates and proxies -- but from a
+    coroutine, so the wait holds no thread, and over connections kept alive
+    (urllib opens one, and a TLS session, for every call). It fails as _post
+    fails, so the gate retries what it retried: a refusal as the same
+    RuntimeError (backends.refused), a timeout as TimeoutError, a connection
+    not made as URLError, one dropped as ConnectionResetError.
+
+    One client per event loop (a client's connections belong to the loop that
+    opened them): the server has one; a test client may run several."""
+
+    def __init__(self) -> None:
+        self._clients: dict[int, tuple[asyncio.AbstractEventLoop, Any]] = {}
+        self._lock = threading.Lock()
+
+    def _client(self) -> Any:
+        import httpx
+        loop = asyncio.get_running_loop()
+        with self._lock:
+            got = self._clients.get(id(loop))
+            if got is not None and got[0] is loop and not got[1].is_closed:
+                return got[1]
+            for k in [k for k, (lp, _c) in self._clients.items() if lp.is_closed()]:
+                del self._clients[k]
+            client = httpx.AsyncClient(
+                verify=ssl.create_default_context(), follow_redirects=False,
+                headers={"User-Agent": URLLIB_AGENT, "Accept-Encoding": "identity"},
+                limits=httpx.Limits(max_connections=None, max_keepalive_connections=64))
+            self._clients[id(loop)] = (loop, client)
+            return client
+
+    async def post(self, url: str, payload: dict, headers: dict,
+                   timeout: float = 120.0) -> dict:
+        import httpx
+
+        from ..harness.backends import refused, unsent
+        unsent(url)
+        body = json.dumps(payload).encode()
+        try:
+            r = await self._client().post(url, content=body, headers=headers, timeout=timeout)
+        except httpx.TimeoutException as e:
+            raise TimeoutError("timed out") from e
+        except httpx.ConnectError as e:
+            raise urllib.error.URLError(str(e) or type(e).__name__) from e
+        except (httpx.NetworkError, httpx.RemoteProtocolError) as e:
+            raise ConnectionResetError(f"Connection reset: {type(e).__name__}: {e}") from e
+        if not 200 <= r.status_code < 300:
+            raise refused(url, r.status_code, r.content)
+        return json.loads(r.content.decode())
+
+    async def aclose(self) -> None:
+        """Close the clients of the running loop (at the server's shutdown)."""
+        loop = asyncio.get_running_loop()
+        with self._lock:
+            mine = [c for lp, c in self._clients.values() if lp is loop]
+            self._clients = {k: v for k, v in self._clients.items() if v[0] is not loop}
+        for c in mine:
+            await c.aclose()
+
+
+async def achat(backend: Any, messages: list[Message], tools: list[dict[str, Any]]
+                ) -> ModelResponse:
+    """A model call as a coroutine: the backend's own if it has one, else its
+    chat() in a worker thread (a backend written for the harness, or a test's)."""
+    own = getattr(backend, "achat", None)
+    if own is not None:
+        return await own(messages, tools)
+    import anyio.to_thread
+    return await anyio.to_thread.run_sync(backend.chat, messages, tools)
+
+
 class Registry:
     """The models this deployment offers (PASAR_MODELS) and how to call each."""
 
     def __init__(self, allowed: tuple[str, ...] = ("mock", "scripted:*"), models_file: str = "",
-                 mock_latency_ms: int = 0):
+                 mock_latency_ms: int = 0, mock_jitter: float = 0.0):
         self.allowed = tuple(allowed)
         self.mock_latency_ms = mock_latency_ms
+        self.mock_jitter = mock_jitter
+        self.transport = Transport()
         self.presets: dict[str, ModelSpec] = dict(BUILTIN)
         if models_file:
             for spec in load_models_file(models_file):
@@ -145,7 +236,7 @@ class Registry:
         """A backend for one turn. Real ones are the benchmark's own
         (harness/backends.py): the same requests the runs sent."""
         if spec.api == "mock":
-            return MockAgent(latency_ms=self.mock_latency_ms)
+            return MockAgent(latency_ms=self.mock_latency_ms, jitter=self.mock_jitter)
         if spec.api == "scripted":
             return ScriptedAgent(solutions()[spec.name[9:]])
         from ..harness import backends as B
@@ -157,16 +248,19 @@ class Registry:
             inner = B.AnthropicBackend(base_url=spec.base_url, **common)
         else:
             inner = B.ResponsesBackend(base_url=spec.base_url, **common)
-        return _Unhalted(inner, B)
+        return _Unhalted(inner, B, self.transport)
 
 
 class _Unhalted:
     """A benchmark run stops sending to a plan's gateway for good once it says
     the plan's limit is reached (backends.PLAN_HOSTS). A service runs for
-    months: here the circuit breaker decides when to try again."""
+    months: here the circuit breaker decides when to try again. And a call is
+    sent by the service's Transport: the backend's own request, from a
+    coroutine."""
 
-    def __init__(self, inner: Any, backends: Any):
+    def __init__(self, inner: Any, backends: Any, transport: Transport | None = None):
         self.inner, self._b = inner, backends
+        self.transport = transport or Transport()
         self.name = inner.name
         self.model = inner.model
         self.reports_usage = inner.reports_usage
@@ -174,6 +268,11 @@ class _Unhalted:
     def chat(self, messages: list[Message], tools: list[dict[str, Any]]) -> ModelResponse:
         self._b._HALTED.pop(self._b._host(self.inner.base_url), None)
         return self.inner.chat(messages, tools)
+
+    async def achat(self, messages: list[Message], tools: list[dict[str, Any]]) -> ModelResponse:
+        self._b._HALTED.pop(self._b._host(self.inner.base_url), None)
+        url, payload, headers = self.inner.request(messages, tools)
+        return self.inner.parse(await self.transport.post(url, payload, headers))
 
 
 def load_models_file(path: str) -> list[ModelSpec]:
@@ -228,6 +327,10 @@ class ScriptedAgent:
                     and m.tool_calls[0].arguments == step[1]:
                 i += 1
         return i
+
+    async def achat(self, messages: list[Message], tools: list[dict[str, Any]]
+                    ) -> ModelResponse:
+        return self.chat(messages, tools)
 
     def chat(self, messages: list[Message], tools: list[dict[str, Any]]) -> ModelResponse:
         i = self.position(messages)
@@ -285,8 +388,15 @@ class MockAgent:
     model = "mock"
     reports_usage = True
 
-    def __init__(self, latency_ms: int = 0):
+    def __init__(self, latency_ms: int = 0, jitter: float = 0.0):
         self.latency_ms = latency_ms
+        self.jitter = jitter
+
+    def _latency(self) -> float:
+        """Seconds this call takes: the latency, strayed by up to `jitter` of
+        it either way (what a call says does not depend on it)."""
+        import random
+        return self.latency_ms / 1000 * (1 + self.jitter * random.uniform(-1, 1))
 
     def plan(self, messages: list[Message], turn_start: int
              ) -> tuple[list[tuple[str, dict[str, Any]]], str]:
@@ -335,9 +445,19 @@ class MockAgent:
                                                 "reason": "customer asked for a human agent"}))
         return calls, ""
 
+    async def achat(self, messages: list[Message], tools: list[dict[str, Any]]
+                    ) -> ModelResponse:
+        """chat(), its latency awaited: a turn waiting on the mock holds no thread."""
+        if self.latency_ms:
+            await asyncio.sleep(self._latency())
+        return self.respond(messages, tools)
+
     def chat(self, messages: list[Message], tools: list[dict[str, Any]]) -> ModelResponse:
         if self.latency_ms:
-            time.sleep(self.latency_ms / 1000)
+            time.sleep(self._latency())
+        return self.respond(messages, tools)
+
+    def respond(self, messages: list[Message], tools: list[dict[str, Any]]) -> ModelResponse:
         turn_start = max(i for i, m in enumerate(messages) if m.role == "user")
         done = _tool_results(messages[turn_start:])
         calls, ask = self.plan(messages, turn_start)

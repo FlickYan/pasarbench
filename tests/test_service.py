@@ -292,6 +292,71 @@ def test_resilience():
           burst[:3] == [None] * 3 and burst[3] is not None and abs(burst[3] - 0.5) < 1e-9
           and bucket.take() is None, burst)
 
+    # The gate from a coroutine (v81): one limit, threads and coroutines alike.
+    import asyncio
+    gate = ProviderGate("p", concurrency=2, acquire_timeout=0.2, sleep=slept.append)
+    held, release = threading.Event(), threading.Event()
+    holders = [threading.Thread(target=lambda: gate.call(lambda: (held.set(), release.wait(5))))
+               for _ in range(2)]
+    for t in holders:
+        t.start()
+    until(lambda: gate.in_flight == 2)
+
+    async def turned_away() -> bool:
+        try:
+            await gate.acall(lambda: asyncio.sleep(0))
+            return False
+        except Overloaded:
+            return True
+
+    async def let_in() -> str:
+        async def answer() -> str:
+            return "in"
+        waiting = asyncio.ensure_future(gate.acall(answer))
+        await asyncio.sleep(0.05)
+        await asyncio.get_running_loop().run_in_executor(None, release.set)
+        return await waiting
+
+    away = asyncio.run(turned_away())
+    gate.acquire_timeout = 5.0
+    got = asyncio.run(let_in())
+    for t in holders:
+        t.join()
+    check("from a coroutine, the gate's slots are the threads' slots: two held by threads "
+          "turn a third caller away, and a slot freed by a thread lets a waiting coroutine in",
+          away and got == "in" and gate.in_flight == 0, (away, got, gate.in_flight))
+
+    tries: list = []
+
+    async def flaky_async() -> str:
+        tries.append(1)
+        if len(tries) < 3:
+            raise RuntimeError("HTTP 503 from https://provider: overloaded")
+        return "answer"
+
+    before = gate.retries
+    out = asyncio.run(gate.acall(flaky_async))
+    check("…its retries are the same: a transient failure tried again, counted, and the "
+          "waits the gate was given", out == "answer" and len(tries) == 3
+          and gate.retries - before == 2, (out, len(tries), gate.retries - before))
+
+    from pasarbench.service.resilience import Slots
+    slots = Slots(1)
+    slots.acquire(1)
+
+    async def cancelled_then_freed() -> tuple:
+        waiter = asyncio.ensure_future(slots.aacquire(5))
+        await asyncio.sleep(0.02)
+        waiter.cancel()
+        await asyncio.gather(waiter, return_exceptions=True)
+        slots.release()
+        second = await slots.aacquire(0.5)
+        return waiter.cancelled(), second, slots.free
+
+    gone, second, free = asyncio.run(cancelled_then_freed())
+    check("a coroutine cancelled while it waits takes no slot and owes none: the slot freed "
+          "after it goes to the next", gone and second and free == 0, (gone, second, free))
+
 
 # ---------------------------------------------------------------------------
 # Schema and migrations
@@ -1401,6 +1466,264 @@ def test_provider_failure():
     engine.dispose()
 
 
+def test_waiting_turns():
+    """A turn waiting on its model holds no thread (v81): two dozen turns at
+    once, on four worker threads, with a model that takes half a second a
+    call, finish together -- not four at a time."""
+    print("waiting turns")
+    engine, url = database("sqlite", "waiting")
+    n, threads, latency = 24, 4, 0.5
+    app = make_app(engine, url, threads=threads, max_concurrent_turns=n,
+                   provider_concurrency=n, mock_latency_ms=int(latency * 1000))
+    with client(app) as c:
+        h = tenant(c, "acme", world="synthetic:4")
+        from pasarbench.db import Database
+        seed = Database.fresh().tables
+        people = [(u, next(o for o, x in seed["orders"].items() if x["user_id"] == u))
+                  for u in seed["users"] if any(x["user_id"] == u for x in seed["orders"].values())]
+        mine = [(f"{u}-C{i:04d}", f"{o}-C{i:04d}") for i in range(1, 5) for u, o in people][:n]
+        cids = [(c.post("/v1/conversations", headers=h, json={"user_id": u}).json()[
+            "conversation_id"], o) for u, o in mine]
+        out: list = [None] * len(cids)
+        gate = threading.Barrier(len(cids))
+        peak = [0]
+
+        def one(i):
+            cid, order = cids[i]
+            gate.wait()
+            out[i] = c.post(f"/v1/conversations/{cid}/messages", headers=h,
+                            json={"content": f"where is my order {order}?"})
+
+        ts = [threading.Thread(target=one, args=(i,)) for i in range(len(cids))]
+        before = threading.active_count()
+        t0 = time.monotonic()
+        for t in ts:
+            t.start()
+        while any(t.is_alive() for t in ts):
+            peak[0] = max(peak[0], threading.active_count())
+            time.sleep(0.02)
+        took = time.monotonic() - t0
+    ok = [r.status_code == 200 and r.json()["stop_reason"] == "replied" for r in out]
+    calls = [r.json()["usage"]["model_calls"] for r in out if r.status_code == 200]
+    serial = len(cids) / threads * max(calls or [3]) * latency
+    check(f"{len(cids)} turns at once on {threads} worker threads, {max(calls or [0])} model "
+          f"calls of {latency:.1f} s each: all done in {took:.1f} s -- they waited together; "
+          f"held a thread each, four at a time, they would take {serial:.0f} s",
+          all(ok) and took < serial / 2, (sum(ok), took))
+    workers = peak[0] - before - len(cids)
+    check(f"…and the process held at most {workers} threads beyond its clients' while they "
+          f"waited: its worker pools' {threads} each, and the test client's own",
+          workers <= 2 * threads + 4, (peak[0], before))
+    engine.dispose()
+
+    # A running turn's transactions have threads of their own: every other
+    # handler's thread taken -- here a profile, holding the one there is for
+    # its three seconds -- a turn already admitted still finishes in its own
+    # time, not after the burst.
+    engine, url = database("sqlite", "bulkhead")
+    app = make_app(engine, url, threads=1, mock_latency_ms=200)
+    with client(app) as c:
+        h = tenant(c, "acme")
+        cid = c.post("/v1/conversations", headers=h, json={"user_id": "U002"}).json()[
+            "conversation_id"]
+        box: dict = {}
+
+        def turn():
+            t0 = time.monotonic()
+            box["r"] = c.post(f"/v1/conversations/{cid}/messages", headers=h,
+                              json={"content": "where is my order O1002?"})
+            box["took"] = time.monotonic() - t0
+
+        def busy():
+            box["profile"] = c.get("/v1/admin/profile?seconds=3", headers=OP).status_code
+
+        rt = app.state.runtime
+        tt = threading.Thread(target=turn)
+        tt.start()
+        until(lambda: rt.in_flight == 1)
+        bt = threading.Thread(target=busy)
+        bt.start()
+        from pasarbench.service.profiling import running
+        until(lambda: running() is not None)
+        tt.join(10)
+        bt.join(10)
+    check(f"a turn already running finishes in its own time ({box.get('took', 0):.1f} s, three "
+          f"model calls of 0.2 s) while every other handler's thread is taken for three "
+          f"seconds: its transactions have threads of their own",
+          box.get("r") is not None and box["r"].status_code == 200
+          and box["took"] < 2.5 and box.get("profile") == 200,
+          (box.get("took"), box.get("profile")))
+    engine.dispose()
+
+    import asyncio
+    from pasarbench.service.config import Settings
+    from pasarbench.service.runtime import Runtime
+    engine, url = database("sqlite", "cancelled")
+    rt = Runtime(engine, Settings(database_url=url, threads=1, max_concurrent_turns=2,
+                                  log_level="WARNING"))
+
+    async def cancelled_waiting() -> int:
+        busy = asyncio.ensure_future(rt.in_thread(time.sleep, 0.5))
+        await asyncio.sleep(0.05)
+        waiting = asyncio.ensure_future(rt.abegin_turn("acme", "cv_" + "0" * 24))
+        await asyncio.sleep(0.05)
+        waiting.cancel()
+        await asyncio.gather(waiting, return_exceptions=True)
+        await busy
+        return rt.admission.free
+    free = asyncio.run(cancelled_waiting())
+    check("…and a turn cancelled while it waits for one of them gives its slot back",
+          free == 2, free)
+    engine.dispose()
+
+    from pasarbench.harness.types import Message
+    from pasarbench.service.models import MockAgent
+    steady, spread = MockAgent(latency_ms=100), MockAgent(latency_ms=100, jitter=0.3)
+    waits = [spread._latency() for _ in range(2000)]
+    said = [Message(role="system", content="user_id **U001** in the SG market"),
+            Message(role="user", content="where is my order O1001?")]
+    check("the mock's latency strays as a provider's does, by up to its jitter "
+          f"({min(waits):.3f}–{max(waits):.3f} s around 0.100), and what it says does not",
+          0.07 <= min(waits) < 0.08 and 0.12 < max(waits) <= 0.13
+          and steady._latency() == 0.1 and spread.respond(said, []) == steady.respond(said, []),
+          (min(waits), max(waits)))
+
+
+def test_transport():
+    """What the service sends a provider is what the benchmark's _post sends
+    (v81): the same body, the backend's headers, urllib's own agent; and what
+    goes wrong is the same error, retried or not as before -- a redirect
+    followed nowhere, a key sent nowhere else. Over one connection kept alive,
+    where urllib opens one a call."""
+    print("transport")
+    import asyncio
+    import http.server
+    from pasarbench.harness import backends as B
+    from pasarbench.harness.types import Message
+    from pasarbench.service.models import Transport, _Unhalted
+    from pasarbench.service.resilience import is_transient
+
+    seen: list = []
+    ports: set = set()
+    answer = {"choices": [{"message": {"content": "hi", "tool_calls": [
+        {"id": "c1", "function": {"name": "get_order", "arguments": "{\"order_id\": \"O1\"}"}}]},
+        "finish_reason": "tool_calls"}], "usage": {"prompt_tokens": 10, "completion_tokens": 2,
+                                                  "prompt_cache_hit_tokens": 4}, "model": "m"}
+
+    class Provider(http.server.BaseHTTPRequestHandler):
+        protocol_version = "HTTP/1.1"
+
+        def log_message(self, *_a):
+            pass
+
+        def do_POST(self):
+            body = self.rfile.read(int(self.headers["Content-Length"]))
+            seen.append((self.path, dict(self.headers.items()), body))
+            ports.add(self.client_address[1])
+            code, out, extra = 200, json.dumps(answer).encode(), {}
+            if self.path.startswith("/s503"):
+                code, out = 503, b"overloaded"
+            elif self.path.startswith("/s400"):
+                code, out = 400, b"bad request"
+            elif self.path.startswith("/moved"):
+                code, out, extra = 302, b"", {"Location": f"http://127.0.0.1:{other}/steal"}
+            elif self.path.startswith("/slow"):
+                time.sleep(1.5)
+            try:
+                self.send_response(code)
+                for k, v in {"Content-Type": "application/json", **extra}.items():
+                    self.send_header(k, v)
+                self.send_header("Content-Length", str(len(out)))
+                self.end_headers()
+                self.wfile.write(out)
+            except (BrokenPipeError, ConnectionResetError):
+                pass                            # a client that timed out has gone
+
+    servers = [http.server.ThreadingHTTPServer(("127.0.0.1", 0), Provider) for _ in range(2)]
+    for srv in servers:
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+    port, other = servers[0].server_address[1], servers[1].server_address[1]
+    base = f"http://127.0.0.1:{port}"
+    msgs = [Message(role="system", content="you help"), Message(role="user", content="där?")]
+    tools = [{"type": "function", "function": {"name": "get_order", "description": "d",
+                                               "parameters": {"type": "object"}}}]
+    backend = B.OpenAICompatBackend("m", base, api_key="sk-test", extra_body={"seed": 1})
+    sync = backend.chat(msgs, tools)
+    by_urllib = seen[-1]
+    t = Transport()
+    wrapped = _Unhalted(backend, B, t)
+
+    async def calls(n):
+        outs = [await wrapped.achat(msgs, tools) for _ in range(n)]
+        await t.aclose()
+        return outs
+
+    ports.clear()
+    outs = asyncio.run(calls(3))
+    by_httpx = seen[-1]
+    same_headers = all(by_httpx[1].get(k) == by_urllib[1].get(k) for k in
+                       ("Authorization", "Content-Type", "User-Agent", "Accept-Encoding",
+                        "Content-Length"))
+    check("the same request: path, body byte for byte, the key, content type, urllib's user "
+          "agent and encoding",
+          by_httpx[0] == by_urllib[0] and by_httpx[2] == by_urllib[2] and same_headers,
+          (by_urllib[1], by_httpx[1]))
+    check("…the same answer read from it, and three calls over one connection kept alive",
+          all(o == sync for o in outs) and len(ports) == 1, (outs[0], sync, len(ports)))
+
+    def both(path, timeout=5.0):
+        url = f"{base}{path}"
+        got = []
+        try:
+            B._post(url, {"a": 1}, {"Authorization": "Bearer sk-test"}, timeout=timeout)
+        except Exception as e:  # noqa: BLE001
+            got.append(e)
+
+        async def go():
+            try:
+                await t.post(url, {"a": 1}, {"Authorization": "Bearer sk-test"}, timeout=timeout)
+            except Exception as e:  # noqa: BLE001
+                got.append(e)
+            finally:
+                await t.aclose()
+        asyncio.run(go())
+        return got
+
+    errs = {path: both(path) for path in ("/s503", "/s400", "/moved")}
+    errs["/slow"] = both("/slow", timeout=0.5)
+    servers[1].shutdown()
+    servers[1].server_close()
+    dead = f"http://127.0.0.1:{other}"
+    closed = []
+    try:
+        B._post(dead, {}, {})
+    except Exception as e:  # noqa: BLE001
+        closed.append(e)
+
+    async def refused():
+        try:
+            await t.post(dead, {}, {})
+        except Exception as e:  # noqa: BLE001
+            closed.append(e)
+        finally:
+            await t.aclose()
+    asyncio.run(refused())
+    errs["refused"] = closed
+    same = {k: (len(v) == 2 and is_transient(v[0]) == is_transient(v[1])
+                and (str(v[0]) == str(v[1]) if k in ("/s503", "/s400", "/moved") else True))
+            for k, v in errs.items()}
+    check("the same failures: a 503 and a 400 the same error word for word, retried and not; "
+          "a timeout and a refused connection both retried", all(same.values())
+          and is_transient(errs["/s503"][1]) and not is_transient(errs["/s400"][1])
+          and is_transient(errs["/slow"][1]) and is_transient(errs["refused"][1]),
+          {k: [f"{type(e).__name__}: {e}"[:80] for e in v] for k, v in errs.items()})
+    check("…and a redirect is an error, followed nowhere: the key never reaches the host it "
+          "names", "HTTP 302" in str(errs["/moved"][1])
+          and not any(path == "/steal" for path, _h, _b in seen))
+    servers[0].shutdown()
+    servers[0].server_close()
+
+
 def test_bad_arguments(kind: str):
     """A model's arguments must never take a turn down (the review of v75):
     an amount of 1e400, a voucher of 0, a credit past what a column holds, a
@@ -1789,6 +2112,8 @@ def main() -> int:
         test_order("sqlite")
         test_failures_keep_their_key()
         test_long_turns()
+        test_waiting_turns()
+        test_transport()
         test_zero_usage_is_estimated()
         test_logs_hold_no_message()
         test_slices("sqlite")

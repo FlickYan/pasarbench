@@ -8,7 +8,7 @@ A conversation turn: the customer's message in, the agent's reply out.
                                 (or 429), and takes the conversation's lease, so
                                 one turn runs at a time in it, across processes
                                 (or 409)
-    Turn.run                    the loop the benchmark's harness runs, as a
+    Turn.arun                   the loop the benchmark's harness runs, as a
                                 service: a model call -- outside any transaction,
                                 through the provider's gate -- and its usage to
                                 the ledger; its tool calls, each one transaction
@@ -23,10 +23,17 @@ the row that step wrote. A process that dies mid-turn leaves a conversation
 whose last committed step is true: a tool call either ran and was recorded, or
 neither, and the next turn answers any call the crash left unanswered
 ("interrupted: this call was not run") before it starts.
+
+A turn is a coroutine (v81). Its transactions are synchronous, each run in a
+worker thread for the milliseconds it takes; between them -- for the seconds
+a model call takes -- the turn holds no thread, so a process holds as many
+waiting turns as it admits (PASAR_MAX_CONCURRENT_TURNS), not as it has
+threads (PASAR_THREADS).
 """
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import logging
@@ -38,6 +45,8 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable
 
+import anyio
+import anyio.to_thread
 from sqlalchemy import Connection, Engine, bindparam, or_, select, update
 from sqlalchemy import insert as sql_insert
 
@@ -50,8 +59,8 @@ from . import errors as E
 from . import schema as S
 from .config import Settings
 from .costs import Price
-from .models import ModelError, ModelSpec, Registry
-from .resilience import CircuitOpen, Gates, Overloaded
+from .models import ModelError, ModelSpec, Registry, achat
+from .resilience import CircuitOpen, Gates, Overloaded, Slots
 from .store import (ToolOutcome, conversation_actions, result_digest, run_tool, storable,
                     transaction)
 
@@ -86,37 +95,6 @@ def seconds_to_utc_midnight() -> float:
 
 class LeaseLost(Exception):
     """The turn outlived its lease and another took the conversation."""
-
-
-class _Heartbeat:
-    """Renews a running turn's lease -- and whatever else should live as long as
-    the turn (its Idempotency-Key: `keepalive`) -- every third of the lease,
-    from a thread of its own, so the lease outlives any one step however long
-    a model call takes (a gate's wait, three tries, each a slow provider), and
-    a process that dies frees its conversation within one lease."""
-
-    def __init__(self, turn: "Turn", keepalive: Callable[[], None] | None):
-        self.turn, self.keepalive = turn, keepalive
-        self.every = max(0.2, turn.rt.settings.lease_seconds / 3)
-        self._stop = threading.Event()
-        self._thread = threading.Thread(target=self._loop, name="pasar-lease", daemon=True)
-
-    def start(self) -> None:
-        self._thread.start()
-
-    def stop(self) -> None:
-        self._stop.set()
-        self._thread.join(timeout=10)
-
-    def _loop(self) -> None:
-        while not self._stop.wait(self.every):
-            try:
-                if not self.turn._renew():
-                    return              # the lease is another's now: the turn finds out at its next write
-                if self.keepalive is not None:
-                    self.keepalive()
-            except Exception:  # noqa: BLE001 -- the next beat tries again
-                log.exception("lease heartbeat failed", extra={"conversation_id": self.turn.cid})
 
 
 # The statements a turn runs, built once with named parameters (store.py says
@@ -217,11 +195,13 @@ class Runtime:
         self.engine = engine
         self.settings = settings
         self.registry = registry or Registry(settings.models, settings.models_file,
-                                             settings.mock_latency_ms)
+                                             settings.mock_latency_ms, settings.mock_jitter)
         self.gates = gates or Gates(settings.provider_concurrency,
                                     settings.provider_acquire_timeout)
         self.metrics = metrics
-        self.admission = threading.BoundedSemaphore(settings.max_concurrent_turns)
+        # Turns at once: a slot a thread or a coroutine can wait for (v81).
+        self.admission = Slots(settings.max_concurrent_turns)
+        self._steps: dict[int, tuple[asyncio.AbstractEventLoop, anyio.CapacityLimiter]] = {}
         self.node = f"{socket.gethostname()[:24]}:{os.getpid()}"
         self._prices: dict[tuple[str, str], tuple[float, Price | None]] = {}
         self._lock = threading.Lock()
@@ -231,6 +211,25 @@ class Runtime:
     def in_flight(self) -> int:
         """Turns admitted and not yet finished, in this process."""
         return self._in_flight
+
+    def steps(self) -> anyio.CapacityLimiter:
+        """The worker threads an admitted turn's transactions take turns on --
+        PASAR_THREADS of them, apart from those of every other handler, so a
+        burst of new requests (a thousand conversations opened at once) never
+        queues in front of the turns already running, which hold their
+        conversations' leases and their slots until they finish. One per
+        event loop (a limiter belongs to the loop it waits on)."""
+        loop = asyncio.get_running_loop()
+        got = self._steps.get(id(loop))
+        if got is None or got[0] is not loop:
+            for k in [k for k, (lp, _l) in self._steps.items() if lp.is_closed()]:
+                del self._steps[k]
+            got = self._steps[id(loop)] = (loop, anyio.CapacityLimiter(self.settings.threads))
+        return got[1]
+
+    async def in_thread(self, fn: Callable[..., Any], *args: Any) -> Any:
+        """fn(*args) in one of the turns' worker threads (steps())."""
+        return await anyio.to_thread.run_sync(fn, *args, limiter=self.steps())
 
     def _admitted(self, delta: int) -> None:
         with self._lock:
@@ -388,11 +387,39 @@ class Runtime:
         """Admit a turn and take its conversation's lease. Raises what the
         client is told: 503 at capacity, 404, 409 (closed, turn running, out of
         turns), 429 (a budget spent), 400 (its model withdrawn)."""
-        if not self.admission.acquire(timeout=self.settings.admission_timeout):
-            if self.metrics:
-                self.metrics.rejections.labels("overloaded").inc()
-            raise E.Overloaded("too many turns are running here; try again shortly",
-                               retry_after=2)
+        if not self.admission.acquire(self.settings.admission_timeout):
+            raise self._overloaded()
+        return self._lease(tenant_id, cid)
+
+    async def abegin_turn(self, tenant_id: str, cid: str) -> "Turn":
+        """begin_turn(), from a coroutine: the wait for a slot holds no
+        thread, and the lease's transaction runs in one. A turn the lease
+        made is given back if the coroutine is cancelled before it is had."""
+        if not await self.admission.aacquire(self.settings.admission_timeout):
+            raise self._overloaded()
+        box: dict[str, Any] = {}
+
+        def lease() -> None:
+            box["asked"] = True
+            box["turn"] = self._lease(tenant_id, cid)
+        try:
+            await self.in_thread(lease)
+        except BaseException:
+            if "turn" in box:                   # cancelled as the lease was taken
+                box["turn"].release()
+            elif "asked" not in box:            # cancelled waiting for a thread: the slot back
+                self.admission.release()        # (a lease refused gave it back itself)
+            raise
+        return box["turn"]
+
+    def _overloaded(self) -> E.Overloaded:
+        if self.metrics:
+            self.metrics.rejections.labels("overloaded").inc()
+        return E.Overloaded("too many turns are running here; try again shortly",
+                            retry_after=2)
+
+    def _lease(self, tenant_id: str, cid: str) -> "Turn":
+        """The lease, on an admitted slot -- given back if the lease is refused."""
         try:
             owner = f"{self.node}:{uuid.uuid4().hex[:8]}"
             s = self.settings
@@ -442,7 +469,7 @@ def _aware(t: datetime) -> datetime:
 
 
 class Turn:
-    """One turn, admitted and holding its conversation's lease until run()
+    """One turn, admitted and holding its conversation's lease until arun()
     returns (or release() is called without running it)."""
 
     def __init__(self, rt: Runtime, tenant_id: str, row: Any, owner: str, spec: ModelSpec,
@@ -494,23 +521,164 @@ class Turn:
             raise LeaseLost(f"conversation {self.cid}: the turn outlived its lease")
 
     # --- the loop ---------------------------------------------------------
-    def run(self, text: str, emit: Emit | None = None,
-            keepalive: Callable[[], None] | None = None) -> dict[str, Any]:
-        beat = _Heartbeat(self, keepalive)
-        beat.start()
+    async def arun(self, text: str, emit: Emit | None = None,
+                   keepalive: Callable[[], None] | None = None) -> dict[str, Any]:
+        """The turn, as a coroutine (v81): each step's transaction in a worker
+        thread, the model's calls awaited on the event loop -- a turn waiting
+        on its model holds no thread -- and the lease renewed by a task of its
+        own. `emit` is called on the loop, with each event as its step
+        commits."""
+        beat = asyncio.ensure_future(self._beat(keepalive))
         try:
-            return self._run(text, emit or (lambda _e: None))
+            return await self._arun(text, emit or (lambda _e: None))
         finally:
-            beat.stop()
-            self.release()
+            beat.cancel()
+            await asyncio.gather(beat, return_exceptions=True)
+            if self._lease_cleared:
+                self.release()                  # nothing left to write: no thread needed
+            else:
+                await self.rt.in_thread(self.release)
 
-    def _run(self, text: str, emit: Emit) -> dict[str, Any]:
+    async def _beat(self, keepalive: Callable[[], None] | None) -> None:
+        """The lease renewed -- and whatever else should live as long as the
+        turn (its Idempotency-Key: `keepalive`) -- every third of the lease,
+        so it outlives any one step however long a model call takes (a gate's
+        wait, three tries, each a slow provider), and a process that dies
+        frees its conversation within one lease."""
+        every = max(0.2, self.rt.settings.lease_seconds / 3)
+        while True:
+            await asyncio.sleep(every)
+            try:
+                if not await self.rt.in_thread(self._renew):
+                    return          # the lease is another's now: the turn finds out at its next write
+                if keepalive is not None:
+                    await self.rt.in_thread(keepalive)
+            except Exception:  # noqa: BLE001 -- the next beat tries again
+                log.exception("lease heartbeat failed", extra={"conversation_id": self.cid})
+
+    async def _arun(self, text: str, emit: Emit) -> dict[str, Any]:
         rt, s, spec = self.rt, self.rt.settings, self.spec
         t0 = time.monotonic()
-        out_events: list[dict] = []
+        thread = rt.in_thread
 
         # 1. The customer's message, after answering what a crash left unanswered.
-        with transaction(rt.engine, write=True) as conn:
+        events, price = await thread(self._open, text)
+        for ev in events:
+            emit(ev)
+
+        gate = rt.gates.get(spec.provider)
+        backend = rt.registry.backend(spec)
+        steps = dispatched = 0
+        usage, cost = Usage(), 0
+        calls: list[dict[str, Any]] = []
+        stop, reply, error = None, "", None
+        spent = int(self.row.cost_picousd)
+        tokens = int(self.row.prompt_tokens + self.row.completion_tokens)
+
+        while True:
+            if steps >= s.max_steps_per_turn or (
+                    s.conversation_max_steps
+                    and int(self.row.steps) + steps >= s.conversation_max_steps):
+                stop = "max_steps"
+                break
+            if time.monotonic() - t0 >= s.max_turn_seconds:
+                stop = "max_turn_seconds"
+                break
+            if spent >= s.conversation_budget_picousd or tokens >= s.conversation_max_tokens:
+                stop = "conversation_budget"
+                break
+            if self.daily_budget is not None and await thread(self._spent_today) >= \
+                    self.daily_budget:
+                stop = "tenant_budget"
+                break
+
+            t1 = time.monotonic()
+            try:
+                resp = await gate.acall(
+                    lambda: achat(backend, list(self.messages), TOOL_SCHEMAS))
+            except (Overloaded, CircuitOpen) as e:
+                stop, error = "provider_unavailable", str(e)
+            except Exception as e:  # noqa: BLE001 -- the provider's failure ends the turn, not the server
+                stop, error = "provider_error", f"{type(e).__name__}: {e}"[:500]
+            seconds = time.monotonic() - t1
+            if stop is not None:
+                if rt.metrics:
+                    rt.metrics.model_call(spec.provider, spec.model, seconds, 0, 0, 0, 0,
+                                          outcome=stop)
+                emit(await thread(self._model_error, steps + 1, error, stop))
+                break
+
+            u, estimated = resp.usage, spec.api in ("mock", "scripted")
+            if u.total == 0:
+                # No usage reported -- a scripted step, or a provider that sent
+                # none: estimated, and marked so, never charged as free.
+                u = Usage(sum(approx_tokens(x.content) for x in self.messages),
+                          approx_tokens(resp.content) + 24 * len(resp.tool_calls))
+                estimated = True
+            # What the model sent, as a database can keep it, before anything
+            # reads it: 1e400 parses as infinity, and a NUL character is valid
+            # JSON ("\u0000") that PostgreSQL's text refuses (store.storable).
+            resp.content = storable(resp.content or "")
+            resp.served_model = storable(resp.served_model)
+            for tc in resp.tool_calls:
+                tc.name, tc.id = storable(tc.name), storable(tc.id)
+                tc.arguments = storable(tc.arguments)
+            call_cost = costs.cost_picousd(u.prompt_tokens, u.cached_tokens,
+                                           u.completion_tokens, price)
+            steps += 1
+            msg = resp.as_message()
+            lost, ev = await thread(self._step, steps, u, estimated, call_cost, seconds,
+                                    resp.served_model, msg, price)
+            if rt.metrics:
+                rt.metrics.model_call(spec.provider, spec.model, seconds, u.prompt_tokens,
+                                      u.cached_tokens, u.completion_tokens, call_cost)
+            if lost:
+                raise LeaseLost(f"conversation {self.cid}: the turn outlived its lease")
+            emit(ev)
+            self.messages.append(msg)
+            self.next_seq += 1
+            usage, cost = usage + u, cost + call_cost
+            spent, tokens = spent + call_cost, tokens + u.total
+
+            if not msg.tool_calls:
+                stop, reply = "replied", msg.content or ""
+                break
+            for tc in msg.tool_calls:
+                summary, evs = await thread(self._tool, tc, steps, dispatched)
+                for ev in evs:
+                    emit(ev)
+                calls.append(summary)
+                if summary["dispatched"]:
+                    dispatched += 1
+
+        fallback = stop != "replied"
+        latency_ms = int((time.monotonic() - t0) * 1000)
+        result = {"conversation_id": self.cid, "turn": self.number,
+                  "reply": FALLBACK if fallback else reply, "fallback": fallback,
+                  "stop_reason": stop,
+                  "tool_calls": [{k: v for k, v in x.items() if k != "dispatched"}
+                                 for x in calls],
+                  "usage": {"model_calls": steps, "prompt_tokens": usage.prompt_tokens,
+                            "cached_tokens": usage.cached_tokens,
+                            "completion_tokens": usage.completion_tokens},
+                  "cost_picousd": cost, "cost_usd": costs.usd(cost), "latency_ms": latency_ms}
+        if error:
+            result["error"] = error
+        emit(await thread(self._finish, result, stop, fallback))
+        if rt.metrics:
+            rt.metrics.turn(stop, latency_ms / 1000)
+        log.info("turn", extra={"tenant_id": self.tenant_id, "conversation_id": self.cid,
+                                "turn": self.number, "stop_reason": stop, "steps": steps,
+                                "tool_calls": len(calls), "cost_picousd": cost,
+                                "ms": latency_ms})
+        return result
+
+    # --- the turn's transactions, each run in a worker thread --------------
+    def _open(self, text: str) -> tuple[list[dict], Price | None]:
+        """The customer's message, after answering what a crash left
+        unanswered; and the model's price (cached)."""
+        out_events: list[dict] = []
+        with transaction(self.rt.engine, write=True) as conn:
             rows = conn.execute(_Q_MESSAGES, {"cid": self.cid}).all()
             self.messages = [_message(r) for r in rows]
             self.next_seq = rows[-1].seq + 1 if rows else 0
@@ -535,139 +703,59 @@ class Turn:
             self._as_holder(conn, {"turns": self.number}, {"n_messages": 1})
             out_events.append(_event(conn, self.cid, self.number, "turn.started",
                                      {"repaired": len(dangling)}))
-        for ev in out_events:
-            emit(ev)
+        return out_events, self.rt.price(None, self.spec)
 
-        price = rt.price(None, spec)
-        gate = rt.gates.get(spec.provider)
-        backend = rt.registry.backend(spec)
-        steps = dispatched = 0
-        usage, cost = Usage(), 0
-        calls: list[dict[str, Any]] = []
-        stop, reply, error = None, "", None
-        spent = int(self.row.cost_picousd)
-        tokens = int(self.row.prompt_tokens + self.row.completion_tokens)
+    def _spent_today(self) -> int:
+        with self.rt.engine.connect() as conn:
+            return costs.spent_today(conn, self.tenant_id)
 
-        while True:
-            if steps >= s.max_steps_per_turn or (
-                    s.conversation_max_steps
-                    and int(self.row.steps) + steps >= s.conversation_max_steps):
-                stop = "max_steps"
-                break
-            if time.monotonic() - t0 >= s.max_turn_seconds:
-                stop = "max_turn_seconds"
-                break
-            if spent >= s.conversation_budget_picousd or tokens >= s.conversation_max_tokens:
-                stop = "conversation_budget"
-                break
-            if self.daily_budget is not None:
-                with rt.engine.connect() as conn:
-                    if costs.spent_today(conn, self.tenant_id) >= self.daily_budget:
-                        stop = "tenant_budget"
-                        break
+    def _model_error(self, step: int, error: str | None, stop: str) -> dict:
+        with transaction(self.rt.engine, write=True) as conn:
+            self._as_holder(conn)
+            return _event(conn, self.cid, self.number, "model.error",
+                          {"step": step, "error": error, "stop": stop})
 
-            t1 = time.monotonic()
-            try:
-                resp = gate.call(lambda: backend.chat(list(self.messages), TOOL_SCHEMAS))
-            except (Overloaded, CircuitOpen) as e:
-                stop, error = "provider_unavailable", str(e)
-            except Exception as e:  # noqa: BLE001 -- the provider's failure ends the turn, not the server
-                stop, error = "provider_error", f"{type(e).__name__}: {e}"[:500]
-            seconds = time.monotonic() - t1
-            if stop is not None:
-                if rt.metrics:
-                    rt.metrics.model_call(spec.provider, spec.model, seconds, 0, 0, 0, 0,
-                                          outcome=stop)
-                with transaction(rt.engine, write=True) as conn:
-                    self._as_holder(conn)
-                    ev = _event(conn, self.cid, self.number, "model.error",
-                                {"step": steps + 1, "error": error, "stop": stop})
-                emit(ev)
-                break
-
-            u, estimated = resp.usage, spec.api in ("mock", "scripted")
-            if u.total == 0:
-                # No usage reported -- a scripted step, or a provider that sent
-                # none: estimated, and marked so, never charged as free.
-                u = Usage(sum(approx_tokens(x.content) for x in self.messages),
-                          approx_tokens(resp.content) + 24 * len(resp.tool_calls))
-                estimated = True
-            # What the model sent, as a database can keep it, before anything
-            # reads it: 1e400 parses as infinity, and a NUL character is valid
-            # JSON ("\u0000") that PostgreSQL's text refuses (store.storable).
-            resp.content = storable(resp.content or "")
-            resp.served_model = storable(resp.served_model)
-            for tc in resp.tool_calls:
-                tc.name, tc.id = storable(tc.name), storable(tc.id)
-                tc.arguments = storable(tc.arguments)
-            call_cost = costs.cost_picousd(u.prompt_tokens, u.cached_tokens,
-                                           u.completion_tokens, price)
-            steps += 1
-            msg = resp.as_message()
-            with transaction(rt.engine, write=True) as conn:
-                # The money first: a call that was made is charged, whatever else happens.
-                conn.execute(_Q_LEDGER, {
-                    "tenant_id": self.tenant_id, "conversation_id": self.cid, "turn": self.number,
-                    "step": steps, "provider": spec.provider, "model": spec.model,
-                    "price_id": price.price_id if price else None,
-                    "prompt_tokens": u.prompt_tokens, "cached_tokens": u.cached_tokens,
-                    "completion_tokens": u.completion_tokens, "estimated": estimated,
-                    "cost_picousd": call_cost, "latency_ms": int(seconds * 1000),
-                    "served_model": resp.served_model, "created_at": utcnow()})
-                # The step's counters, and the lease renewed, in one statement:
-                # no row means the lease is no longer this turn's.
-                now = utcnow()
-                lost = conn.execute(_Q_STEP, {
-                    "cid": self.cid, "owner": self.owner, "d_prompt": u.prompt_tokens,
-                    "d_cached": u.cached_tokens, "d_completion": u.completion_tokens,
-                    "d_cost": call_cost, "now": now,
-                    "expires": now + timedelta(seconds=s.lease_seconds)}).rowcount != 1
-                if not lost:
-                    conn.execute(_Q_MESSAGE, {
-                        "conversation_id": self.cid, "seq": self.next_seq, "turn": self.number,
-                        "role": "assistant", "content": msg.content or "",
-                        "tool_calls": [tc.to_dict() for tc in msg.tool_calls] or None,
-                        "created_at": now})
-                    ev = _event(conn, self.cid, self.number, "model.call", {
-                        "step": steps, "latency_ms": int(seconds * 1000),
-                        "prompt_tokens": u.prompt_tokens, "cached_tokens": u.cached_tokens,
-                        "completion_tokens": u.completion_tokens, "estimated": estimated,
-                        "cost_picousd": call_cost,
-                        "tool_calls": [tc.name for tc in msg.tool_calls],
-                        **({"content": msg.content} if msg.content else {})})
-            if rt.metrics:
-                rt.metrics.model_call(spec.provider, spec.model, seconds, u.prompt_tokens,
-                                      u.cached_tokens, u.completion_tokens, call_cost)
+    def _step(self, step: int, u: Usage, estimated: bool, call_cost: int, seconds: float,
+              served_model: str | None, msg: Message, price: Price | None
+              ) -> tuple[bool, dict | None]:
+        """A model call recorded: the ledger row (always), the step's counters
+        and the lease renewed in one statement, the assistant's message."""
+        spec, s = self.spec, self.rt.settings
+        with transaction(self.rt.engine, write=True) as conn:
+            # The money first: a call that was made is charged, whatever else happens.
+            conn.execute(_Q_LEDGER, {
+                "tenant_id": self.tenant_id, "conversation_id": self.cid, "turn": self.number,
+                "step": step, "provider": spec.provider, "model": spec.model,
+                "price_id": price.price_id if price else None,
+                "prompt_tokens": u.prompt_tokens, "cached_tokens": u.cached_tokens,
+                "completion_tokens": u.completion_tokens, "estimated": estimated,
+                "cost_picousd": call_cost, "latency_ms": int(seconds * 1000),
+                "served_model": served_model, "created_at": utcnow()})
+            # No row means the lease is no longer this turn's.
+            now = utcnow()
+            lost = conn.execute(_Q_STEP, {
+                "cid": self.cid, "owner": self.owner, "d_prompt": u.prompt_tokens,
+                "d_cached": u.cached_tokens, "d_completion": u.completion_tokens,
+                "d_cost": call_cost, "now": now,
+                "expires": now + timedelta(seconds=s.lease_seconds)}).rowcount != 1
             if lost:
-                raise LeaseLost(f"conversation {self.cid}: the turn outlived its lease")
-            emit(ev)
-            self.messages.append(msg)
-            self.next_seq += 1
-            usage, cost = usage + u, cost + call_cost
-            spent, tokens = spent + call_cost, tokens + u.total
+                return True, None
+            conn.execute(_Q_MESSAGE, {
+                "conversation_id": self.cid, "seq": self.next_seq, "turn": self.number,
+                "role": "assistant", "content": msg.content or "",
+                "tool_calls": [tc.to_dict() for tc in msg.tool_calls] or None,
+                "created_at": now})
+            return False, _event(conn, self.cid, self.number, "model.call", {
+                "step": step, "latency_ms": int(seconds * 1000),
+                "prompt_tokens": u.prompt_tokens, "cached_tokens": u.cached_tokens,
+                "completion_tokens": u.completion_tokens, "estimated": estimated,
+                "cost_picousd": call_cost, "tool_calls": [tc.name for tc in msg.tool_calls],
+                **({"content": msg.content} if msg.content else {})})
 
-            if not msg.tool_calls:
-                stop, reply = "replied", msg.content or ""
-                break
-            for tc in msg.tool_calls:
-                calls.append(self._tool(tc, steps, dispatched, emit))
-                if calls[-1]["dispatched"]:
-                    dispatched += 1
-
-        fallback = stop != "replied"
-        latency_ms = int((time.monotonic() - t0) * 1000)
-        result = {"conversation_id": self.cid, "turn": self.number,
-                  "reply": FALLBACK if fallback else reply, "fallback": fallback,
-                  "stop_reason": stop,
-                  "tool_calls": [{k: v for k, v in x.items() if k != "dispatched"}
-                                 for x in calls],
-                  "usage": {"model_calls": steps, "prompt_tokens": usage.prompt_tokens,
-                            "cached_tokens": usage.cached_tokens,
-                            "completion_tokens": usage.completion_tokens},
-                  "cost_picousd": cost, "cost_usd": costs.usd(cost), "latency_ms": latency_ms}
-        if error:
-            result["error"] = error
-        with transaction(rt.engine, write=True) as conn:
+    def _finish(self, result: dict[str, Any], stop: str, fallback: bool) -> dict:
+        """The lease checked and given back, the fallback reply if there is one,
+        and turn.completed -- in one transaction."""
+        with transaction(self.rt.engine, write=True) as conn:
             if conn.execute(_Q_FINISH[fallback], {"cid": self.cid, "owner": self.owner,
                                                   "stop": stop, "now": utcnow()}).rowcount != 1:
                 raise LeaseLost(f"conversation {self.cid}: the turn outlived its lease")
@@ -679,18 +767,13 @@ class Turn:
                 self.next_seq += 1
             ev = _event(conn, self.cid, self.number, "turn.completed", result)
         self._lease_cleared = True
-        emit(ev)
-        if rt.metrics:
-            rt.metrics.turn(stop, latency_ms / 1000)
-        log.info("turn", extra={"tenant_id": self.tenant_id, "conversation_id": self.cid,
-                                "turn": self.number, "stop_reason": stop, "steps": steps,
-                                "tool_calls": len(calls), "cost_picousd": cost,
-                                "ms": latency_ms})
-        return result
+        return ev
 
     # --- tool calls -------------------------------------------------------
-    def _tool(self, tc: ToolCall, step: int, dispatched: int, emit: Emit) -> dict[str, Any]:
-        """One of the model's tool calls: run, or answered without running."""
+    def _tool(self, tc: ToolCall, step: int, dispatched: int
+              ) -> tuple[dict[str, Any], list[dict]]:
+        """One of the model's tool calls, run or answered without running: what
+        the turn's result says of it, and the events it wrote."""
         rt, s = self.rt, self.rt.settings
         args = tc.arguments
         refusal = None
@@ -703,12 +786,11 @@ class Turn:
         if refusal is not None:
             with transaction(rt.engine, write=True) as conn:
                 ev = self._answer(conn, tc, {"ok": False, "error": refusal}, step, self.number)
-            emit(ev)
             if rt.metrics:
                 rt.metrics.tool_call(tc.name if tc.name in TOOL_NAMES else "unknown", "refused",
                                      False, 0.0, 1)
-            return {"tool": tc.name, "args": args, "ok": False, "error": refusal,
-                    "dispatched": False}
+            return ({"tool": tc.name, "args": args, "ok": False, "error": refusal,
+                     "dispatched": False}, [ev])
 
         verified_before = list(self.verified)
         call_seq, msg_seq, action_seq = self.call_seq, self.next_seq, self.action_seq
@@ -763,9 +845,8 @@ class Turn:
                                              f"({type(e).__name__}); nothing was changed"}
             with transaction(rt.engine, write=True) as conn:
                 ev = self._answer(conn, tc, failure, step, self.number)
-            emit(ev)
-            return {"tool": tc.name, "args": args, "ok": False, "error": failure["error"],
-                    "dispatched": False}
+            return ({"tool": tc.name, "args": args, "ok": False, "error": failure["error"],
+                     "dispatched": False}, [ev])
         self.messages.append(Message(role="tool", name=tc.name, tool_call_id=tc.id,
                                      content=box["payload"]))
         self.actions.extend(out.actions)
@@ -773,13 +854,12 @@ class Turn:
         self.call_seq += 1
         self.next_seq += 1
         self.action_seq += len(out.actions)
-        emit(box["event"])
         if rt.metrics:
             outcome = "ok" if out.result.get("ok") else (
                 "refused" if "refused by the platform" in str(out.result.get("error")) else "error")
             rt.metrics.tool_call(tc.name, outcome, out.is_write, out.seconds, out.attempts)
-        return {"tool": tc.name, "args": args, "ok": out.result.get("ok"),
-                "error": out.result.get("error"), "dispatched": True}
+        return ({"tool": tc.name, "args": args, "ok": out.result.get("ok"),
+                 "error": out.result.get("error"), "dispatched": True}, [box["event"]])
 
     def _answer(self, conn: Connection, tc: ToolCall, result: dict[str, Any], step: int,
                 turn: int, platform: bool = False) -> dict:

@@ -46,6 +46,10 @@ What holds it together, and how each claim is checked:
   identically ([below](#where-a-turns-cpu-went-v80)). What was cut was found
   with a sampler of the service's own that an operator runs on a live process
   (`GET /v1/admin/profile`), checked against threads whose CPU is known.
+- **A turn waiting on its model holds no thread.** A thousand customers
+  waiting on a ten-second model at once are served on 94 threads and 179 MB,
+  where v80 needed 1,984 threads and 261 MB, at the same throughput and with
+  shorter turns ([below](#turns-that-wait-without-a-thread-v81)).
 
 An independent review of the service before release reported thirteen defects
 — a model's bad arguments could crash a turn, a key could be freed after its
@@ -57,7 +61,7 @@ PostgreSQL. Each is fixed and pinned by a test ([WHAT_FAILED](WHAT_FAILED.md)
 
 ```
 pip install -r requirements-service.txt      # the benchmark itself still needs nothing
-python -m tests.test_service                 # 115 checks on SQLite; PASAR_TEST_POSTGRES_URL, 37 more
+python -m tests.test_service                 # 127 checks on SQLite; PASAR_TEST_POSTGRES_URL, 37 more
 python scripts/service_sweep.py --self-test  # the real-model kit on a stand-in provider: no key
 ```
 
@@ -152,14 +156,14 @@ POST /v1/conversations/{id}/messages
   │  token bucket, per tenant                                             429 Retry-After
   │  Idempotency-Key: seen? ─▶ the stored answer, byte for byte           (replayed)
   ▼
-Runtime.begin_turn
+Runtime.abegin_turn
   │  admission: at most PASAR_MAX_CONCURRENT_TURNS here                   503 Retry-After
   │  the lease: UPDATE ... WHERE (free or expired) AND open RETURNING *   409
   │  budgets, on the row the lease returned: the conversation's, the day  429
   ▼
-Turn.run ── txn: answer what a crash left unanswered; her message ────────▶ event turn.started
-  │
-  ├─▶ model call ··· outside any transaction, through the provider's gate:
+Turn.arun ── txn: answer what a crash left unanswered; her message ───────▶ event turn.started
+  │            (each txn in a worker thread; between them the turn holds none)
+  ├─▶ model call ··· awaited, outside any transaction, through the provider's gate:
   │     a slot (16 in flight) · retries with full jitter · circuit breaker
   │   txn: the ledger row (always) · counters + the lease renewed (one UPDATE)
   │        · the assistant message ──────────────────────────────────────▶ event model.call
@@ -248,6 +252,13 @@ table below); a tampered row found.
 - **No transaction spans a model call.** A model call takes seconds; a tool
   transaction takes milliseconds. Connections are pooled and held only for the
   latter.
+- **A turn waiting on its model holds no thread** (v81). A turn is a coroutine:
+  each of its transactions runs in a worker thread for the milliseconds it
+  takes, and the seconds of a model call are awaited, so a process holds as
+  many waiting turns as it admits, not as it has threads. An admitted turn's
+  transactions have `PASAR_THREADS` threads of their own, apart from every
+  other handler's, so a burst of new requests never queues in front of the
+  turns already running, which hold leases and slots until they finish.
 - **Locks where the invariants are.** A write locks its customer (one row,
   `SELECT ... FOR UPDATE`), so two conversations of one customer write one at a
   time and two customers never wait for each other. Versioned rows
@@ -320,10 +331,11 @@ table below); a tampered row found.
   response models (`/docs`, `/openapi.json`); the tests pin the exact route
   list.
 - **Server-Sent Events** (`?stream=true` or `Accept: text/event-stream`): each
-  committed step as it happens, each with its event id. The turn's thread starts
-  before the response does, so a client that drops the stream — or is gone
-  before it starts — loses nothing: the turn runs to its end, and
-  `GET .../events?after=<id>` returns every event since.
+  committed step as it happens, each with its event id. The turn is a task of
+  its own, started before the response is, so a client that drops the stream —
+  or is gone before it starts — loses nothing: the turn runs to its end (a
+  server stopping waits for it), and `GET .../events?after=<id>` returns every
+  event since.
 - **Errors are RFC 9457 problem details** (`application/problem+json`), each
   kind its own `type` — `turn-in-progress`, `budget-exhausted`,
   `idempotency-key-reused`, ... — so a client branches on the type, never the
@@ -380,6 +392,8 @@ runs it:
 | money | prices exact to the microdollar, costs additive, effective dates, budgets for a conversation and a tenant's day |
 | a customer's slice, kept | a second read with her write_seq unchanged uses the first's slice (one read of her tables, the same answer); a write makes the next read read again, and it sees the write; rows keyed by plain str; `copy_world` equal to `deepcopy`, a nested value included, and nothing the copy changes reaching the original; off at 0; on both databases |
 | the pool | a connection back within seconds is lent with no round trip, one idle longer is pinged, and one whose session the server ended (`pg_terminate_backend`) is replaced either way before it is lent: the next transaction runs, on a new session (PostgreSQL) |
+| turns that wait | 24 turns at once on 4 worker threads, three model calls of 0.5 s each, done together in 1.7 s, not the 9 they would take a thread each; a running turn finishes in 0.6 s while every other handler's thread is held for three; a turn cancelled while it waits for a thread gives its slot back; the gate's slots shared by threads and coroutines, its retries the same from either |
+| a model call's transport | the same request through urllib and httpx side by side — the body byte for byte, the key, the content type, the user agent — the same answer, three calls over one connection kept alive; the same failures (a 503 and a 400 word for word, retried and not; a timeout, a refused connection); a redirect followed nowhere, the key never reaching the host it names |
 | the profiler | against threads whose CPU is known: a long call charged 0.392 s of its 0.400, short bursts between waits 0.165 of 0.166, a thread waiting throughout nothing, and the stacks' sum the process's CPU; the endpoint is the operator's, runs one at a time (409), ends on DELETE; the CLI's summary and folded stacks |
 | schema | migration to head equals `schema.py`; down and up again; 0002 on a database that has tenants: each gets its sequence after its counter, and down again the counter takes the last value back |
 | the API's shape | the route list pinned; every `/v1` operation documents its problem responses |
@@ -443,7 +457,8 @@ joined to.
 
 | part | choice | why |
 |---|---|---|
-| API | FastAPI 0.162, Pydantic 2, uvicorn | typed bodies → validation and the OpenAPI document from one source; sync handlers in a bounded thread pool keep the benchmark's synchronous code unchanged |
+| API | FastAPI 0.162, Pydantic 2, uvicorn | typed bodies → validation and the OpenAPI document from one source; a turn as a coroutine — a model call awaited, its transactions in a bounded thread pool — so the benchmark's synchronous tools and store run unchanged and a waiting turn holds no thread; every other handler synchronous, in the same pool |
+| model calls | httpx (async) | the benchmark's backends build each request and read each answer; the service sends it from a coroutine over connections kept alive, as urllib would have sent it — the same body, headers and errors |
 | data | SQLAlchemy 2.1 Core, psycopg 3 | explicit SQL, no ORM state to go stale between a model call and a write; one schema for SQLite and PostgreSQL |
 | database | PostgreSQL 16; SQLite 3 (WAL) | row locks, snapshot reads and JSONB; SQLite for a laptop and the tests |
 | migrations | Alembic | revisions generated from the schema, checked against it |
@@ -642,7 +657,7 @@ What it says:
    call, 6% — and its other steps (the model calls with their ledger rows, its
    first and last transactions) 47%; the event loop and HTTP 7.5%. The next
    cuts are fewer statements a step, and a second process (+41%, above); with a
-   real model, the cap on turns at once (Not built yet, 1).
+   real model, the cap on turns at once (v81, below).
 5. **Nothing else moved.** Every one of the 30 runs replayed identically (840 to
    1,264 calls each), no conflict was retried, and every request was answered
    200; the 313 reference solutions leave the world and the action log as the
@@ -652,6 +667,101 @@ The profiler that found it is the operator's too (Operating it). Its first
 version put 93% of the CPU on the database driver's wait, where a thread waits
 and spends none ([WHAT_FAILED #68](WHAT_FAILED.md)); what it charges now is
 checked against threads whose CPU is known.
+
+### Turns that wait without a thread (v81)
+
+Through v80 a turn ran on a worker thread from its first transaction to its
+last and held it through every model call, so a process admitted no more turns
+than it had threads. With a real model — two or three seconds a turn — that
+cap, not the CPU, came first (v80, above). v81 makes a turn a coroutine.
+
+- **A turn** (`Turn.arun`) runs each of its transactions — the customer's
+  message, a model call's record, a tool call, the last — in a worker thread
+  for the milliseconds it takes, the same code as before, and awaits the
+  seconds between them; its lease's heartbeat is a task. A process holds as
+  many waiting turns as it admits — `PASAR_MAX_CONCURRENT_TURNS`, 256 by
+  default where it was 48 — on `PASAR_THREADS` threads.
+- **A model call is awaited.** The benchmark's backends build a request
+  (`request()`) and read an answer (`parse()`) apart from sending it; `chat()`,
+  what the benchmark's runs call, is `parse(_post(*request()))` as before. The
+  service sends the same request from a coroutine, with httpx over
+  connections kept alive (`models.Transport`): the body byte for byte, the
+  headers, the errors and which of them are retried, no redirect followed —
+  `test_transport` sends one through urllib and httpx side by side.
+- **One limit for threads and coroutines** (`resilience.Slots`): the provider
+  gate and the admission count both against the same slots, and a release
+  wakes whichever waits.
+- **Running turns have threads of their own.** An admitted turn's
+  transactions take turns on `PASAR_THREADS` threads apart from every other
+  handler's, so a burst of new requests never queues in front of the turns
+  that hold leases and slots (a test takes every other thread for three
+  seconds; a running turn still finishes in 0.6).
+- **The event loop's lag is a metric** (`pasar_event_loop_lag_seconds`): every
+  waiting turn's next step is a callback on the one loop. The load test
+  reports it, and the server's own time of each turn beside the client's.
+
+Measured on the same two vCPUs, 2026-11-01, PostgreSQL, one process: v80's
+code and v81's alternating, one to three runs of each (median, and the range);
+"a mock call ±30%" is the mock's latency strayed as a provider's does
+(`--mock-jitter 0.3`), and "arriving over 20 s" each client's first turn sent
+at a random moment of the first twenty seconds (`--ramp-s 20`).
+
+| PostgreSQL, one process | code | turns/s | the server's CPU a turn (ms) | turn p50 / p95 / p99 (ms) | write tool call p50 / p99 (ms) | threads, peak | memory, peak (MB) |
+|---|---|---|---|---|---|---|---|
+| 1,000 clients arriving over 20 s, a 10 s mock call ±30% | v80, 1,000 threads | 15.4 (15.2–15.7) | 28.1 (25.0–31.1) | 33,452 / 49,337 / 57,457 | 12 / 379 | 1,984 | 261 |
+|  | v81 | 16.4 (16.4–16.5) | 24.1 (23.4–24.8) | 32,341 / 46,212 / 52,195 | 6 / 248 | 94 | 179 |
+| 1,000 clients at once, every mock call 10 s | v80, 1,000 threads | 17.9 (17.7–18.0) | 24.9 (24.6–25.1) | 31,065 / 48,117 / 52,195 | 27 / 576 | 2,005 | 262 |
+|  | v81, one pool for all | 17.6 | 24.3 | 31,170 / 58,652 / 60,964 | 16 / 312 | 69 | 179 |
+|  | v81 | 17.5 (17.3–17.7) | 25.1 (23.7–26.5) | 31,398 / 57,765 / 60,298 | 22 / 529 | 110 | 179 |
+| 200 clients, 600 ms a mock call | v80, 64 threads | 26.8 (26.3–27.3) | 19.7 (19.6–22.0) | 6,127 / 6,767 / 7,143 | 11 / 349 | 133 | 112 |
+|  | v80, 256 threads | 34.6 (32.0–34.9) | 22.3 (22.0–24.2) | 4,351 / 6,526 / 7,542 | 83 / 296 | 393 | 137 |
+|  | v81 | 35.0 (31.1–35.4) | 21.8 (21.1–23.9) | 4,510 / 6,639 / 8,180 | 124 / 428 | 98 | 122 |
+| 16 clients, no model latency | v80 | 46.4 (40.0–46.9) | 18.0 (17.6–20.4) | 303 / 449 / 540 | 32 / 89 | 37 | 92 |
+|  | v81 | 44.5 (43.4–48.1) | 18.3 (17.0–18.9) | 297 / 490 / 603 | 24 / 94 | 21 | 92 |
+| 64 clients, 400 ms a mock call, gate 64 | v80 | 31.0 (28.5–31.7) | 20.1 (19.4–22.3) | 1,553 / 2,116 / 2,394 | 22 / 111 | 133 | 104 |
+|  | v81 | 31.0 (27.6–32.7) | 19.9 (19.1–24.3) | 1,541 / 2,113 / 2,303 | 19 / 140 | 49 | 100 |
+
+ramp v80t1000 2 replay [6858, 6849] True [{'200': 2990}, {'200': 2989}] retries [15, 8] machine [89.6, 80.4] client [40.7, 39.5] secs [196.39, 190.19]
+
+What it says:
+
+1. **What v81 removes is threads, and the cap they set.** At 200 clients and
+   600 ms a model call, v80 on 64 threads ran 64 turns and queued the rest — a
+   turn took 1.9 s on the server and 6.1 s for its client — and did 26.8 turns
+   a second; given 256 threads it did 34.6, on 393 of them. v81 does 35.0 on its
+   64, with 98 threads in all. At 1,000 customers waiting on a ten-second model,
+   arriving over twenty seconds with calls of 7 to 13, v81 serves 16.4 turns a
+   second on 94 threads and 179 MB where v80 served 15.4 on 1,984 threads and
+   261 MB — at less CPU a turn (24 ms against 28: two thousand threads are not
+   free) and with shorter turns (p95 46 s against 49, p99 52 against 57).
+2. **Nothing lost where the CPU is the limit.** At 16 clients with no model
+   latency, and at 64 with 400 ms, v81 is within its runs' noise of v80 (44.5
+   turns a second and 46.4; 31.0 and 31.0).
+3. **All at once is a first-come queue's worst case.** With 1,000 clients
+   started together and every call exactly ten seconds, the throughput is the
+   same (17.5, 17.9), but v81's p95 is 58 s against v80's 48, and the server's
+   own time of a turn says the same (55 s and 46): the turns come back in waves,
+   each wave queues for the threads in the order it arrived, and a latency
+   that never varies hands the next wave back in that order — the same turns
+   last every time — where v80's thousand threads, scheduled by the operating
+   system, shuffle it. A pool of its own for running turns does not change it
+   (58.7 s with one pool for all), the loop's lag does not add up to it (p99
+   0.5 s), and 16 threads made it longer (70 s). Arrivals and latencies that
+   vary, as a real model's do, undo it: row one ([WHAT_FAILED #69](WHAT_FAILED.md)).
+   The same herd at 200 clients leaves v81's p99 a little long (8.2 s against
+   7.5).
+4. **The loop keeps up.** Its lag is 1–10 ms at the median everywhere; its p99
+   is 25–250 ms at 16 and 64 clients and 500 ms at 200 and 1,000, where 4–10%
+   of its timers ran more than 100 ms late.
+5. **Nothing else moved.** Every run replayed identically, every turn the
+   server answered was a 200, and the parity test's 313 tasks still match on
+   both databases. At the staggered thousand the load generator lost 5–11 of
+   3,000 requests, on both versions — "server disconnected", uvicorn closing a
+   connection idle 5 s as a client starved of its own CPU sent on it — and
+   counted none; the server now keeps an idle connection 75 s
+   (`PASAR_KEEP_ALIVE_SECONDS`), and the load test counts every request it
+   loses — run again, v81 lost none of 3,000 where v80, still at 5 s, lost 16
+   (#69).
 
 ### With a real model
 
@@ -738,7 +848,7 @@ found [WHAT_FAILED #67](WHAT_FAILED.md).
 | `PASAR_MODELS` | `mock,scripted:*` | the models a conversation may ask for |
 | `PASAR_DEFAULT_MODEL` | `mock` | |
 | `PASAR_MODELS_FILE` | — | more models (`deploy/models.example.json`) |
-| `PASAR_MAX_CONCURRENT_TURNS` / `PASAR_THREADS` | 48 / 64 | turns at once, worker threads, per process |
+| `PASAR_MAX_CONCURRENT_TURNS` / `PASAR_THREADS` | 256 / 64 | turns at once, per process — a turn waiting on its model holds no thread (v81) — and the worker threads that run its transactions and every other handler |
 | `PASAR_PROVIDER_CONCURRENCY` | 16 | model calls in flight per provider, per process: set from the provider's rate limit ÷ processes |
 | `PASAR_RATE` / `PASAR_BURST` | 10 / 40 | requests a second per tenant, per process |
 | `PASAR_MAX_STEPS_PER_TURN` / `..._TOOL_CALLS_PER_TURN` / `PASAR_MAX_TURN_SECONDS` | 16 / 24 / 120 | a turn's caps |
@@ -747,6 +857,7 @@ found [WHAT_FAILED #67](WHAT_FAILED.md).
 | `PASAR_LEASE_SECONDS` | 60 | renewed every third of it while a turn runs; a dead process frees its conversation within one |
 | `PASAR_IDEMPOTENCY_HOURS` | 24 | |
 | `PASAR_STRICT_MONEY` | 1 | the platform's money guard |
+| `PASAR_KEEP_ALIVE_SECONDS` | 75 | how long `serve` keeps an idle connection: longer than a load balancer's usual 60, so the balancer closes first (v81) |
 | `PASAR_SLICE_CACHE` | 2000 | customers' slices kept per process, by the write each was read at; 0 where another system writes the world tables (Measured, v80) |
 
 Day to day: `migrate` before a new version starts (migrations are additive
@@ -807,20 +918,17 @@ no such variable.
 ## Not built yet, in the order they matter
 
 Built since this list was first written: ids without a tenant-wide lock
-(v79), and a turn's CPU cut by three fifths (v80; both above).
+(v79), a turn's CPU cut by three fifths (v80), and turns that wait on their
+model without a thread (v81; all above).
 
-1. **Model calls off the worker threads.** v79 put this first for the wrong
-   reason: under the load test the limit was CPU, which an async call does not
-   reduce, and v80 cut that instead. With a real model it is the first limit
-   now: a turn of 2–3 seconds holds a worker thread for all of it, so the 48
-   turns a process admits (`PASAR_MAX_CONCURRENT_TURNS`) carry ~19 turns a
-   second at 2.5 s each, where its CPU would carry twice that at ~20 ms a
-   turn. Raising `PASAR_THREADS` moves the limit at a thread per waiting turn;
-   an async client for the providers removes it, the tools and their
-   transactions staying synchronous.
-2. **Limits shared across processes.** The token bucket, the provider gate and
-   the breaker are per process (N processes allow N times the rate); Redis (or
-   PostgreSQL advisory locks) for one limit per deployment.
+1. **Limits shared across processes.** A process is now limited by its CPU
+   alone — one core's worth of Python — and more turns come from more
+   processes (`--workers`, or replicas), which multiply every per-process
+   limit with them: the token bucket, the provider gate and the breaker (N
+   processes allow N times the rate). Redis (or PostgreSQL advisory locks) for
+   one limit per deployment.
+2. **Fewer statements a step.** A turn is 42.8 statements (v80); an event could
+   be written with the row it reports, in one statement on PostgreSQL.
 3. **Tokens streamed from the provider.** Events are per step today; the
    backends do not stream.
 4. **The customer's own identity.** The storefront asserts which customer a

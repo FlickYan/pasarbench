@@ -25,16 +25,23 @@ steady rate; past it, 429 with Retry-After.
 
 All of it is per process. Several replicas behind a load balancer each keep
 their own (docs/SERVICE.md: what moves to Redis, and when).
+
+A turn is a coroutine (v81): its model calls go through the gate as
+coroutines (`ProviderGate.acall`), waiting on its limit without holding a
+thread; a thread can still call it (`ProviderGate.call`), and both count
+against the one limit.
 """
 
 from __future__ import annotations
 
+import asyncio
 import random
 import re
 import threading
 import time
+from collections import deque
 from dataclasses import dataclass, field
-from typing import Any, Callable, TypeVar
+from typing import Any, Awaitable, Callable, TypeVar
 
 T = TypeVar("T")
 
@@ -89,6 +96,107 @@ def retry(fn: Callable[[], T], *, attempts: int = 3, base: float = 0.5, cap: flo
                 on_retry(attempt + 1, e, wait)
             sleep(wait)
     raise AssertionError("unreachable")
+
+
+async def aretry(fn: Callable[[], Awaitable[T]], *, attempts: int = 3, base: float = 0.5,
+                 cap: float = 8.0, sleep: Callable[[float], Awaitable[Any]] = asyncio.sleep,
+                 rand: Callable[[], float] = random.random,
+                 on_retry: Callable[[int, BaseException, float], None] | None = None) -> T:
+    """retry(), for a coroutine: the waits are awaited, holding no thread."""
+    for attempt in range(attempts):
+        try:
+            return await fn()
+        except Exception as e:  # noqa: BLE001
+            if attempt == attempts - 1 or not is_transient(e):
+                raise
+            wait = backoff(attempt, base, cap, rand)
+            if on_retry is not None:
+                on_retry(attempt + 1, e, wait)
+            await sleep(wait)
+    raise AssertionError("unreachable")
+
+
+class Slots:
+    """A counting semaphore that threads and coroutines share, one limit for
+    both, on any number of event loops. A thread waits on a condition; a
+    coroutine on a future of its own loop, which a release wakes from any
+    thread. A woken waiter takes a slot only if one is still free, so a slot
+    is never lost to a waiter that gave up."""
+
+    def __init__(self, n: int):
+        self.n = n
+        self._free = n
+        self._cond = threading.Condition(threading.Lock())
+        self._waiters: deque[tuple[asyncio.AbstractEventLoop, asyncio.Future]] = deque()
+
+    def acquire(self, timeout: float) -> bool:
+        with self._cond:
+            if not self._cond.wait_for(lambda: self._free > 0, timeout):
+                return False
+            self._free -= 1
+            return True
+
+    async def aacquire(self, timeout: float) -> bool:
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + timeout
+        while True:
+            with self._cond:
+                if self._free > 0:
+                    self._free -= 1
+                    return True
+                fut = loop.create_future()
+                self._waiters.append((loop, fut))
+            left = deadline - loop.time()
+            try:
+                if left <= 0:
+                    raise asyncio.TimeoutError
+                await asyncio.wait_for(fut, left)
+            except asyncio.TimeoutError:
+                with self._cond:
+                    self._forget(fut)
+                    if self._free > 0:          # freed as the wait ran out
+                        self._free -= 1
+                        return True
+                return False
+            except BaseException:               # cancelled: no slot taken, none owed
+                with self._cond:
+                    self._forget(fut)
+                    if self._free > 0:          # a wake meant for this one: the next's
+                        self._wake_next()
+                raise
+
+    def release(self) -> None:
+        with self._cond:
+            self._free += 1
+            self._cond.notify()
+            self._wake_next()
+
+    def _wake_next(self) -> None:
+        """Wake the first coroutine still waiting (under the lock)."""
+        while self._waiters:
+            loop, fut = self._waiters.popleft()
+            if fut.done():
+                continue
+            try:
+                loop.call_soon_threadsafe(_wake, fut)
+            except RuntimeError:                # its loop has closed: the next one
+                continue
+            return
+
+    @property
+    def free(self) -> int:
+        return self._free
+
+    def _forget(self, fut: asyncio.Future) -> None:
+        for i, (_l, f) in enumerate(self._waiters):
+            if f is fut:
+                del self._waiters[i]
+                return
+
+
+def _wake(fut: asyncio.Future) -> None:
+    if not fut.done():
+        fut.set_result(None)
 
 
 @dataclass
@@ -148,25 +256,36 @@ class ProviderGate:
         self.acquire_timeout = acquire_timeout
         self.attempts = attempts
         self.breaker = breaker or CircuitBreaker()
-        self._slots = threading.BoundedSemaphore(concurrency)
+        self._slots = Slots(concurrency)
         self._sleep = sleep
+        # A coroutine waits out a backoff with asyncio.sleep -- unless a test
+        # gave its own sleep, which is called as given.
+        self._asleep: Callable[[float], Awaitable[Any]] = (
+            asyncio.sleep if sleep is time.sleep else _awaited(sleep))
         self._lock = threading.Lock()
         self.in_flight = 0
         self.retries = 0
 
-    def call(self, fn: Callable[[], T]) -> T:
+    def _counted(self, _attempt: int, _e: BaseException, _w: float) -> None:
+        with self._lock:
+            self.retries += 1
+
+    def _start(self) -> None:
         wait = self.breaker.allow()
         if wait is not None:
             raise CircuitOpen(self.name, wait)
-        if not self._slots.acquire(timeout=self.acquire_timeout):
-            raise Overloaded(self.name, retry_after=max(1.0, self.acquire_timeout / 4))
+
+    def _overloaded(self) -> Overloaded:
+        return Overloaded(self.name, retry_after=max(1.0, self.acquire_timeout / 4))
+
+    def call(self, fn: Callable[[], T]) -> T:
+        self._start()
+        if not self._slots.acquire(self.acquire_timeout):
+            raise self._overloaded()
         with self._lock:
             self.in_flight += 1
         try:
-            def counted(attempt: int, _e: BaseException, _w: float) -> None:
-                with self._lock:
-                    self.retries += 1
-            out = retry(fn, attempts=self.attempts, sleep=self._sleep, on_retry=counted)
+            out = retry(fn, attempts=self.attempts, sleep=self._sleep, on_retry=self._counted)
         except Exception:
             self.breaker.record(False)
             raise
@@ -177,6 +296,34 @@ class ProviderGate:
             with self._lock:
                 self.in_flight -= 1
             self._slots.release()
+
+    async def acall(self, fn: Callable[[], Awaitable[T]]) -> T:
+        """call(), for a coroutine: the slot, the retries and their waits
+        awaited, no thread held."""
+        self._start()
+        if not await self._slots.aacquire(self.acquire_timeout):
+            raise self._overloaded()
+        with self._lock:
+            self.in_flight += 1
+        try:
+            out = await aretry(fn, attempts=self.attempts, sleep=self._asleep,
+                               on_retry=self._counted)
+        except Exception:
+            self.breaker.record(False)
+            raise
+        else:
+            self.breaker.record(True)
+            return out
+        finally:
+            with self._lock:
+                self.in_flight -= 1
+            self._slots.release()
+
+
+def _awaited(sleep: Callable[[float], None]) -> Callable[[float], Awaitable[None]]:
+    async def asleep(seconds: float) -> None:
+        sleep(seconds)
+    return asleep
 
 
 class Gates:
