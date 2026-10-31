@@ -3439,20 +3439,32 @@ of `V-dsk-flash-parts` (does the service lose anything?), and deepseek-v4-pro,
 which passed 93 of `V-dsk-parts` (room to move either way). Check the setup
 for free first, with a stand-in provider on 127.0.0.1 and no key:
 
+Once, the service's own dependencies, in a virtual environment of the repo's
+(`.venv`, which git ignores); then the self-test — the whole path, no key, no
+cost, about a minute:
+
 ```bash
-pip install -r requirements-service.txt          # once: the service's own dependencies
-python scripts/service_sweep.py --self-test      # the whole path, no key, no cost: ~1 minute
-set -a; . ./.env; set +a      # the agent's key (DEEPSEEK_API_KEY), the customer's (DASHSCOPE_API_KEY)
-python scripts/service_sweep.py --model deepseek-flash \
-  --simulator openai --sim-model qwen3.8-flash \
-  --sim-url https://dashscope-intl.aliyuncs.com/compatible-mode/v1 \
-  --sim-extra-body '{"reasoning_effort":"low"}' --customer 3 \
-  --suite generated \
-  --traps duplicate_refund_escalate,out_of_window_offer_voucher,cancel_while_processing \
-  -k 3 --run-id S-dsk-flash-parts --workers 8 \
-  --compare traces/V-dsk-flash-parts/full
-# the same with --model deepseek-v4-pro --run-id S-dsk-parts --compare traces/V-dsk-parts/full
+python3 -m venv .venv
+. .venv/bin/activate
+pip install -r requirements-service.txt
+python scripts/service_sweep.py --self-test
 ```
+
+Then the agent's key (`DEEPSEEK_API_KEY`) and the customer's
+(`DASHSCOPE_API_KEY`, from Model Studio's international console) from `.env`,
+and the two runs. The customer's model, endpoint and settings are the kit's
+defaults — 1s's: qwen3.8-flash at DashScope's international endpoint,
+`{"reasoning_effort":"low"}`.
+
+```bash
+set -a; . ./.env; set +a
+P=(--customer 3 --suite generated -k 3 --workers 8 --traps duplicate_refund_escalate,out_of_window_offer_voucher,cancel_while_processing)
+python scripts/service_sweep.py --model deepseek-flash "${P[@]}" --run-id S-dsk-flash-parts --compare traces/V-dsk-flash-parts/full
+python scripts/service_sweep.py --model deepseek-v4-pro "${P[@]}" --run-id S-dsk-parts --compare traces/V-dsk-parts/full
+```
+
+No `#` comment sits on a command line in either block: macOS's shell, zsh,
+passes them on as arguments unless `setopt interactivecomments` is set.
 
 117 conversations each. Recorded, deepseek-flash's sent 33,500 prompt tokens a
 conversation, 93% from the cache, and 612 completion: $0.19 for all 117 at the
@@ -3485,6 +3497,40 @@ for one.
 `--resume` runs what a provider's error ended, or Ctrl-C left. A second agent
 runs the same command with its own `--model` and `--run-id`, and
 `--compare traces/V-<agent>-parts/full`.
+
+**Run on 2026-10-31** (`traces/S-dsk-flash-parts`, `traces/S-dsk-parts`; on a
+MacBook Air, SQLite, eight conversations at a time; five and four minutes):
+
+- **The checks held, all 234 conversations.** The benchmark's own prompt and
+  tools in every one; every trace re-scored by the benchmark's tools to the
+  service's verdict; every tool call replayed by the service identically —
+  565 of deepseek-flash's, 461 of deepseek-v4-pro's. No episode ended in an
+  error or a cap: 117 and 117 `done`.
+- **deepseek-flash: 116 of 117**, against 117 of 117 recorded — 0 tasks better,
+  1 worse, p=1.000: INCONCLUSIVE. The one is a duplicate refund in Vietnamese
+  (`DRE-VN.vi__r1`): the agent told her to check her account and come back if
+  need be, and she left to — with no escalation.
+- **deepseek-v4-pro: 100 of 117**, against 93 of 117 — 5 tasks better, 1 worse,
+  p=0.219: INCONCLUSIVE. Its 17 failures are all the duplicate refund, as its
+  recording's 24 were, the same way: the agent reads that the refund was paid,
+  says so, and she thanks it and leaves. It escalated 22 of the 39 duplicates,
+  its recording 15; none of the six in Chinese passed, in either.
+- **What the service measured.** A turn took 2,251 ms at the median for
+  flash (p95 5,507) and 2,942 for v4-pro (7,459): 99.2% and 99.3% of it the
+  model, 0.1% the tools, and the service 18 and 19 ms (p95 36 and 35). The
+  agent's spend from the ledger: $0.1785 for flash's 117 conversations, $0.6119
+  for v4-pro's — $0.0015 and $0.0052 a conversation; 33,786 and 32,450 prompt
+  tokens a conversation, 93.6% and 95.5% from DeepSeek's cache (recorded:
+  93.3% and 97.7%). v4-pro's lower share, with the prompt the same byte for
+  byte, is most of why it cost 23% more than its recording at the same rates;
+  flash's matched, and its cost with it.
+
+**What it means.** Behind the API the agent does what it did in the sweep, as
+far as 117 conversations an agent can tell: the same pass rates within noise,
+the same failure, the same tokens. What the service adds to a turn is under
+1% of it. The one difference worth a second look is v4-pro's cache share, which
+moves its cost more than anything the service does; the sweep run the same day,
+beside the service, would tell DeepSeek's cache from the service.
 
 ### Publishing the traces (v44)
 

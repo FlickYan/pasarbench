@@ -35,7 +35,11 @@ What holds it together, and how each claim is checked:
   episodes run through the API — a real model as the agent, the benchmark's
   simulated customer — are traced in the benchmark's format, so its tools
   re-score them and its comparisons read them (`scripts/service_sweep.py`,
-  [below](#with-a-real-model)).
+  [below](#with-a-real-model)). Run with deepseek-flash and deepseek-v4-pro,
+  116 and 100 of 117 conversations passed through the service, against 117
+  and 93 in their recordings: no difference the sign test resolves. The service
+  took 18 ms of a turn at the median, under 1% of it, and a conversation cost
+  $0.0015 and $0.0052.
 
 An independent review of the service before release reported thirteen defects
 — a model's bad arguments could crash a turn, a key could be freed after its
@@ -47,7 +51,7 @@ PostgreSQL. Each is fixed and pinned by a test ([WHAT_FAILED](WHAT_FAILED.md)
 
 ```
 pip install -r requirements-service.txt      # the benchmark itself still needs nothing
-python -m tests.test_service                 # 98 checks on SQLite; PASAR_TEST_POSTGRES_URL, 27 more
+python -m tests.test_service                 # 100 checks on SQLite; PASAR_TEST_POSTGRES_URL, 27 more
 python scripts/service_sweep.py --self-test  # the real-model kit on a stand-in provider: no key
 ```
 
@@ -398,6 +402,10 @@ service's own cost function:
 | `kimi-k2.6` (Go) | $0.011 | $10.60 | $0.035 | 0.815 |
 | `grok-4.3`, reasoning none | $0.012 | $12.02 | $0.045 | 0.685 |
 
+Measured through the service since (RUNBOOK 1z, [below](#with-a-real-model)),
+on 1s's 117 parts with the cache's own share: $0.0015 a conversation for
+deepseek-flash and $0.0052 for deepseek-v4-pro.
+
 The model is the whole of the variable cost. The service's own is three orders
 of magnitude below it: one process here does ~20 turns a second on two vCPUs it
 shares with its database and its load (below) — at an assumed $0.04 a vCPU-hour,
@@ -488,7 +496,7 @@ same agent.
 
 ```bash
 pip install -r requirements-service.txt
-python scripts/service_sweep.py --self-test        # a stand-in provider on 127.0.0.1: no key, no cost
+python scripts/service_sweep.py --self-test
 set -a; . ./.env; set +a
 python scripts/service_sweep.py --model deepseek-flash --customer 3 \
   --suite generated --traps duplicate_refund_escalate,out_of_window_offer_voucher,cancel_while_processing \
@@ -508,18 +516,45 @@ configured with the benchmark's caps — 30 model calls a conversation
 (`PASAR_CONVERSATION_MAX_STEPS`), 120,000 tokens, 180 seconds a turn, 20
 customer turns — so a turn stops where the episode would have; the money guard
 is off, as the sweep has none; the server's process holds the agent's key and
-no other.
+no other. `--report` writes a finished run's report again from its traces —
+nothing run, no key read.
 
-**Not measured yet: RUNBOOK 1z**, deepseek-flash and deepseek-v4-pro on 1s's
-39 parts, k=3, each against its recording. The recordings' own numbers, at the
-price book's rates, are what to expect: $0.0016 a conversation for flash (117
-of 117 passed) and $0.0043 for v4-pro (93 of 117), with 93% and 98% of the
-prompt from DeepSeek's cache. What has run: the self-test, the whole path on
-the stand-in; and all 215 tasks of the first two editions through the kit with
-each task's reference solution as the agent — every one passed, every check
-holding (215 prompts as the benchmark's, 215 traces re-scored to the same
-verdict, 640 tool calls replayed identically). That run is what found
-[WHAT_FAILED #67](WHAT_FAILED.md).
+**Measured on 2026-10-31 (RUNBOOK 1z).** 1s's 39 parts, k=3, against customer
+3 on qwen3.8-flash, each agent paired by task with its own recording of
+2026-10-12; the service on SQLite on a MacBook Air, eight conversations at a
+time, DeepSeek over the internet from Singapore.
+
+| agent, thinking off | passed, through the service | its recording | paired by task | the agent's $ a conversation (p95) | prompt tokens a conversation, from the cache | a turn, p50 / p95 | the service's ms of a turn, p50 / p95 |
+|---|---|---|---|---|---|---|---|
+| deepseek-flash | 116 of 117 (pass^3 38 of 39) | 117 of 117 | 0 tasks better, 1 worse, p=1.000 | $0.0015 ($0.0021) | 33,786, 93.6% | 2,251 / 5,507 ms | 18 / 36 |
+| deepseek-v4-pro | 100 of 117 (28 of 39) | 93 of 117 | 5 better, 1 worse, p=0.219 | $0.0052 ($0.0087) | 32,450, 95.5% | 2,942 / 7,459 ms | 19 / 35 |
+
+What it says:
+
+1. **The service does not change what the agent does — as far as 117
+   conversations each can tell.** Neither difference resolves (the sign test,
+   `compare_cells.py`), and every check held, on all 234: the benchmark's own
+   prompt and tool schemas; every trace re-scored by the benchmark's tools to
+   the service's verdict; every tool call the two models made — 565 and 461 —
+   replayed identically. Every failure is the one 1s found: the duplicate
+   refund (P10), where the agent reads that the refund was paid and closes the
+   case instead of passing it to a human.
+2. **The model is the turn.** 99.2% and 99.3% of a turn's time was the
+   model's; the tools took 0.1%; the service — HTTP, admission, the lease and
+   its transactions — 18 and 19 ms at the median, under 1%: the same order as
+   the 26 ms the load test measured unloaded (above, on two shared vCPUs).
+3. **A conversation costs $0.0015 with deepseek-flash and $0.0052 with
+   deepseek-v4-pro**, from the ledger at the price book's (peak) rates: $1.53
+   and $5.23 a thousand, the simulated customer not counted — in production
+   she is a person. The cache is most of the economics: v4-pro's conversations
+   cost 23% more than its recording's at the same rates, nearly all of it
+   because 95.5% of the prompt came from DeepSeek's cache against 97.7% then,
+   with the prompt byte for byte the same; flash's share matched its
+   recording's (93.6% and 93.3%), and so did its cost ($0.0015 and $0.0016).
+
+The same kit with each task's reference solution as the agent ran all 215
+tasks of the first two editions with every check holding; that run is what
+found [WHAT_FAILED #67](WHAT_FAILED.md).
 
 ---
 
@@ -602,3 +637,7 @@ no such variable.
 8. **Prompt caching per conversation on providers that support a key**, and the
    policy's preload/JIT choice per tenant — both measured in the benchmark,
    neither wired here.
+9. **Prices by the hour.** DeepSeek's page has a peak and an off-peak rate
+   (RUNBOOK 1y ran at the second); the price book holds one rate a model and a
+   date, the peak, so a conversation run off-peak is charged above its bill.
+   1z's figures are at the peak rate, whatever hour they ran in.
