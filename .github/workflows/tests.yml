@@ -4,6 +4,11 @@ on:
   push:
   pull_request:
 
+# Every job only reads the repository. Docker Hub's token is a secret of its
+# own, seen by one job (publish) and the one step that logs in.
+permissions:
+  contents: read
+
 jobs:
   test:
     runs-on: ubuntu-latest
@@ -12,8 +17,10 @@ jobs:
       matrix:
         python-version: ["3.10", "3.11", "3.12", "3.13"]
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v7
         with:
           python-version: ${{ matrix.python-version }}
 
@@ -28,7 +35,8 @@ jobs:
           PYTHON: python
 
   # The agent service (pasarbench/service): its own dependencies, a real
-  # PostgreSQL beside SQLite, and the image built from the Dockerfile.
+  # PostgreSQL beside SQLite, and the image built from the Dockerfile and run
+  # the way the docs say to run it.
   service:
     runs-on: ubuntu-latest
     services:
@@ -44,8 +52,10 @@ jobs:
           --health-cmd "pg_isready -U postgres -d pasar_test"
           --health-interval 5s --health-timeout 5s --health-retries 20
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
       - name: the service's dependencies
@@ -57,3 +67,75 @@ jobs:
           PASAR_TEST_POSTGRES_URL: postgresql+psycopg://postgres:postgres@localhost:5432/pasar_test
       - name: the image builds
         run: docker build -t pasarbench-service:ci .
+      - name: the image migrates, serves, answers a turn and replays it
+        run: bash scripts/smoke_image.sh pasarbench-service:ci
+
+  # The image, to Docker Hub -- only once every job above has passed; only for
+  # a push to the default branch (tags latest and sha-<commit>) or of a version
+  # tag v1.2.3 (tags 1.2.3 and 1.2); and only when the repository has the
+  # variable DOCKERHUB_USERNAME and the secret DOCKERHUB_TOKEN (docs/SERVICE.md,
+  # "The image on Docker Hub"). Until then this job is skipped. The amd64 image
+  # passes the smoke test before anything is pushed; the arm64 one is built from
+  # the same Dockerfile, under emulation. The actions that see the token are
+  # pinned to their commits.
+  publish:
+    needs: [test, service]
+    if: >-
+      github.event_name == 'push' && vars.DOCKERHUB_USERNAME != '' &&
+      (github.ref_name == github.event.repository.default_branch ||
+      startsWith(github.ref, 'refs/tags/v'))
+    runs-on: ubuntu-latest
+    concurrency:
+      # one publish at a time per branch or tag, the newest last: latest ends
+      # on the newest commit
+      group: publish-${{ github.ref }}
+      cancel-in-progress: false
+    env:
+      IMAGE: docker.io/${{ vars.DOCKERHUB_USERNAME }}/pasarbench-service
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: log in to Docker Hub
+        uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4.7.0
+        with:
+          username: ${{ vars.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+      - uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
+        with:
+          platforms: arm64
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - name: the tags and labels
+        id: meta
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
+        with:
+          images: ${{ env.IMAGE }}
+          flavor: latest=false
+          tags: |
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=sha
+      - name: build the amd64 image, kept local
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          load: true
+          tags: pasarbench-service:smoke
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - name: the smoke test, before anything is pushed
+        run: bash scripts/smoke_image.sh pasarbench-service:smoke
+      - name: build amd64 and arm64 (amd64 from the cache), and push
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          annotations: ${{ steps.meta.outputs.annotations }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          provenance: mode=max
+          sbom: true
