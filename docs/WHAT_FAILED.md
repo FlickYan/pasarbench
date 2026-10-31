@@ -2504,6 +2504,41 @@ the check knew only the word "localhost"; it now asks what the sweep asks.
 reads the tool results, so that is what parity covered; a real model reads the
 whole conversation, the prompt first.
 
+## 68. The profiler put the database driver's wait at 93% of the CPU
+
+**What happened.** v80 set out to find where a turn's CPU goes, with a
+sampler of its own (`pasarbench/service/profiling.py`): every 5 ms, every
+thread's stack and the CPU it used since the last look, charged to the stack
+it was found in. Its first profile of the server under load put 92.7% of the
+CPU in psycopg's `Connection.wait` — waiting for PostgreSQL, which takes no CPU
+at all. Python runs one thread at a time, and the sampler needs its turn too:
+it gets one when a thread lets go, and a thread lets go to wait. So nearly
+every look found the thread that had just been running at the call that
+waits, and the CPU it had spent building and sending the statement was
+charged to the wait. A second version, made cheaper, skipped a thread that
+had not moved since the last look — the same frame at the same instruction —
+and the test written for it showed a thread that spun 0.4 s in one call
+charged nothing: a spinning loop is paused at the same instruction every
+time, so it never looked as if it had moved.
+
+**Fix.** A thread's CPU is charged to the frames its stack held at both
+looks — the same frame objects, not frames of the same functions: calls that
+ran throughout, which did spend it. What a function is charged was spent in it
+or in what it called, never elsewhere; how deep that resolves depends on how
+far a thread gets between looks, and the summary says how much stayed with the
+service's own frames. A thread's clock is read at every look. `test_profiler`
+checks it against threads whose CPU is known: a long call charged 0.392 s of
+its 0.400, short bursts between waits 0.165 of 0.166, a waiting thread
+nothing. The detail inside a call that a sampler cannot resolve came from
+cProfile with a CPU clock on the same turns run one at a time in-process,
+where its call counts are exact (≈60 statements a turn, 151,188 SQLAlchemy
+coercions for 200 turns).
+
+**Lesson.** A profiler is a measurement like any other, and in an interpreter
+with one lock its errors are not random: they land where threads wait, which
+is where an engineer is already inclined to blame the database. Test it on a
+workload whose answer is known before reading it on one whose answer is not.
+
 ---
 
 ## What this list is for

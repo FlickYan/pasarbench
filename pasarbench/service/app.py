@@ -9,7 +9,8 @@ customers the agent.
     GET  /v1/conversations[/{id}[/messages|/events|/tool-calls]]
     POST /v1/conversations/{id}/close
     GET  /v1/usage                             the ledger, by model, day or conversation
-    /v1/admin/...                              tenants, keys, replay, the outbox (operator token)
+    /v1/admin/...                              tenants, keys, replay, the outbox, a profile of
+                                               the process (operator token)
     GET  /healthz /readyz /metrics /docs /openapi.json
 
 Every error is application/problem+json (errors.py) with its own type; 429
@@ -53,10 +54,11 @@ from .auth import Idempotency, KeyCache, create_key, request_hash, revoke_key
 from .config import Settings, usd_to_picousd
 from .costs import seed_prices, usage_report
 from .observability import Metrics, configure_logging
+from .profiling import MAX_SECONDS, Busy, Sampler, running
 from .replay import replay_tenant
 from .resilience import TenantLimits
 from .runtime import LeaseLost, Runtime, Turn, iso, utcnow
-from .store import make_engine, seed_tenant, transaction
+from .store import make_engine, seed_tenant, slices, transaction
 
 log = logging.getLogger("pasar.http")
 PROBLEM = "application/problem+json"
@@ -317,6 +319,7 @@ def create_app(settings: Settings | None = None, engine: Engine | None = None) -
     if engine is None:
         engine = make_engine(settings.database_url, pool_size=settings.pool_size,
                              max_overflow=settings.max_overflow)
+    slices(engine).size = settings.slice_cache
     metrics = Metrics()
     runtime = Runtime(engine, settings, metrics=metrics)
     limits = TenantLimits(settings.rate, settings.burst)
@@ -700,6 +703,32 @@ def create_app(settings: Settings | None = None, engine: Engine | None = None) -
     def gates() -> dict[str, Any]:
         """Each model provider's gate: calls in flight, retries, its breaker."""
         return {"providers": runtime.gates.snapshot(), "turns_in_flight": runtime.in_flight}
+
+    @app.get("/v1/admin/profile", tags=["admin"], dependencies=[Operator], responses=ERRORS)
+    def profile(seconds: Annotated[float, Query(gt=0, le=MAX_SECONDS)] = 30,
+                interval_ms: Annotated[float, Query(ge=1, le=1000)] = 10) -> dict[str, Any]:
+        """Where this process's CPU goes: every thread sampled for `seconds`,
+        or until DELETE /v1/admin/profile (profiling.py). A server of several
+        processes answers for the one the request reached."""
+        try:
+            sampler = Sampler(interval_ms / 1000).start()
+        except Busy as e:
+            raise E.Conflict(str(e)) from None
+        try:
+            sampler.wait(seconds)
+        finally:
+            report = sampler.stop()
+        return report
+
+    @app.delete("/v1/admin/profile", status_code=204, tags=["admin"], dependencies=[Operator],
+                responses=ERRORS)
+    def end_profile() -> Response:
+        """End this process's running profile now: its GET answers."""
+        sampler = running()
+        if sampler is None:
+            raise E.NotFound("no profile is running in this process")
+        sampler.end()
+        return Response(status_code=204)
 
     return app
 

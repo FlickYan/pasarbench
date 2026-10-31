@@ -17,8 +17,16 @@ each with the customer's digits. A conversation is replaced every 10 turns.
 
 It reports turns a second and the latency a client sees, p50/p95/p99, every
 status that was not 200, the time the tool calls spent in their transactions
-(from the audit log), and then replays the tenant: every tool call the run
-made, run again against the rebuilt world, must answer and change the same.
+(from the audit log), the CPU a turn cost -- the server's, this client's, and
+the whole machine's, the database's among the rest (Linux: /proc) -- and then
+replays the tenant: every tool call the run made, run again against the
+rebuilt world, must answer and change the same.
+
+    python scripts/load_test.py ... --profile p.json
+
+profiles the server while it serves the turns (GET /v1/admin/profile; one
+server process, --workers 1, for all of it) and prints where its CPU went,
+per turn (profiling.py).
 """
 
 from __future__ import annotations
@@ -35,9 +43,11 @@ import threading
 import time
 from collections import Counter
 from pathlib import Path
+from typing import Any
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
+PROFILE_SECONDS = 600           # the longest a profile runs; the test ends it when it is done
 
 
 def free_port() -> int:
@@ -52,6 +62,44 @@ def pct(xs: list[float], p: float) -> float:
     xs = sorted(xs)
     k = max(0, min(len(xs) - 1, int(round(p / 100 * len(xs) + 0.5)) - 1))
     return xs[k]
+
+
+def _ticks(fields: list[str]) -> float:
+    return (int(fields[11]) + int(fields[12])) / os.sysconf("SC_CLK_TCK")
+
+
+def process_cpu(pid: int) -> float | None:
+    """The CPU seconds a process and its children (a server's workers) have
+    used so far, every thread of each; None where there is no /proc."""
+    try:
+        total = 0.0
+        for d in Path("/proc").iterdir():
+            if not d.name.isdigit():
+                continue
+            try:
+                fields = (d / "stat").read_text().rsplit(")", 1)[1].split()
+            except OSError:
+                continue                       # gone since the listing
+            if int(d.name) == pid or int(fields[1]) == pid:
+                total += _ticks(fields)
+        return total
+    except (OSError, ValueError, IndexError):
+        return None
+
+
+def machine_cpu() -> float | None:
+    """The CPU seconds every process on the machine has used (/proc/stat),
+    idle and I/O wait not counted."""
+    try:
+        v = [int(x) for x in Path("/proc/stat").read_text().split("\n", 1)[0].split()[1:]]
+        return (sum(v[:8]) - v[3] - v[4]) / os.sysconf("SC_CLK_TCK")
+    except (OSError, ValueError, IndexError):
+        return None
+
+
+def own_cpu() -> float:
+    t = os.times()
+    return t.user + t.system
 
 
 def main() -> int:
@@ -69,6 +117,9 @@ def main() -> int:
     ap.add_argument("--provider-concurrency", type=int, default=16,
                     help="model calls in flight per provider, per server process")
     ap.add_argument("--json", help="write the result here too")
+    ap.add_argument("--profile", help="profile the server while it serves the turns: the "
+                                      "profile's JSON here, its summary on stdout")
+    ap.add_argument("--profile-interval-ms", type=float, default=10)
     args = ap.parse_args()
 
     import httpx
@@ -162,6 +213,17 @@ def main() -> int:
                             latencies.append(dt)
                             stops[resp.json()["stop_reason"]] += 1
 
+        profiled: dict[str, Any] = {}
+
+        def profile() -> None:
+            profiled["response"] = httpx.get(
+                f"{base}/v1/admin/profile", headers=op, timeout=PROFILE_SECONDS + 120,
+                params={"seconds": PROFILE_SECONDS, "interval_ms": args.profile_interval_ms})
+
+        profiler = threading.Thread(target=profile) if args.profile else None
+        if profiler is not None:
+            profiler.start()
+        cpu0 = (process_cpu(server.pid), own_cpu(), machine_cpu())
         t0 = time.perf_counter()
         threads = [threading.Thread(target=worker, args=(w,)) for w in range(args.concurrency)]
         for t in threads:
@@ -169,6 +231,24 @@ def main() -> int:
         for t in threads:
             t.join()
         wall = time.perf_counter() - t0
+        cpu1 = (process_cpu(server.pid), own_cpu(), machine_cpu())
+        if profiler is not None:
+            for _ in range(200):               # the profile may not have begun yet
+                if httpx.delete(f"{base}/v1/admin/profile", headers=op).status_code == 204 \
+                        or not profiler.is_alive():
+                    break
+                time.sleep(0.05)
+            profiler.join()
+            profiled["response"].raise_for_status()
+            Path(args.profile).write_text(profiled["response"].text)
+        ok = statuses.get(200, 0)
+        spent = [None if a is None or b is None else (b - a) for a, b in zip(cpu0, cpu1)]
+        cpu_per_turn = None
+        if ok and spent[0] is not None and spent[2] is not None:
+            server_ms, client_ms, machine_ms = (x * 1000 / ok for x in spent)
+            cpu_per_turn = {"server": round(server_ms, 1), "load_client": round(client_ms, 1),
+                            "machine": round(machine_ms, 1),
+                            "rest": round(machine_ms - server_ms - client_ms, 1)}
 
         engine = make_engine(args.database_url)
         with engine.connect() as conn:
@@ -197,6 +277,7 @@ def main() -> int:
             "turns_per_s": round(statuses.get(200, 0) / wall, 1),
             "turn_ms": {f"p{p}": round(pct(latencies, p) * 1000, 1) for p in (50, 95, 99)},
             "turn_ms_mean": round(statistics.mean(latencies) * 1000, 1) if latencies else None,
+            "cpu_ms_per_turn": cpu_per_turn,
             "statuses": dict(statuses), "stops": dict(stops),
             "tool_calls": len(rows), "writes": len(writes),
             "read_ms": {f"p{p}": pct(reads, p) for p in (50, 99)},
@@ -205,6 +286,9 @@ def main() -> int:
             "replay": replay,
         }
         print(json.dumps(out, indent=2))
+        if args.profile:
+            from pasarbench.service.profiling import merge, summarize
+            print("\n" + summarize(merge([profiled["response"].json()]), turns=ok))
         who = "hot: 1 customer" if args.hot else f"{out['customers']} customers"
         print(f"\n| {db} | {args.workers} | {args.tenants} | {who} "
               f"| {args.concurrency} | {args.mock_latency_ms} ms | {out['turns_per_s']} "

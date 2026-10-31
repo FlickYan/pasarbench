@@ -38,7 +38,7 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable
 
-from sqlalchemy import Connection, Engine, or_, select, update
+from sqlalchemy import Connection, Engine, bindparam, or_, select, update
 from sqlalchemy import insert as sql_insert
 
 from ..db import NOW
@@ -119,6 +119,58 @@ class _Heartbeat:
                 log.exception("lease heartbeat failed", extra={"conversation_id": self.turn.cid})
 
 
+# The statements a turn runs, built once with named parameters (store.py says
+# why: built for each call, one cost more CPU than its round trip).
+_cv, _m, _e = S.conversations, S.messages, S.events
+_Q_CONVERSATION = select(_cv).where(_cv.c.conversation_id == bindparam("cid"),
+                                    _cv.c.tenant_id == bindparam("tenant"))
+_Q_LEASE = (update(_cv).where(
+    _cv.c.conversation_id == bindparam("cid"), _cv.c.tenant_id == bindparam("tenant"),
+    _cv.c.status == "open",
+    or_(_cv.c.lease_owner.is_(None), _cv.c.lease_expires_at < bindparam("now")))
+    .values(lease_owner=bindparam("owner"), lease_expires_at=bindparam("expires"))
+    .returning(*_cv.c))
+_Q_DAILY = select(S.tenants.c.daily_budget_picousd).where(
+    S.tenants.c.tenant_id == bindparam("tenant"))
+_Q_MESSAGES = select(_m).where(_m.c.conversation_id == bindparam("cid")).order_by(_m.c.seq)
+_HELD = (_cv.c.conversation_id == bindparam("cid")) & (_cv.c.lease_owner == bindparam("owner"))
+_Q_RENEW = update(_cv).where(_HELD).values(lease_expires_at=bindparam("expires"))
+_Q_RELEASE = update(_cv).where(_HELD).values(lease_owner=None, lease_expires_at=None)
+_Q_STEP = update(_cv).where(_HELD).values(
+    steps=_cv.c.steps + 1, n_messages=_cv.c.n_messages + 1,
+    prompt_tokens=_cv.c.prompt_tokens + bindparam("d_prompt"),
+    cached_tokens=_cv.c.cached_tokens + bindparam("d_cached"),
+    completion_tokens=_cv.c.completion_tokens + bindparam("d_completion"),
+    cost_picousd=_cv.c.cost_picousd + bindparam("d_cost"),
+    updated_at=bindparam("now"), lease_expires_at=bindparam("expires"))
+_Q_FINISH = {fallback: update(_cv).where(_HELD).values(
+    last_stop=bindparam("stop"), updated_at=bindparam("now"), lease_owner=None,
+    lease_expires_at=None, **({"n_messages": _cv.c.n_messages + 1} if fallback else {}))
+    for fallback in (False, True)}
+_Q_MESSAGE = sql_insert(_m)
+_Q_EVENT = sql_insert(_e).returning(_e.c.event_id)
+_Q_LEDGER = sql_insert(S.usage_ledger)
+_Q_TOOL_CALL = sql_insert(S.tool_calls)
+_Q_ACTION = sql_insert(S.actions)
+_HOLDER: dict[tuple[tuple[str, ...], tuple[str, ...]], Any] = {}
+_HOLDER_LOCK = threading.Lock()
+
+
+def _holder(set_: tuple[str, ...], add: tuple[str, ...]) -> Any:
+    """The conversation's row updated as the turn holding it, setting `set_`
+    and adding to `add`: one statement per shape, built the first time."""
+    key = (set_, add)
+    stmt = _HOLDER.get(key)
+    if stmt is None:
+        values = {"updated_at": bindparam("now"), "lease_expires_at": bindparam("expires")}
+        values.update({k: bindparam("v_" + k) for k in set_})
+        values.update({k: _cv.c[k] + bindparam("d_" + k) for k in add})
+        stmt = update(_cv).where(_HELD).values(**values)
+        with _HOLDER_LOCK:
+            _HOLDER.setdefault(key, stmt)
+    return stmt
+
+
 def _message(r: Any) -> Message:
     return Message(role=r.role, content=r.content or "",
                    tool_calls=[ToolCall(name=t["name"], arguments=t["arguments"], id=t["id"])
@@ -127,9 +179,8 @@ def _message(r: Any) -> Message:
 
 
 def _event(conn: Connection, cid: str, turn: int, kind: str, data: dict[str, Any]) -> dict:
-    eid = conn.execute(sql_insert(S.events).values(
-        conversation_id=cid, turn=turn, type=kind, payload=data, created_at=utcnow())
-        .returning(S.events.c.event_id)).scalar_one()
+    eid = conn.execute(_Q_EVENT, {"conversation_id": cid, "turn": turn, "type": kind,
+                                  "payload": data, "created_at": utcnow()}).scalar_one()
     return {"id": int(eid), "type": kind, "turn": turn, "data": data}
 
 
@@ -207,9 +258,7 @@ class Runtime:
 
     # --- conversations ----------------------------------------------------
     def _conversation(self, conn: Connection, tenant_id: str, cid: str) -> Any:
-        c = S.conversations
-        row = conn.execute(select(c).where(c.c.conversation_id == cid,
-                                           c.c.tenant_id == tenant_id)).first()
+        row = conn.execute(_Q_CONVERSATION, {"cid": cid, "tenant": tenant_id}).first()
         if row is None:
             raise E.NotFound(f"no conversation {cid!r}")
         return row
@@ -347,7 +396,6 @@ class Runtime:
         try:
             owner = f"{self.node}:{uuid.uuid4().hex[:8]}"
             s = self.settings
-            c = S.conversations
             with transaction(self.engine, write=True) as conn:
                 # The lease first, and the conversation as the lease finds it:
                 # the UPDATE waits out a turn that is finishing, and RETURNING
@@ -355,13 +403,9 @@ class Runtime:
                 # could be one it has since changed (its tool calls, who it
                 # verified). A closed conversation takes no lease.
                 now = utcnow()
-                row = conn.execute(update(c).where(
-                    c.c.conversation_id == cid, c.c.tenant_id == tenant_id,
-                    c.c.status == "open",
-                    or_(c.c.lease_owner.is_(None), c.c.lease_expires_at < now))
-                    .values(lease_owner=owner,
-                            lease_expires_at=now + timedelta(seconds=s.lease_seconds))
-                    .returning(*c.c)).first()
+                row = conn.execute(_Q_LEASE, {
+                    "cid": cid, "tenant": tenant_id, "now": now, "owner": owner,
+                    "expires": now + timedelta(seconds=s.lease_seconds)}).first()
                 if row is None:
                     if self._conversation(conn, tenant_id, cid).status != "open":
                         raise E.ConversationClosed()
@@ -376,8 +420,7 @@ class Runtime:
                         row.prompt_tokens + row.completion_tokens >= s.conversation_max_tokens):
                     raise E.BudgetExhausted("this conversation has spent its budget; open a "
                                             "new one", scope="conversation")
-                daily = conn.execute(select(S.tenants.c.daily_budget_picousd).where(
-                    S.tenants.c.tenant_id == tenant_id)).scalar_one()
+                daily = conn.execute(_Q_DAILY, {"tenant": tenant_id}).scalar_one()
                 if daily is not None and costs.spent_today(conn, tenant_id) >= daily:
                     raise E.BudgetExhausted("the daily spending limit is reached",
                                             retry_after=seconds_to_utc_midnight(),
@@ -419,11 +462,8 @@ class Turn:
         try:
             if self._lease_cleared:
                 return
-            c = S.conversations
             with transaction(self.rt.engine, write=True) as conn:
-                conn.execute(update(c).where(c.c.conversation_id == self.cid,
-                                             c.c.lease_owner == self.owner)
-                             .values(lease_owner=None, lease_expires_at=None))
+                conn.execute(_Q_RELEASE, {"cid": self.cid, "owner": self.owner})
         except Exception:  # noqa: BLE001 -- the lease expires by itself
             log.exception("lease release failed", extra={"conversation_id": self.cid})
         finally:
@@ -432,26 +472,25 @@ class Turn:
 
     def _renew(self) -> bool:
         """The lease renewed, if this turn still holds it."""
-        c = S.conversations
-        now = utcnow()
+        expires = utcnow() + timedelta(seconds=self.rt.settings.lease_seconds)
         with transaction(self.rt.engine, write=True) as conn:
-            return conn.execute(update(c).where(
-                c.c.conversation_id == self.cid, c.c.lease_owner == self.owner).values(
-                lease_expires_at=now + timedelta(
-                    seconds=self.rt.settings.lease_seconds))).rowcount == 1
+            return conn.execute(_Q_RENEW, {"cid": self.cid, "owner": self.owner,
+                                           "expires": expires}).rowcount == 1
 
-    def _as_holder(self, conn: Connection, **values: Any) -> None:
-        """Update the conversation's row as this turn: only while it holds the
-        lease, which every write renews. Every write a turn makes goes through
-        here or checks the same, in its own transaction -- so a turn that
-        outlived its lease writes nothing more, not even its fallback reply."""
-        c = S.conversations
+    def _as_holder(self, conn: Connection, set_: dict[str, Any] | None = None,
+                   add: dict[str, int] | None = None) -> None:
+        """Update the conversation's row as this turn -- setting `set_`, adding
+        to `add` -- only while it holds the lease, which every write renews.
+        Every write a turn makes goes through here or checks the same, in its
+        own transaction -- so a turn that outlived its lease writes nothing
+        more, not even its fallback reply."""
+        set_, add = set_ or {}, add or {}
         now = utcnow()
-        got = conn.execute(update(c).where(c.c.conversation_id == self.cid,
-                                           c.c.lease_owner == self.owner).values(
-            updated_at=now, lease_expires_at=now + timedelta(
-                seconds=self.rt.settings.lease_seconds), **values)).rowcount
-        if got != 1:
+        params = {"cid": self.cid, "owner": self.owner, "now": now,
+                  "expires": now + timedelta(seconds=self.rt.settings.lease_seconds),
+                  **{"v_" + k: v for k, v in set_.items()},
+                  **{"d_" + k: v for k, v in add.items()}}
+        if conn.execute(_holder(tuple(set_), tuple(add)), params).rowcount != 1:
             raise LeaseLost(f"conversation {self.cid}: the turn outlived its lease")
 
     # --- the loop ---------------------------------------------------------
@@ -472,9 +511,7 @@ class Turn:
 
         # 1. The customer's message, after answering what a crash left unanswered.
         with transaction(rt.engine, write=True) as conn:
-            m, c = S.messages, S.conversations
-            rows = conn.execute(select(m).where(m.c.conversation_id == self.cid)
-                                .order_by(m.c.seq)).all()
+            rows = conn.execute(_Q_MESSAGES, {"cid": self.cid}).all()
             self.messages = [_message(r) for r in rows]
             self.next_seq = rows[-1].seq + 1 if rows else 0
             # Every tool_calls row counts itself on the conversation (record(),
@@ -490,12 +527,12 @@ class Turn:
                 out_events.append(self._answer(conn, tc, INTERRUPTED, step=0,
                                                turn=self.row.turns, platform=True))
             now = utcnow()
-            conn.execute(sql_insert(m).values(conversation_id=self.cid, seq=self.next_seq,
-                                              turn=self.number, role="user", content=text,
-                                              created_at=now))
+            conn.execute(_Q_MESSAGE, {"conversation_id": self.cid, "seq": self.next_seq,
+                                      "turn": self.number, "role": "user", "content": text,
+                                      "created_at": now})
             self.messages.append(Message(role="user", content=text))
             self.next_seq += 1
-            self._as_holder(conn, turns=self.number, n_messages=c.c.n_messages + 1)
+            self._as_holder(conn, {"turns": self.number}, {"n_messages": 1})
             out_events.append(_event(conn, self.cid, self.number, "turn.started",
                                      {"repaired": len(dangling)}))
         for ev in out_events:
@@ -569,32 +606,28 @@ class Turn:
             msg = resp.as_message()
             with transaction(rt.engine, write=True) as conn:
                 # The money first: a call that was made is charged, whatever else happens.
-                conn.execute(sql_insert(S.usage_ledger).values(
-                    tenant_id=self.tenant_id, conversation_id=self.cid, turn=self.number,
-                    step=steps, provider=spec.provider, model=spec.model,
-                    price_id=price.price_id if price else None, prompt_tokens=u.prompt_tokens,
-                    cached_tokens=u.cached_tokens, completion_tokens=u.completion_tokens,
-                    estimated=estimated, cost_picousd=call_cost,
-                    latency_ms=int(seconds * 1000), served_model=resp.served_model,
-                    created_at=utcnow()))
-                c = S.conversations
+                conn.execute(_Q_LEDGER, {
+                    "tenant_id": self.tenant_id, "conversation_id": self.cid, "turn": self.number,
+                    "step": steps, "provider": spec.provider, "model": spec.model,
+                    "price_id": price.price_id if price else None,
+                    "prompt_tokens": u.prompt_tokens, "cached_tokens": u.cached_tokens,
+                    "completion_tokens": u.completion_tokens, "estimated": estimated,
+                    "cost_picousd": call_cost, "latency_ms": int(seconds * 1000),
+                    "served_model": resp.served_model, "created_at": utcnow()})
                 # The step's counters, and the lease renewed, in one statement:
                 # no row means the lease is no longer this turn's.
                 now = utcnow()
-                lost = conn.execute(update(c).where(
-                    c.c.conversation_id == self.cid, c.c.lease_owner == self.owner).values(
-                    steps=c.c.steps + 1, n_messages=c.c.n_messages + 1,
-                    prompt_tokens=c.c.prompt_tokens + u.prompt_tokens,
-                    cached_tokens=c.c.cached_tokens + u.cached_tokens,
-                    completion_tokens=c.c.completion_tokens + u.completion_tokens,
-                    cost_picousd=c.c.cost_picousd + call_cost, updated_at=now,
-                    lease_expires_at=now + timedelta(seconds=s.lease_seconds))).rowcount != 1
+                lost = conn.execute(_Q_STEP, {
+                    "cid": self.cid, "owner": self.owner, "d_prompt": u.prompt_tokens,
+                    "d_cached": u.cached_tokens, "d_completion": u.completion_tokens,
+                    "d_cost": call_cost, "now": now,
+                    "expires": now + timedelta(seconds=s.lease_seconds)}).rowcount != 1
                 if not lost:
-                    conn.execute(sql_insert(S.messages).values(
-                        conversation_id=self.cid, seq=self.next_seq, turn=self.number,
-                        role="assistant", content=msg.content or "",
-                        tool_calls=[tc.to_dict() for tc in msg.tool_calls] or None,
-                        created_at=now))
+                    conn.execute(_Q_MESSAGE, {
+                        "conversation_id": self.cid, "seq": self.next_seq, "turn": self.number,
+                        "role": "assistant", "content": msg.content or "",
+                        "tool_calls": [tc.to_dict() for tc in msg.tool_calls] or None,
+                        "created_at": now})
                     ev = _event(conn, self.cid, self.number, "model.call", {
                         "step": steps, "latency_ms": int(seconds * 1000),
                         "prompt_tokens": u.prompt_tokens, "cached_tokens": u.cached_tokens,
@@ -635,19 +668,14 @@ class Turn:
         if error:
             result["error"] = error
         with transaction(rt.engine, write=True) as conn:
-            c = S.conversations
-            values: dict[str, Any] = {"last_stop": stop, "updated_at": utcnow(),
-                                      "lease_owner": None, "lease_expires_at": None}
-            if fallback:
-                values["n_messages"] = c.c.n_messages + 1
-            if conn.execute(update(c).where(c.c.conversation_id == self.cid,
-                                            c.c.lease_owner == self.owner)
-                            .values(**values)).rowcount != 1:
+            if conn.execute(_Q_FINISH[fallback], {"cid": self.cid, "owner": self.owner,
+                                                  "stop": stop, "now": utcnow()}).rowcount != 1:
                 raise LeaseLost(f"conversation {self.cid}: the turn outlived its lease")
             if fallback:
-                conn.execute(sql_insert(S.messages).values(
-                    conversation_id=self.cid, seq=self.next_seq, turn=self.number,
-                    role="assistant", content=FALLBACK, platform=True, created_at=utcnow()))
+                conn.execute(_Q_MESSAGE, {
+                    "conversation_id": self.cid, "seq": self.next_seq, "turn": self.number,
+                    "role": "assistant", "content": FALLBACK, "platform": True,
+                    "created_at": utcnow()})
                 self.next_seq += 1
             ev = _event(conn, self.cid, self.number, "turn.completed", result)
         self._lease_cleared = True
@@ -688,33 +716,31 @@ class Turn:
 
         def record(conn: Connection, out: ToolOutcome) -> None:
             payload = json.dumps(out.result, ensure_ascii=False, default=str)
-            conn.execute(sql_insert(S.tool_calls).values(
-                conversation_id=self.cid, seq=call_seq, tenant_id=self.tenant_id,
-                user_id=self.user_id, turn=self.number, step=step, call_id=tc.id, tool=tc.name,
-                args=args, ok=bool(out.result.get("ok")), error=out.result.get("error"),
-                result_sha=out.result_sha, is_write=out.is_write, dispatched=True,
-                world_seq=out.world_seq, verified_before=verified_before,
-                customer_seq=out.customer_seq, changes=out.changes,
-                allocated_ids=out.allocated or None, attempts=out.attempts,
-                latency_ms=int(out.seconds * 1000), created_at=utcnow()))
+            conn.execute(_Q_TOOL_CALL, {
+                "conversation_id": self.cid, "seq": call_seq, "tenant_id": self.tenant_id,
+                "user_id": self.user_id, "turn": self.number, "step": step, "call_id": tc.id,
+                "tool": tc.name, "args": args, "ok": bool(out.result.get("ok")),
+                "error": out.result.get("error"), "result_sha": out.result_sha,
+                "is_write": out.is_write, "dispatched": True, "world_seq": out.world_seq,
+                "verified_before": verified_before, "customer_seq": out.customer_seq,
+                "changes": out.changes, "allocated_ids": out.allocated or None,
+                "attempts": out.attempts, "latency_ms": int(out.seconds * 1000),
+                "created_at": utcnow()})
             if out.actions:
-                conn.execute(sql_insert(S.actions), [
+                conn.execute(_Q_ACTION, [
                     {"conversation_id": self.cid, "seq": action_seq + i, "call_seq": call_seq,
                      "tool": a.tool, "args": a.args, "ok": a.ok, "error": a.error,
                      "denied": bool(a.denied), "created_at": utcnow()}
                     for i, a in enumerate(out.actions)])
-            conn.execute(sql_insert(S.messages).values(
-                conversation_id=self.cid, seq=msg_seq, turn=self.number, role="tool",
-                content=payload, tool_call_id=tc.id, name=tc.name, created_at=utcnow()))
-            c = S.conversations
-            values: dict[str, Any] = {"tool_calls": c.c.tool_calls + 1,
-                                      "n_actions": c.c.n_actions + len(out.actions),
-                                      "n_messages": c.c.n_messages + 1}
-            if out.verified != sorted(verified_before):
-                values["verified"] = out.verified
+            conn.execute(_Q_MESSAGE, {
+                "conversation_id": self.cid, "seq": msg_seq, "turn": self.number, "role": "tool",
+                "content": payload, "tool_call_id": tc.id, "name": tc.name,
+                "created_at": utcnow()})
             # A turn that lost its lease raises here, and the call's change to
             # the world rolls back with its record: neither is written.
-            self._as_holder(conn, **values)
+            self._as_holder(conn, {"verified": out.verified}
+                            if out.verified != sorted(verified_before) else None,
+                            {"tool_calls": 1, "n_actions": len(out.actions), "n_messages": 1})
             box["payload"] = payload
             box["event"] = _event(conn, self.cid, self.number, "tool.result", {
                 "step": step, "tool": tc.name, "args": args, "ok": out.result.get("ok"),
@@ -759,18 +785,18 @@ class Turn:
                 turn: int, platform: bool = False) -> dict:
         """A tool call answered without reaching the tools, recorded as one."""
         payload = json.dumps(result, ensure_ascii=False, default=str)
-        conn.execute(sql_insert(S.tool_calls).values(
-            conversation_id=self.cid, seq=self.call_seq, tenant_id=self.tenant_id,
-            user_id=self.user_id, turn=turn, step=step, call_id=tc.id, tool=tc.name,
-            args=tc.arguments, ok=False, error=result.get("error"),
-            result_sha=result_digest(result), is_write=False, dispatched=False,
-            world_seq=None, verified_before=list(self.verified), latency_ms=0,
-            created_at=utcnow()))
-        conn.execute(sql_insert(S.messages).values(
-            conversation_id=self.cid, seq=self.next_seq, turn=turn, role="tool", content=payload,
-            tool_call_id=tc.id, name=tc.name, platform=platform, created_at=utcnow()))
-        c = S.conversations
-        self._as_holder(conn, tool_calls=c.c.tool_calls + 1, n_messages=c.c.n_messages + 1)
+        conn.execute(_Q_TOOL_CALL, {
+            "conversation_id": self.cid, "seq": self.call_seq, "tenant_id": self.tenant_id,
+            "user_id": self.user_id, "turn": turn, "step": step, "call_id": tc.id,
+            "tool": tc.name, "args": tc.arguments, "ok": False, "error": result.get("error"),
+            "result_sha": result_digest(result), "is_write": False, "dispatched": False,
+            "world_seq": None, "verified_before": list(self.verified), "latency_ms": 0,
+            "created_at": utcnow()})
+        conn.execute(_Q_MESSAGE, {
+            "conversation_id": self.cid, "seq": self.next_seq, "turn": turn, "role": "tool",
+            "content": payload, "tool_call_id": tc.id, "name": tc.name, "platform": platform,
+            "created_at": utcnow()})
+        self._as_holder(conn, None, {"tool_calls": 1, "n_messages": 1})
         self.messages.append(Message(role="tool", name=tc.name, tool_call_id=tc.id,
                                      content=payload))
         self.call_seq += 1

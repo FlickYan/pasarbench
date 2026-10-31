@@ -40,6 +40,12 @@ What holds it together, and how each claim is checked:
   and 93 in their recordings: no difference the sign test resolves. The service
   took 18 ms of a turn at the median, under 1% of it, and a conversation cost
   $0.0015 and $0.0052.
+- **It knows where its CPU goes.** A turn of the load test costs the server 19
+  ms of CPU, three fifths less than in v79, and one process does 42 turns a
+  second on two shared cores where it did 19 — the same turns, replayed
+  identically ([below](#where-a-turns-cpu-went-v80)). What was cut was found
+  with a sampler of the service's own that an operator runs on a live process
+  (`GET /v1/admin/profile`), checked against threads whose CPU is known.
 
 An independent review of the service before release reported thirteen defects
 — a model's bad arguments could crash a turn, a key could be freed after its
@@ -51,7 +57,7 @@ PostgreSQL. Each is fixed and pinned by a test ([WHAT_FAILED](WHAT_FAILED.md)
 
 ```
 pip install -r requirements-service.txt      # the benchmark itself still needs nothing
-python -m tests.test_service                 # 100 checks on SQLite; PASAR_TEST_POSTGRES_URL, 30 more
+python -m tests.test_service                 # 115 checks on SQLite; PASAR_TEST_POSTGRES_URL, 37 more
 python scripts/service_sweep.py --self-test  # the real-model kit on a stand-in provider: no key
 ```
 
@@ -159,8 +165,9 @@ Turn.run ── txn: answer what a crash left unanswered; her message ───�
   │        · the assistant message ──────────────────────────────────────▶ event model.call
   │
   ├─▶ each tool call: store.run_tool, ONE transaction
-  │     lock the customer (FOR UPDATE) · load her slice, in order · run the
-  │     benchmark's tool · guards (money, isolation, values) · diff
+  │     lock the customer (FOR UPDATE) · her slice, in order: the one kept
+  │     from the last read if her write_seq has not moved · run the
+  │     benchmark's tool on a copy · guards (money, isolation, values) · diff
   │     · SAVEPOINT: write_seq + 1 · UPDATE ... WHERE version = v · INSERT · outbox
   │     · the tool message and audit rows, the lease checked ───────────▶ event tool.result
   │     a version conflict: rolled back, run again on what is there now (3 tries)
@@ -264,10 +271,14 @@ table below); a tampered row found.
   an expiry (60 s), taken with the row it protects (`UPDATE ... RETURNING`),
   renewed by a heartbeat every 20 s while the turn runs and checked by every
   write the turn makes; a dead process frees its conversation within a minute.
-- **Fewer round trips.** The catalog (products, sellers, livestream claims) is
-  read-only to the tools and cached per process; the step's counters and the
-  lease renewal are one statement. A turn of this workload is 68.6 statements in
-  9 transactions.
+- **Fewer round trips, and less CPU in each.** The catalog (products, sellers,
+  livestream claims) is read-only to the tools and cached per process; a
+  customer's slice is kept by the write it was read at, so a tool call whose
+  customer's world has not changed since reads one row instead of twelve
+  tables; the step's counters and the lease renewal are one statement; every
+  statement is built once; a pooled connection is checked by its socket rather
+  than a round trip. A turn of this workload is 42.8 statements in 8.3
+  transactions (68.8 before v80, a ping before each transaction included).
 
 *Measured* — below.
 
@@ -341,6 +352,8 @@ table below); a tampered row found.
   by construction: an exception is logged as its type, SQLSTATE and frames, not
   its message (a database's can quote the row it refused), the engines keep
   bound values out of their errors, and uvicorn's loggers share the formatter.
+  `/v1/admin/profile` samples where the process's CPU goes, every thread
+  (Operating it).
 - **Keys go to their provider and stop there.** Each from its provider's own
   variables, to that provider's endpoint; a redirect is refused, not followed
   (urllib would follow it, `Authorization` and all, to any host).
@@ -365,12 +378,16 @@ runs it:
 | long turns | a model call twice the lease: the heartbeat keeps the lease and the key, a retry and another message are both turned away, and the retry then gets the answer (the test fails with the heartbeat off); a stream on a server that ran no startup |
 | order and logs | a customer's rows in the benchmark's order after updates, on both databases; an exception logged without its message |
 | money | prices exact to the microdollar, costs additive, effective dates, budgets for a conversation and a tenant's day |
+| a customer's slice, kept | a second read with her write_seq unchanged uses the first's slice (one read of her tables, the same answer); a write makes the next read read again, and it sees the write; rows keyed by plain str; `copy_world` equal to `deepcopy`, a nested value included, and nothing the copy changes reaching the original; off at 0; on both databases |
+| the pool | a connection back within seconds is lent with no round trip, one idle longer is pinged, and one whose session the server ended (`pg_terminate_backend`) is replaced either way before it is lent: the next transaction runs, on a new session (PostgreSQL) |
+| the profiler | against threads whose CPU is known: a long call charged 0.392 s of its 0.400, short bursts between waits 0.165 of 0.166, a thread waiting throughout nothing, and the stacks' sum the process's CPU; the endpoint is the operator's, runs one at a time (409), ends on DELETE; the CLI's summary and folded stacks |
 | schema | migration to head equals `schema.py`; down and up again; 0002 on a database that has tenants: each gets its sequence after its counter, and down again the counter takes the last value back |
 | the API's shape | the route list pinned; every `/v1` operation documents its problem responses |
 | the image | on every push, run as a user runs it (`scripts/smoke_image.sh`): its CLI migrates and makes a tenant; its HEALTHCHECK says healthy; it runs as a user other than root and holds no `.env`; over real HTTP a turn, the turn retried under its key (the same bytes, no second turn), a stream, the audit log (`scripts/smoke_api.py`); every call replayed; stopped by SIGTERM. Published only after it passes |
 
 `scripts/load_test.py` measures a real server (uvicorn in its own process,
-real HTTP) and replays what it made. `scripts/smoke_api.py` checks any running
+real HTTP) — its throughput, its latencies and the CPU a turn costs it — and
+replays what it made. `scripts/smoke_api.py` checks any running
 server, a deployed one included, on a tenant made for it.
 
 ### 6. Cost accounting
@@ -525,12 +542,116 @@ What it says:
    the counter, got slower at 64 clients (153 → 247 ms): the writes no longer
    sit idle on a lock, so more of them share the two cores at once; at 16
    clients the throughput is within noise. The next limit is the interpreter
-   and the cores: a second process (+41%, above), and the model calls off the
-   worker threads (Not built yet, 1).
+   and the cores: a second process (+41%, above) — and, this said, the model
+   calls off the worker threads, which v80 measured to be the wrong next step:
+   the CPU a turn spends was the limit, and most of it was avoidable (below).
 4. **Nothing else moved.** Every run replayed identically (3,791 to 3,808 calls
    a configuration), no conflict was retried, every request was answered 200,
    and the parity test's 313 tasks on PostgreSQL still name every row as the
    benchmark does.
+
+### Where a turn's CPU went (v80)
+
+v79 left one process CPU-bound everywhere, and its list put the model calls
+off the worker threads next. That would not have moved this limit: an async
+model call lets a process hold more turns that are waiting, and spends as much
+CPU on each. So v80 measured where a turn's CPU goes, and took most of it out.
+The load test now reads the CPU the server used, its own and the whole
+machine's (Linux, `/proc`), and divides by the turns served.
+
+**Where it went.** At 16 clients a turn cost the server 49.5 ms of CPU and the
+machine 76: PostgreSQL and the system ~21, the load generator ~6. The same
+turns run one at a time in the server's own process, without HTTP or
+contention, cost 34 ms. cProfile on those, with a CPU clock (its call counts
+exact, its times inflated by its own cost), and the service's sampler on the
+server under load (`GET /v1/admin/profile`, Operating it) found:
+
+- **SQLAlchemy built every statement anew**, 60.4 a turn. Building one — each
+  value coerced into a parameter, the statement's cache key computed again —
+  cost more CPU than its round trip: 290–380 µs a statement, against 160 µs
+  for the same statement built once with named parameters and 80 µs through
+  psycopg alone (this machine, one statement at a time).
+- **Each tool call read its customer's slice again**: eleven to twelve of those
+  statements, for each of 2.1 calls a turn, whether or not her world had
+  changed since the call before.
+- **`copy.deepcopy` of a slice** took 360 µs for 16 rows, most of it rebuilding
+  SQLAlchemy's column names — a subclass of `str` — one key at a time.
+- **A ping before every transaction** (`pool_pre_ping`), 8.4 a turn: ~80 µs of
+  CPU and ~120 µs of wall time each.
+
+**What changed** — nothing a turn does:
+
+1. Statements are built once, with named parameters, and rows are read by
+   position into plain `str` keys (`store.py`, `runtime.py`).
+2. A customer's slice is kept by the write it was read at (`store.Slices`).
+   Every change to her world advances her `write_seq` in the transaction that
+   makes it, so a call that finds it where a slice was read uses that slice —
+   the same rows and versions, by construction — and runs its tool on a copy.
+   It relies on nothing else writing the world tables: nothing in the service
+   does, replay reports a row changed behind its back, and
+   `PASAR_SLICE_CACHE=0` turns it off where another system does.
+3. A slice is copied as what it is, rows of plain values, not by `deepcopy`
+   (`copy_world`).
+4. A pooled connection is checked by its socket — a session the server ended
+   leaves it readable — and pinged only after ten seconds idle.
+5. The mock agent counts its tool schemas' tokens once a list, not once a call:
+   a cost of the load test, not of the service.
+
+A turn is 42.8 statements now, in the same 8.3 transactions, with no ping on a
+connection in use; one at a time in-process it costs 12.4 ms of CPU (16.8
+without the kept slice). Measured on the same two vCPUs, 2026-10-31: v79's
+code and v80's alternating, three runs of each (median, and the range); "no
+kept slice" is v80 with `PASAR_SLICE_CACHE=0`.
+
+| one process | code | turns/s | the server's CPU a turn (ms) | the machine's (ms) | turn p50 / p95 / p99 (ms) | write tool call p50 / p99 (ms) | read p50 (ms) |
+|---|---|---|---|---|---|---|---|
+| PostgreSQL, 1 client | v79 | 14.7 (14.1–15.0) | 44.6 (44.0–46.1) | 63.7 | 63 / 97 / 118 | 13 / 22 | 10 |
+| | v80 | 27.1 (25.8–29.5) | 19.3 (18.0–19.8) | 33.1 | 34 / 46 / 52 | 3 / 6 | 1 |
+| SQLite, 1 client | v79 | 28.9 (28.7–31.4) | 31.8 (29.4–32.3) | 34.4 | 31 / 48 / 59 | 6 / 12 | 5 |
+| | v80 | 73.5 (68.8–80.9) | 11.4 (10.3–12.2) | 13.3 | 11 / 21 / 27 | 1 / 2 | <1 |
+| PostgreSQL, 16 clients | v79 | 18.7 (17.8–18.7) | 49.5 (49.4–51.7) | 76.3 | 778 / 1,130 / 1,336 | 176 / 335 | 122 |
+| | v80 | 42.1 (38.4–43.0) | 19.4 (19.3–21.4) | 36.6 | 330 / 505 / 618 | 34 / 104 | 11 |
+| | v80, no kept slice | 33.7 (33.1–34.6) | 24.7 (24.3–25.3) | 46.0 | 426 / 619 / 740 | 90 / 187 | 61 |
+| PostgreSQL, 64 clients, 400 ms model, gate 64 | v79 | 16.5 (16.0–16.6) | 52.2 (51.5–54.9) | 88.0 | 3,266 / 4,472 / 4,871 | 342 / 676 | 254 |
+| | v80 | 28.7 (28.3–30.3) | 21.1 (20.4–22.4) | 56.2 | 1,686 / 2,154 / 2,356 | 22 / 166 | 12 |
+| | v80, no kept slice | 25.6 (24.6–27.2) | 27.4 (25.2–28.0) | 65.3 | 1,940 / 2,644 / 2,926 | 113 / 395 | 80 |
+
+What it says:
+
+1. **A turn costs the server three fifths less CPU, and one process does about
+   twice the turns.** At 16 clients, 19.4 ms of CPU a turn where it was 49.5,
+   and 42.1 turns a second where it was 18.7; at 64 clients with a model's
+   latency, 28.7 where it was 16.5 — no range overlapping its counterpart's.
+   Alone, a turn takes 34 ms on PostgreSQL where it took 63, and 11 on SQLite
+   where it took 31. The machine's CPU a turn halved too: PostgreSQL runs 30%
+   fewer statements and no pings.
+2. **The latencies followed.** A read tool call takes no lock; at 16 clients it
+   waited 122 ms at the median — for the interpreter, not the database — and
+   now takes 11. A write took 176 ms and takes 34; a turn 778 and 330 (p99 1,336
+   and 618). At 64 clients a turn's median halved, 3.3 s to 1.7, of which the
+   model's three or four calls are 1.2–1.6 s.
+3. **Keeping the slice is a sixth of the CPU saved, and most of a write's time
+   under its lock.** Without it a turn costs 24.7 ms and the process does 33.7
+   turns a second. A write reads its customer's slice after it takes her lock;
+   kept, it reads one row there instead of twelve tables, and holds the lock
+   34 ms at the median instead of 90 — the time her other conversations' writes
+   wait.
+4. **What is left is mostly the statements.** In two profiles of v80 at 16
+   clients (1,200 turns, 10 ms looks), a turn's tool calls are 29% of its CPU —
+   reading a slice, on the quarter of the calls that do, 7%; recording the
+   call, 6% — and its other steps (the model calls with their ledger rows, its
+   first and last transactions) 47%; the event loop and HTTP 7.5%. The next
+   cuts are fewer statements a step, and a second process (+41%, above); with a
+   real model, the cap on turns at once (Not built yet, 1).
+5. **Nothing else moved.** Every one of the 30 runs replayed identically (840 to
+   1,264 calls each), no conflict was retried, and every request was answered
+   200; the 313 reference solutions leave the world and the action log as the
+   benchmark's episodes do, on both databases, with the slice kept.
+
+The profiler that found it is the operator's too (Operating it). Its first
+version put 93% of the CPU on the database driver's wait, where a thread waits
+and spends none ([WHAT_FAILED #68](WHAT_FAILED.md)); what it charges now is
+checked against threads whose CPU is known.
 
 ### With a real model
 
@@ -626,6 +747,7 @@ found [WHAT_FAILED #67](WHAT_FAILED.md).
 | `PASAR_LEASE_SECONDS` | 60 | renewed every third of it while a turn runs; a dead process frees its conversation within one |
 | `PASAR_IDEMPOTENCY_HOURS` | 24 | |
 | `PASAR_STRICT_MONEY` | 1 | the platform's money guard |
+| `PASAR_SLICE_CACHE` | 2000 | customers' slices kept per process, by the write each was read at; 0 where another system writes the world tables (Measured, v80) |
 
 Day to day: `migrate` before a new version starts (migrations are additive
 first, then a release that stops using a column, then one that drops it);
@@ -634,6 +756,25 @@ daily for expired Idempotency-Keys; `replay <tenant>` after a deploy that
 touches the tools or the policy, and after anything touches the database by
 hand; the outbox relay acknowledges what it delivered. Back up PostgreSQL as
 usual; the world, the conversations and the ledger are all in it.
+
+### Where its CPU goes
+
+`GET /v1/admin/profile?seconds=30` samples the process the request reaches —
+every thread, every 10 ms — and answers where its CPU went, as JSON;
+`DELETE /v1/admin/profile` ends one early. `python -m pasarbench.service
+profile p.json --turns N` sums it up by function and by layer, per turn, and
+`--folded p.folded` writes its stacks for a flame graph (speedscope.app reads
+them as they are). `scripts/load_test.py --profile p.json` profiles a load
+test. It holds code locations only — never a value from a frame — and is the
+operator's.
+
+A thread is charged the CPU it used between two looks, to the calls that ran
+throughout, so waiting is charged nothing and nothing is charged to a call
+that did not spend it (`profiling.py` says why it cannot be the stack a thread
+is found in, and [WHAT_FAILED #68](WHAT_FAILED.md) what that did). What it
+costs: at the default 10 ms with 16 turns running, the sampler's own CPU was
+6% of the process's, and the process did about a tenth fewer turns while it
+ran; `interval_ms=50` costs less and resolves less.
 
 ### The image on Docker Hub
 
@@ -666,11 +807,17 @@ no such variable.
 ## Not built yet, in the order they matter
 
 Built since this list was first written: ids without a tenant-wide lock
-(v79, above).
+(v79), and a turn's CPU cut by three fifths (v80; both above).
 
-1. **Model calls off the worker threads.** An async client for the providers
-   would let one process hold hundreds of waiting turns instead of
-   `PASAR_THREADS`; the tools and their transactions stay synchronous.
+1. **Model calls off the worker threads.** v79 put this first for the wrong
+   reason: under the load test the limit was CPU, which an async call does not
+   reduce, and v80 cut that instead. With a real model it is the first limit
+   now: a turn of 2–3 seconds holds a worker thread for all of it, so the 48
+   turns a process admits (`PASAR_MAX_CONCURRENT_TURNS`) carry ~19 turns a
+   second at 2.5 s each, where its CPU would carry twice that at ~20 ms a
+   turn. Raising `PASAR_THREADS` moves the limit at a thread per waiting turn;
+   an async client for the providers removes it, the tools and their
+   transactions staying synchronous.
 2. **Limits shared across processes.** The token bucket, the provider gate and
    the breaker are per process (N processes allow N times the rate); Redis (or
    PostgreSQL advisory locks) for one limit per deployment.

@@ -736,6 +736,226 @@ def test_isolation():
     engine.dispose()
 
 
+def test_slices(kind: str):
+    """A customer's slice, read once per write to her world (store.Slices, v80):
+    a call that finds her write_seq where a slice was read uses it -- the
+    same answer, and never one the world has moved past."""
+    print(f"slices [{kind}]")
+    import copy as _copy
+    from pasarbench.service.store import (copy_world, load_slice, run_tool, seed_tenant, slices,
+                                          transaction)
+
+    engine, _ = database(kind, "slices")
+    seed_tenant(engine, "sl", "sl", "demo")
+    kept = slices(engine)
+    _paid, _pay, proc, _users = demo_orders()
+    user, order = proc["user_id"], proc["order_id"]
+
+    def call(name, args):
+        return run_tool(engine, tenant_id="sl", user_id=user, name=name, args=args,
+                        verified=[user], prior_actions=[]).result
+
+    h0, m0 = kept.hits, kept.misses
+    first = call("get_order", {"order_id": order})
+    again = call("get_order", {"order_id": order})
+    check(f"[{kind}] the second read of a customer whose world has not changed uses the "
+          f"slice the first read: the same answer, one read of her tables",
+          again == first and (kept.hits - h0, kept.misses - m0) == (1, 1),
+          (kept.hits - h0, kept.misses - m0))
+    done = call("cancel_order", {"order_id": order, "reason": "changed my mind"})
+    after = call("get_order", {"order_id": order})
+    check(f"[{kind}] a write moves her write_seq, and the next read reads her world again: "
+          f"the order cancelled, not the slice from before",
+          done.get("ok") and after["order"]["status"] == "cancelled"
+          and first["order"]["status"] == "processing" and kept.misses - m0 == 2,
+          (done, after.get("order", {}).get("status")))
+
+    with transaction(engine, write=False) as conn:
+        tables, _versions = load_slice(conn, "sl", user)
+    keys = {type(k) for rows in tables.values() for r in rows.values() for k in r}
+    check(f"[{kind}] a slice's rows are keyed by plain str (SQLAlchemy's own names are a "
+          f"subclass, which deepcopy rebuilds one by one)", keys == {str}, keys)
+    nested = _copy.deepcopy(tables)
+    nested["orders"][order]["tags"] = ["a", {"b": [1]}]
+    copied = copy_world(nested)
+    copied["orders"][order]["tags"][1]["b"].append(2)
+    copied["orders"][order]["status"] = "x"
+    check(f"[{kind}] copy_world is a deep copy: equal to deepcopy's, and nothing the copy "
+          f"changes reaches the original (a nested value included)",
+          copy_world(tables) == _copy.deepcopy(tables)
+          and nested["orders"][order]["tags"] == ["a", {"b": [1]}]
+          and nested["orders"][order]["status"] == "cancelled")
+
+    kept.size, h0 = 0, kept.hits
+    kept.forget("sl")
+    call("get_order", {"order_id": order})
+    call("get_order", {"order_id": order})
+    check(f"[{kind}] PASAR_SLICE_CACHE=0 keeps none: every call reads the database",
+          kept.hits == h0)
+    kept.size = 2000
+    engine.dispose()
+
+
+def test_liveness():
+    """A pooled PostgreSQL connection is checked before it is lent: one whose
+    session the server ended is replaced before anyone sees it -- by its
+    socket, with no round trip (store._check_on_checkout, v80)."""
+    print("liveness [postgres]")
+    from sqlalchemy import text
+    from pasarbench.service.store import make_engine, transaction
+    engine = make_engine(PG, pool_size=1, max_overflow=0)
+    with transaction(engine, write=False) as conn:
+        pid = conn.execute(text("SELECT pg_backend_pid()")).scalar()
+    other = make_engine(PG, pool_size=1, max_overflow=0)
+    with transaction(other, write=False) as conn:
+        ended = conn.execute(text("SELECT pg_terminate_backend(:p, 5000)"), {"p": pid}).scalar()
+    try:
+        with transaction(engine, write=False) as conn:
+            now = conn.execute(text("SELECT pg_backend_pid()")).scalar()
+        ok, detail = ended and now != pid, (ended, pid, now)
+    except Exception as e:  # noqa: BLE001
+        ok, detail = False, f"{type(e).__name__}: {e}"
+    check("a pooled connection whose session the server ended is replaced before it is "
+          "lent: the next transaction runs, on a new session", ok, detail)
+
+    import pasarbench.service.store as store
+    pings: list = []
+    real = engine.dialect.do_ping
+    engine.dialect.do_ping = lambda c: (pings.append(1), real(c))[1]
+    with transaction(engine, write=False) as conn:
+        conn.execute(text("SELECT 1"))
+    lent_quietly = len(pings)
+    store.PING_AFTER, kept = 0.0, store.PING_AFTER
+    try:
+        with transaction(engine, write=False) as conn:
+            pid = conn.execute(text("SELECT pg_backend_pid()")).scalar()
+        with transaction(other, write=False) as conn:
+            conn.execute(text("SELECT pg_terminate_backend(:p, 5000)"), {"p": pid})
+        with transaction(engine, write=False) as conn:
+            now = conn.execute(text("SELECT pg_backend_pid()")).scalar()
+        ok, detail = now != pid and len(pings) >= 2, (pid, now, len(pings))
+    except Exception as e:  # noqa: BLE001
+        ok, detail = False, f"{type(e).__name__}: {e}"
+    finally:
+        store.PING_AFTER = kept
+        engine.dialect.do_ping = real
+    check("a connection back within seconds is lent with no round trip; one idle longer is "
+          "pinged, and a session the server ended is replaced that way too",
+          lent_quietly == 0 and ok, (lent_quietly, detail))
+    engine.dispose()
+    other.dispose()
+
+
+def test_profiler():
+    """The sampling profiler (profiling.py, v80): every thread's CPU charged to
+    calls that ran throughout, waiting charged nothing -- against threads
+    whose CPU is known -- and the operator's endpoint."""
+    print("profiler")
+    from pasarbench.service.__main__ import main as cli
+    from pasarbench.service.profiling import Sampler, thread_clocks
+
+    def spin(seconds):
+        t0 = time.thread_time()
+        while time.thread_time() - t0 < seconds:
+            pass
+
+    def long_spin(box):
+        t0 = time.thread_time()
+        spin(0.4)
+        box["long"] = time.thread_time() - t0
+
+    def bursts(box):
+        t0 = time.thread_time()
+        for _ in range(300):
+            spin(0.0005)
+            time.sleep(0.0005)
+        box["bursts"] = time.thread_time() - t0
+
+    stop = threading.Event()
+
+    def waits(box):
+        stop.wait(10)
+
+    box: dict = {}
+    s = Sampler(0.005).start()
+    ts = [threading.Thread(target=f, args=(box,)) for f in (long_spin, bursts, waits)]
+    for t in ts:
+        t.start()
+    for t in ts[:2]:
+        t.join()
+    stop.set()
+    ts[2].join()
+    rep = s.stop()
+    inclusive: dict = {}
+    for key, us in rep["stacks_us"].items():
+        for f in set(key.split(";")):
+            inclusive[f] = inclusive.get(f, 0) + us / 1e6
+
+    def got(name):
+        return sum(v for k, v in inclusive.items() if k.endswith(".<locals>." + name))
+
+    total = sum(rep["stacks_us"].values()) / 1e6
+    if not thread_clocks():
+        skip("the profiler's CPU accounting", "no per-thread CPU clocks (Linux has them)")
+    else:
+        check(f"a thread's CPU in one long call is charged to that call "
+              f"({got('long_spin'):.3f} s of {box['long']:.3f})",
+              0.85 * box["long"] <= got("long_spin") <= 1.05 * box["long"])
+        check(f"a thread's CPU in short bursts between waits is charged to the call that ran "
+              f"throughout ({got('bursts'):.3f} s of {box['bursts']:.3f}), and the waits to "
+              f"nothing", 0.85 * box["bursts"] <= got("bursts") <= 1.05 * box["bursts"])
+        check(f"a thread waiting the whole time is charged nothing "
+              f"({got('waits') * 1000:.1f} ms of {total * 1000:.0f})",
+              got("waits") < 0.01 * total)
+        check(f"what the stacks were charged is the process's CPU, the sampler's own aside "
+              f"({rep['sampled_seconds']:.2f} + {rep['sampler_cpu_seconds']:.2f} of "
+              f"{rep['process_cpu_seconds']:.2f} s)",
+              rep["sampled_seconds"] + rep["sampler_cpu_seconds"]
+              >= 0.9 * rep["process_cpu_seconds"])
+    check("a profile names code, never values: every frame a module and a function",
+          all(":" in f for k in rep["stacks_us"] for f in k.split(";")))
+
+    engine, url = database("sqlite", "profile")
+    with client(make_app(engine, url)) as c:
+        check("the profile is the operator's", c.get("/v1/admin/profile?seconds=0.1")
+              .status_code == 401)
+        r = c.get("/v1/admin/profile?seconds=0.3&interval_ms=2", headers=OP)
+        body = r.json()
+        check("GET /v1/admin/profile samples the process for the seconds asked and answers "
+              "the profile", r.status_code == 200 and 0.25 <= body["wall_seconds"] < 2
+              and body["mode"] in ("cpu", "wall") and isinstance(body["stacks_us"], dict),
+              r.text[:300])
+        long: dict = {}
+        th = threading.Thread(target=lambda: long.update(
+            r=c.get("/v1/admin/profile?seconds=60", headers=OP)))
+        t0 = time.monotonic()
+        th.start()
+        from pasarbench.service.profiling import running
+        until(lambda: running() is not None)
+        busy = c.get("/v1/admin/profile?seconds=1", headers=OP).status_code
+        ended = c.delete("/v1/admin/profile", headers=OP).status_code
+        th.join(10)
+        check("one profile at a time (409), and DELETE ends it: its GET answers at once",
+              busy == 409 and ended == 204 and long["r"].status_code == 200
+              and time.monotonic() - t0 < 10, (busy, ended))
+        check("…and with none running, DELETE is 404",
+              c.delete("/v1/admin/profile", headers=OP).status_code == 404)
+    engine.dispose()
+    path, folded = os.path.join(TMP, "p.json"), os.path.join(TMP, "p.folded")
+    with open(path, "w") as f:
+        json.dump(rep, f)
+    import contextlib
+    import io
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out):
+        code = cli(["profile", path, "--turns", "10", "--folded", folded])
+    lines = open(folded).read().splitlines()
+    check("`python -m pasarbench.service profile` sums it up by layer and by function, "
+          "per turn, and writes the stacks a flame graph reads",
+          code == 0 and "by layer" in out.getvalue() and "ms/turn" in out.getvalue()
+          and lines and all(ln.rsplit(" ", 1)[1].isdigit() for ln in lines), out.getvalue()[:300])
+
+
 # ---------------------------------------------------------------------------
 # The HTTP API
 # ---------------------------------------------------------------------------
@@ -750,6 +970,7 @@ ROUTES = {
     ("POST", "/v1/admin/tenants"), ("POST", "/v1/admin/tenants/{tenant_id}/keys"),
     ("POST", "/v1/admin/keys/{key_id}/revoke"), ("GET", "/v1/admin/tenants/{tenant_id}/replay"),
     ("GET", "/v1/admin/outbox"), ("POST", "/v1/admin/outbox/ack"), ("GET", "/v1/admin/gates"),
+    ("GET", "/v1/admin/profile"), ("DELETE", "/v1/admin/profile"),
 }
 
 
@@ -1570,6 +1791,8 @@ def main() -> int:
         test_long_turns()
         test_zero_usage_is_estimated()
         test_logs_hold_no_message()
+        test_slices("sqlite")
+        test_profiler()
         test_parity("sqlite")
         test_episodes("sqlite")
         test_kit_messages()
@@ -1577,6 +1800,8 @@ def main() -> int:
             test_migrations("postgres")
             test_concurrency("postgres")
             test_ids("postgres")
+            test_slices("postgres")
+            test_liveness()
             test_bad_arguments("postgres")
             test_nul("postgres")
             test_order("postgres")

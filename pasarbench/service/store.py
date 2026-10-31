@@ -3,20 +3,22 @@ The commerce world in SQL, and how a tool call reads and changes it.
 
 The benchmark's tools (pasarbench/tools.py) are pure functions over an
 in-memory world, and they are what the benchmark scores. The service runs
-those same functions: each tool call loads one customer's slice of the world
-into a `pasarbench.db.Database`, runs the tool on it, and writes the rows it
-changed back -- in one short transaction, never across a model call -- with
-the conversation's record of the call (the tool's message, the audit rows) in
-the same transaction, so a call is either done and recorded, or neither.
+those same functions: each tool call takes one customer's slice of the world
+into a `pasarbench.db.Database` -- read from the database, or the one kept
+from her last call when her world has not changed since (Slices) -- runs the
+tool on a copy of it, and writes the rows it changed back -- in one short
+transaction, never across a model call -- with the conversation's record of
+the call (the tool's message, the audit rows) in the same transaction, so a
+call is either done and recorded, or neither.
 
     read tool   one snapshot of the slice (REPEATABLE READ on PostgreSQL), no lock
     write tool  the customer's row locked first (SELECT ... FOR UPDATE on
                 PostgreSQL; on SQLite every writing transaction begins
-                IMMEDIATE and holds the database), the slice loaded under the
-                lock, the tool run, each changed row updated only if its
-                version is still the one read (else the call runs again, on
-                what is there now), each new row inserted, the customer's write
-                sequence advanced
+                IMMEDIATE and holds the database), the slice as of the write
+                sequence the lock found, the tool run, each changed row updated
+                only if its version is still the one read (else the call runs
+                again, on what is there now), each new row inserted, the
+                customer's write sequence advanced
 
 Two conversations of one customer therefore write one at a time, and two
 customers never wait for each other. A new row's id comes from the tenant's
@@ -58,7 +60,8 @@ from fractions import Fraction
 from dataclasses import dataclass, field
 from typing import Any, Callable, Iterator
 
-from sqlalchemy import Connection, Engine, create_engine, event, insert, select, text, update
+from sqlalchemy import (Connection, Engine, bindparam, create_engine, event, insert, select,
+                        text, update)
 from sqlalchemy.exc import DataError, IntegrityError
 
 from ..db import CURRENCY_EXPONENT, SGD_RATE, Action, Database, fmt_money, seed
@@ -154,9 +157,70 @@ def make_engine(url: str, *, pool_size: int = 10, max_overflow: int = 20,
     # hide_parameters: a failed statement's error never carries the values it
     # was given (a customer's address, what she said). timezone=UTC: the
     # server's own zone never decides what day a timestamp falls on.
-    return create_engine(url, echo=echo, pool_size=pool_size, max_overflow=max_overflow,
-                         pool_pre_ping=True, pool_recycle=1800, hide_parameters=True,
-                         json_serializer=_json, connect_args={"options": "-c timezone=UTC"})
+    engine = create_engine(url, echo=echo, pool_size=pool_size, max_overflow=max_overflow,
+                           pool_recycle=1800, hide_parameters=True, json_serializer=_json,
+                           connect_args={"options": "-c timezone=UTC"})
+    _check_on_checkout(engine)
+    return engine
+
+
+PING_AFTER = 10.0       # seconds idle in the pool past which a connection is pinged
+
+
+def _check_on_checkout(engine: Engine) -> None:
+    """A pooled connection is checked before it is lent: one used within
+    PING_AFTER seconds by looking at its socket -- a server that ended the
+    session (a restart, an administrator, a crash) leaves it readable or
+    closed, and an idle session receives nothing -- and one idle longer by a
+    round trip, as pool_pre_ping would on every checkout. A connection found
+    dead is replaced before anyone sees it. A turn checks out a connection
+    for each of its transactions: a ping each was an eighth of their round
+    trips (docs/SERVICE.md, v80)."""
+
+    @event.listens_for(engine, "connect")
+    def _connected(_dbapi_conn, record):          # noqa: ANN001
+        record.info["pasar_used"] = time.monotonic()
+
+    @event.listens_for(engine, "checkin")
+    def _returned(_dbapi_conn, record):           # noqa: ANN001
+        record.info["pasar_used"] = time.monotonic()
+
+    @event.listens_for(engine, "checkout")
+    def _lent(dbapi_conn, record, _proxy):        # noqa: ANN001
+        from sqlalchemy.exc import DisconnectionError
+        if time.monotonic() - record.info.get("pasar_used", 0.0) <= PING_AFTER:
+            quiet = _quiet(dbapi_conn)
+            if quiet:
+                return
+            if quiet is False:
+                raise DisconnectionError("the server ended the session")
+        try:                                      # idle long, or no way to tell: ping it
+            engine.dialect.do_ping(dbapi_conn)
+        except Exception as e:  # noqa: BLE001 -- any failure: a new connection
+            raise DisconnectionError(f"ping failed: {type(e).__name__}") from None
+
+
+def _quiet(dbapi_conn: Any) -> bool | None:
+    """True: an idle session the server has said nothing on -- open on this
+    side, its socket with nothing to read. False: one it ended (an ended
+    session sends its reason and closes, which reads as readable). None: no
+    way to tell without a round trip (a driver other than psycopg 3, or the
+    check failing), and the caller pings."""
+    import select as _select
+    pgconn = getattr(dbapi_conn, "pgconn", None)
+    if pgconn is None:
+        return None
+    try:
+        if dbapi_conn.closed or getattr(dbapi_conn, "broken", False):
+            return False
+        fd = pgconn.socket
+        if hasattr(_select, "poll"):            # no FD_SETSIZE limit, unlike select()
+            p = _select.poll()
+            p.register(fd, _select.POLLIN | _select.POLLERR | _select.POLLHUP)
+            return not p.poll(0)
+        return not _select.select([fd], [], [], 0)[0]
+    except Exception:  # noqa: BLE001 -- the check itself failed: ask the server
+        return None
 
 
 @contextmanager
@@ -241,6 +305,7 @@ def seed_tenant(engine: Engine, tenant_id: str, name: str, world: str,
     world's digest."""
     tables = world_tables(world)
     digest = world_digest(tables)
+    slices(engine).forget(tenant_id)
     with transaction(engine, write=True) as conn:
         conn.execute(insert(S.tenants).values(tenant_id=tenant_id, name=name, world=world,
                                               world_digest=digest,
@@ -271,12 +336,62 @@ def new_pos(customer_seq: int, i: int) -> int:
 # ---------------------------------------------------------------------------
 # A customer's slice, as the tools see it
 # ---------------------------------------------------------------------------
+#
+# The statements a tool call runs are built once, with named parameters.
+# Built for each call, a statement cost more CPU in SQLAlchemy than its round
+# trip did -- every value coerced into a parameter, the statement's cache key
+# computed anew -- and a tool call runs a dozen (docs/SERVICE.md, v80).
+
+def _columns(t: Any) -> tuple[tuple[int, str], ...]:
+    """(position, name) of the columns a tool sees, in the table's order. The
+    names as plain str: SQLAlchemy's are a subclass, which copy.deepcopy
+    rebuilds one by one."""
+    return tuple((i, str(c.key)) for i, c in enumerate(t.c) if c.key not in S.SERVICE_COLUMNS)
+
+
+_COLS = {table: _columns(t) for table, (t, _key) in S.WORLD_TABLES.items()}
+_AT = {table: {str(c.key): i for i, c in enumerate(t.c)}
+       for table, (t, _key) in S.WORLD_TABLES.items()}
+
 
 def _plain(table: str, row: Any) -> dict[str, Any]:
-    d = dict(row._mapping)
-    for c in S.SERVICE_COLUMNS:
-        d.pop(c, None)
-    return d
+    """A world row as the tools see it, from a `select(table)` row."""
+    return {k: row[i] for i, k in _COLS[table]}
+
+
+def _by(t: Any, column: str, many: bool, ordered: bool = True) -> Any:
+    q = select(t).where(t.c.tenant_id == bindparam("tenant"),
+                        t.c[column].in_(bindparam("ids", expanding=True)) if many
+                        else t.c[column] == bindparam("id"))
+    return q.order_by(t.c.pos) if ordered else q
+
+
+_Q_USER = {table: _by(S.WORLD_TABLES[table][0], "user_id", False, table != "users")
+           for table in ("users", "orders", "store_credit_grants", "vouchers")}
+_Q_ORDERS = {table: _by(S.WORLD_TABLES[table][0], "order_id", True)
+             for table in ("order_items", "shipments", "payments", "refunds", "returns",
+                           "escalations", "seller_messages")}
+_Q_KEYS = {table: _by(S.WORLD_TABLES[table][0], S.WORLD_TABLES[table][1], True, False)
+           for table in ("products", "sellers")}
+_Q_CLAIMS = _by(S.livestream_claims, "livestream_id", False)
+_c = S.customers
+_Q_SEQ = select(_c.c.write_seq).where(_c.c.tenant_id == bindparam("tenant"),
+                                      _c.c.user_id == bindparam("user"))
+_Q_SEQ_LOCKED = _Q_SEQ.with_for_update()
+_Q_BUMP = (update(_c).where(_c.c.tenant_id == bindparam("tenant"),
+                            _c.c.user_id == bindparam("user"))
+           .values(write_seq=_c.c.write_seq + 1).returning(_c.c.write_seq))
+_k = S.id_counters
+_Q_COUNTER = (update(_k).where(_k.c.tenant_id == bindparam("tenant"))
+              .values(value=_k.c.value + 1).returning(_k.c.value))
+_Q_NEXTVAL = text("SELECT nextval(CAST(:seq AS regclass))")
+_Q_OUTBOX = insert(S.outbox)
+_a = S.actions
+_Q_ACTIONS = select(_a.c.tool, _a.c.args, _a.c.ok, _a.c.error, _a.c.denied).where(
+    _a.c.conversation_id == bindparam("cid")).order_by(_a.c.seq)
+_Q_ACTIONS_BEFORE = select(_a.c.tool, _a.c.args, _a.c.ok, _a.c.error, _a.c.denied).where(
+    _a.c.conversation_id == bindparam("cid"),
+    _a.c.call_seq < bindparam("before")).order_by(_a.c.seq)
 
 
 class Catalog:
@@ -318,19 +433,98 @@ def catalog(engine: Engine) -> Catalog:
         return c
 
 
+class Slices:
+    """Customers' slices as a tool call last read them, each with the write
+    it was read at: the customer's write_seq, which every change to her
+    world advances in the transaction that makes it (_run_once). A call that
+    finds her write_seq where a slice was read uses that slice instead of
+    reading a dozen tables again -- the same rows, and the same versions, by
+    construction. One per engine (two databases may hold one tenant id),
+    least recently used out past `size` customers; 0 keeps none.
+
+    What it relies on: that nothing else changes a customer's world rows.
+    Nothing in the service does -- replay reports a row changed behind its
+    back as a difference -- and a deployment where another system writes them
+    runs with PASAR_SLICE_CACHE=0. A slice is never changed in place: a call
+    gets a copy to run its tool on (copy_world)."""
+
+    def __init__(self, size: int = 2000):
+        self.size = size
+        self._rows: OrderedDict[tuple[str, str], tuple[int, Any, Any]] = OrderedDict()
+        self._lock = threading.Lock()
+        self.hits = self.misses = 0
+
+    def get(self, tenant_id: str, user_id: str, seq: int) -> tuple[Any, Any] | None:
+        with self._lock:
+            got = self._rows.get((tenant_id, user_id))
+            if got is None or got[0] != seq:
+                self.misses += 1
+                return None
+            self._rows.move_to_end((tenant_id, user_id))
+            self.hits += 1
+            return got[1], got[2]
+
+    def put(self, tenant_id: str, user_id: str, seq: int, tables: Any, versions: Any) -> None:
+        if self.size <= 0:
+            return
+        with self._lock:
+            got = self._rows.get((tenant_id, user_id))
+            if got is not None and got[0] > seq:
+                return                  # a later write's slice is already here
+            self._rows[(tenant_id, user_id)] = (seq, tables, versions)
+            self._rows.move_to_end((tenant_id, user_id))
+            while len(self._rows) > self.size:
+                self._rows.popitem(last=False)
+
+    def forget(self, tenant_id: str, user_id: str | None = None) -> None:
+        """A customer's slice, or every slice of a tenant (seeded anew: tests)."""
+        with self._lock:
+            for k in [k for k in self._rows if k[0] == tenant_id
+                      and (user_id is None or k[1] == user_id)]:
+                del self._rows[k]
+
+
+_SLICES: "weakref.WeakKeyDictionary[Engine, Slices]" = weakref.WeakKeyDictionary()
+
+
+def slices(engine: Engine) -> Slices:
+    with _CATALOGS_LOCK:
+        c = _SLICES.get(engine)
+        if c is None:
+            c = _SLICES[engine] = Slices()
+        return c
+
+
+_PLAIN = frozenset({str, int, float, bool, type(None)})
+
+
+World = dict[str, dict[str, dict[str, Any]]]
+
+
+def copy_world(tables: World) -> World:
+    """A deep copy of world tables. Their rows hold plain values -- str, int,
+    float, bool, None, as the columns do -- and a row of them is copied as a
+    dict; any other row through copy.deepcopy. The same copy, in a twentieth
+    of deepcopy's time."""
+    return {name: {rid: (row.copy() if all(type(v) in _PLAIN for v in row.values())
+                         else copy.deepcopy(row)) for rid, row in rows.items()}
+            for name, rows in tables.items()}
+
+
 def _catalog_rows(conn: Connection, cache: Catalog | None, tenant_id: str, table: str,
                   ids: list[str]) -> list[dict[str, Any]]:
     """Catalog rows by id, in their table's order: from the cache, the rest
     from the database."""
-    t, key = S.WORLD_TABLES[table]
+    key = S.WORLD_TABLES[table][1]
     got: list[tuple[int, dict[str, Any]]] = []
     missing = []
     for i in ids:
         hit = cache.get((tenant_id, table, i)) if cache else None
         (got.append(hit) if hit is not None else missing.append(i))
     if missing:
-        for r in conn.execute(select(t).where(t.c.tenant_id == tenant_id, t.c[key].in_(missing))):
-            entry = (int(r.pos), _plain(table, r))
+        pos = _AT[table]["pos"]
+        for r in conn.execute(_Q_KEYS[table], {"tenant": tenant_id, "ids": missing}):
+            entry = (int(r[pos]), _plain(table, r))
             if cache:
                 cache.put((tenant_id, table, entry[1][key]), entry)
             got.append(entry)
@@ -341,10 +535,8 @@ def _claims(conn: Connection, cache: Catalog | None, tenant_id: str,
             livestream_id: str) -> list[dict[str, Any]]:
     hit = cache.get((tenant_id, "claims_of", livestream_id)) if cache else None
     if hit is None:
-        lc = S.livestream_claims
-        hit = [_plain("livestream_claims", r) for r in conn.execute(select(lc).where(
-            lc.c.tenant_id == tenant_id, lc.c.livestream_id == livestream_id)
-            .order_by(lc.c.pos))]
+        hit = [_plain("livestream_claims", r) for r in conn.execute(
+            _Q_CLAIMS, {"tenant": tenant_id, "id": livestream_id})]
         if cache:
             cache.put((tenant_id, "claims_of", livestream_id), hit)
     return [dict(r) for r in hit]
@@ -396,35 +588,28 @@ def load_slice(conn: Connection, tenant_id: str, user_id: str,
     versions: dict[tuple[str, str], int] = {}
 
     def put(table: str, rows) -> list[dict[str, Any]]:
-        t, key = S.WORLD_TABLES[table]
+        key = S.WORLD_TABLES[table][1]
+        cols, at, into = _COLS[table], _AT[table][key], tables[table]
+        version = _AT[table]["version"] if table in VERSIONED else None
         out = []
         for r in rows:
-            m = r._mapping
-            if table in VERSIONED:
-                versions[(table, m[key])] = m["version"]
-            d = _plain(table, r)
-            tables[table][d[key]] = d
+            if version is not None:
+                versions[(table, r[at])] = r[version]
+            d = {k: r[i] for i, k in cols}
+            into[d[key]] = d
             out.append(d)
         return out
 
-    c, o = S.customers, S.orders
-    put("users", conn.execute(select(c).where(c.c.tenant_id == tenant_id,
-                                              c.c.user_id == user_id)))
-    orders = put("orders", conn.execute(select(o).where(o.c.tenant_id == tenant_id,
-                                                        o.c.user_id == user_id)
-                                        .order_by(o.c.pos)))
+    who = {"tenant": tenant_id, "id": user_id}
+    put("users", conn.execute(_Q_USER["users"], who))
+    orders = put("orders", conn.execute(_Q_USER["orders"], who))
     order_ids = [r["order_id"] for r in orders]
     if order_ids:
-        for table in ("order_items", "shipments", "payments", "refunds", "returns",
-                      "escalations", "seller_messages"):
-            t, _ = S.WORLD_TABLES[table]
-            put(table, conn.execute(select(t).where(t.c.tenant_id == tenant_id,
-                                                    t.c.order_id.in_(order_ids))
-                                    .order_by(t.c.pos)))
+        theirs = {"tenant": tenant_id, "ids": order_ids}
+        for table, q in _Q_ORDERS.items():
+            put(table, conn.execute(q, theirs))
     for table in ("store_credit_grants", "vouchers"):
-        t, _ = S.WORLD_TABLES[table]
-        put(table, conn.execute(select(t).where(t.c.tenant_id == tenant_id,
-                                                t.c.user_id == user_id).order_by(t.c.pos)))
+        put(table, conn.execute(_Q_USER[table], who))
     product_ids = sorted({r["product_id"] for r in tables["order_items"].values()})
     for d in _catalog_rows(conn, cache, tenant_id, "products", product_ids):
         tables["products"][d["product_id"]] = d
@@ -677,6 +862,7 @@ def run_tool(engine: Engine, *, tenant_id: str, user_id: str, name: str, args: A
         except Exception as e:  # noqa: BLE001 -- re-raised unless it is a conflict
             if attempt == attempts or not _retryable(e):
                 raise
+            slices(engine).forget(tenant_id, user_id)       # run again on what is there now
             time.sleep(random.random() * 0.005 * (2 ** attempt))
     raise AssertionError("unreachable")
 
@@ -692,15 +878,24 @@ def _run_once(engine: Engine, tenant_id: str, user_id: str, name: str, args: Any
     # world; a write reads under the customer's lock, the latest state.
     with transaction(engine, write=is_write or record is not None,
                      snapshot=not is_write) as conn:
-        c = S.customers
-        q = select(c.c.write_seq).where(c.c.tenant_id == tenant_id, c.c.user_id == user_id)
-        if is_write and lock and not is_sqlite(engine):
-            q = q.with_for_update()     # the customer's lock: every write to her world waits here
-        world_seq = conn.execute(q).scalar_one_or_none()
+        who = {"tenant": tenant_id, "user": user_id}
+        # The customer's lock: every write to her world waits here.
+        world_seq = conn.execute(_Q_SEQ_LOCKED if is_write and lock and not is_sqlite(engine)
+                                 else _Q_SEQ, who).scalar_one_or_none()
         if world_seq is None:
             raise StoreError(f"no customer {user_id!r} in tenant {tenant_id!r}")
-        cache = catalog(engine)
-        tables, versions = load_slice(conn, tenant_id, user_id, cache)
+        world_seq = int(world_seq)
+        cache, kept = catalog(engine), slices(engine)
+        # Her slice as of this write_seq: read before, or read now and kept.
+        # `before` is never changed (a cached slice is shared); the tool runs
+        # on a copy of it.
+        hit = kept.get(tenant_id, user_id, world_seq)
+        if hit is None:
+            before, versions = load_slice(conn, tenant_id, user_id, cache)
+            kept.put(tenant_id, user_id, world_seq, before, versions)
+        else:
+            before, versions = hit
+        tables = copy_world(before)
         given = None if replay_ids is None else list(replay_ids)
         spare = [0]
 
@@ -718,9 +913,7 @@ def _run_once(engine: Engine, tenant_id: str, user_id: str, name: str, args: Any
                 return given.pop(0)
             if is_sqlite(engine):
                 # One writer at a time: the counter's row costs nothing to hold.
-                k = S.id_counters
-                n = conn.execute(update(k).where(k.c.tenant_id == tenant_id)
-                                 .values(value=k.c.value + 1).returning(k.c.value)).scalar_one()
+                n = conn.execute(_Q_COUNTER, {"tenant": tenant_id}).scalar_one()
             else:
                 # The tenant's sequence: its next value at once, with no lock held
                 # to commit. The counter's row was held from a write's first new id
@@ -730,15 +923,13 @@ def _run_once(engine: Engine, tenant_id: str, user_id: str, name: str, args: Any
                 # again -- leaves a gap, which replay does not mind (it gives each
                 # call its recorded ids), and a fresh tenant's one conversation
                 # still names what it makes as the benchmark's episode does.
-                n = conn.execute(text("SELECT nextval(CAST(:seq AS regclass))"),
-                                 {"seq": id_sequence(tenant_id)}).scalar_one()
+                n = conn.execute(_Q_NEXTVAL, {"seq": id_sequence(tenant_id)}).scalar_one()
             return f"{prefix}{int(n):04d}"
 
         db = StoreDatabase(conn, tenant_id, tables, allocate, cache)
         db.verified = set(verified)
         db.action_log = list(prior_actions)
         n_before = len(db.action_log)
-        before = copy.deepcopy(db.tables)
         refusal = money_guard(db, name, args) if strict_money else None
         if refusal is not None:
             db.log(name, _logged(name, args), ok=False, error=refusal)
@@ -766,17 +957,14 @@ def _run_once(engine: Engine, tenant_id: str, user_id: str, name: str, args: Any
                     # foresaw) is undone alone, and the call is still recorded,
                     # as refused, in this transaction.
                     with conn.begin_nested():
-                        seq = int(conn.execute(update(c).where(c.c.tenant_id == tenant_id,
-                                                               c.c.user_id == user_id)
-                                               .values(write_seq=c.c.write_seq + 1)
-                                               .returning(c.c.write_seq)).scalar_one())
+                        seq = int(conn.execute(_Q_BUMP, who).scalar_one())
                         apply_changes(conn, tenant_id, changes, versions, seq)
                         # The transactional outbox: the ticket a human picks up is
                         # written with the escalation, or not at all.
                         for row in changes["insert"].get("escalations", {}).values():
-                            conn.execute(insert(S.outbox).values(
-                                tenant_id=tenant_id, topic="escalation.created",
-                                payload={"user_id": user_id, **row}))
+                            conn.execute(_Q_OUTBOX, {"tenant_id": tenant_id,
+                                                     "topic": "escalation.created",
+                                                     "payload": {"user_id": user_id, **row}})
                 except (IntegrityError, DataError) as e:
                     seq = None
                     refusal = (f"refused by the platform: the store does not accept this "
@@ -820,12 +1008,10 @@ def conversation_actions(conn: Connection, conversation_id: str,
                          before_call: int | None = None) -> list[Action]:
     """The conversation's action log, as the benchmark's Database keeps it;
     with `before_call`, as it stood when that call ran."""
-    a = S.actions
-    q = select(a).where(a.c.conversation_id == conversation_id)
-    if before_call is not None:
-        q = q.where(a.c.call_seq < before_call)
+    rows = (conn.execute(_Q_ACTIONS, {"cid": conversation_id}) if before_call is None else
+            conn.execute(_Q_ACTIONS_BEFORE, {"cid": conversation_id, "before": before_call}))
     return [Action(tool=r.tool, args=dict(r.args or {}), ok=bool(r.ok), error=r.error,
-                   denied=bool(r.denied)) for r in conn.execute(q.order_by(a.c.seq))]
+                   denied=bool(r.denied)) for r in rows]
 
 
 _KEY = re.compile(r"[^A-Za-z0-9_.:-]")

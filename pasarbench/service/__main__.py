@@ -8,6 +8,8 @@
     python -m pasarbench.service replay acme             re-run every tool call; exit 1 on a mismatch
     python -m pasarbench.service usage acme [--group-by model|day|conversation]
     python -m pasarbench.service gc                      forget expired Idempotency-Keys
+    python -m pasarbench.service profile p.json [--turns N] [--folded p.folded]
+                                 what a profile (GET /v1/admin/profile) adds up to
 
 The database is PASAR_DATABASE_URL (config.py); `--database-url` overrides it.
 """
@@ -63,7 +65,20 @@ def main(argv: list[str] | None = None) -> int:
     u.add_argument("tenant_id")
     u.add_argument("--group-by", default="model", choices=("model", "day", "conversation"))
     sub.add_parser("gc", help="forget expired Idempotency-Keys")
+    pr = sub.add_parser("profile", help="what a profile (GET /v1/admin/profile) adds up to")
+    pr.add_argument("files", nargs="+", help="profiles, as the endpoint answers them (JSON)")
+    pr.add_argument("--turns", type=int, help="the turns served while it ran: CPU per turn")
+    pr.add_argument("--folded", help="write its stacks here, for a flame graph")
+    pr.add_argument("--top", type=int, default=25)
     args = ap.parse_args(argv)
+
+    if args.cmd == "profile":
+        from .profiling import folded, merge, summarize
+        profile = merge([json.loads(Path(f).read_text()) for f in args.files])
+        print(summarize(profile, args.turns, args.top))
+        if args.folded:
+            Path(args.folded).write_text(folded(profile))
+        return 0
 
     settings = Settings.from_env()
     url = args.database_url or settings.database_url

@@ -398,12 +398,21 @@ class MockAgent:
                             else "I can't find any orders on your account.")
         return " ".join(said) or "How can I help you today?"
 
-    @staticmethod
-    def _usage(messages: list[Message], tools: list[dict[str, Any]], resp: ModelResponse
+    _schema_tokens: dict[int, tuple[list, int]] = {}
+
+    @classmethod
+    def _usage(cls, messages: list[Message], tools: list[dict[str, Any]], resp: ModelResponse
                ) -> ModelResponse:
         """Tokens as a provider would count them, estimated: the whole context
-        each call, the part before the last reply served from cache."""
-        schema = approx_tokens(json.dumps(tools))
+        each call, the part before the last reply served from cache. The tool
+        schemas' share is counted once per list of them (a turn passes the
+        same list every call), the list kept so its id stays its own."""
+        got = cls._schema_tokens.get(id(tools))
+        if got is None or got[0] is not tools:
+            got = cls._schema_tokens[id(tools)] = (tools, approx_tokens(json.dumps(tools)))
+            if len(cls._schema_tokens) > 64:
+                cls._schema_tokens.pop(next(iter(cls._schema_tokens)))
+        schema = got[1]
         per = [approx_tokens(m.content) + 4 for m in messages]
         last_reply = max((i for i, m in enumerate(messages) if m.role == "assistant"), default=0)
         prompt = schema + sum(per)

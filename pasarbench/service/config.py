@@ -32,6 +32,9 @@ registry (models.py), each from its own provider's variables only.
                                   turn frees its conversation within one
     PASAR_IDEMPOTENCY_HOURS       24
     PASAR_POOL_SIZE / PASAR_MAX_OVERFLOW  10 / 20 database connections
+    PASAR_SLICE_CACHE             2000 customers' slices kept, per process, by the write
+                                  each was read at (store.Slices); 0 where another
+                                  system writes the world tables
     PASAR_MOCK_LATENCY_MS         0: the mock model's simulated latency
     PASAR_LOG_LEVEL               INFO
 """
@@ -79,6 +82,7 @@ class Settings:
     idempotency_hours: float = 24.0
     pool_size: int = 10
     max_overflow: int = 20
+    slice_cache: int = 2000
     mock_latency_ms: int = 0
     log_level: str = "INFO"
     extra: dict[str, str] = field(default_factory=dict)
@@ -113,6 +117,7 @@ class Settings:
             idempotency_hours=float(_env("PASAR_IDEMPOTENCY_HOURS", "24")),
             pool_size=int(_env("PASAR_POOL_SIZE", "10")),
             max_overflow=int(_env("PASAR_MAX_OVERFLOW", "20")),
+            slice_cache=int(_env("PASAR_SLICE_CACHE", "2000")),
             mock_latency_ms=int(_env("PASAR_MOCK_LATENCY_MS", "0")),
             log_level=_env("PASAR_LOG_LEVEL", "INFO").upper(),
         )
