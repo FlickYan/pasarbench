@@ -2,7 +2,9 @@
 #
 #   docker compose -f deploy/compose.yaml up --build
 #   docker compose -f deploy/compose.yaml run --rm api \
-#       python -m pasarbench.service create-tenant acme --name "Acme Mart"
+#       create-tenant acme --name "Acme Mart"
+#
+# The image's entrypoint is the service's CLI, so a command is its arguments.
 #
 # This file lives in deploy/ on purpose: Compose fills ${...} from a .env in
 # the directory of its file, and the repo root's .env holds the benchmark's API
@@ -33,7 +35,7 @@ services:
       context: ..
       dockerfile: Dockerfile
     image: pasarbench-service:local
-    command: ["python", "-m", "pasarbench.service", "migrate"]
+    command: ["migrate"]
     environment:
       <<: *database
     depends_on:

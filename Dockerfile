@@ -2,6 +2,9 @@
 #
 #   docker build -t pasarbench-service .
 #   docker compose -f deploy/compose.yaml up --build     PostgreSQL, the migration, the API
+#   docker run --rm -v pasar-data:/app/data pasarbench-service migrate
+#       the entrypoint is the service's CLI (docs/SERVICE.md); with no command, it serves
+#   scripts/smoke_image.sh pasarbench-service            run it as a user would, and check
 #
 # One stage: every dependency ships as a wheel for this Python, so no compiler.
 FROM python:3.12-slim
@@ -27,4 +30,5 @@ ENV PASAR_DATABASE_URL=sqlite:////app/data/pasar.db
 EXPOSE 8000
 HEALTHCHECK --interval=10s --timeout=3s --start-period=15s --retries=3 \
     CMD ["python", "-c", "import urllib.request as u; u.urlopen('http://127.0.0.1:8000/healthz', timeout=2)"]
-CMD ["python", "-m", "pasarbench.service", "serve", "--host", "0.0.0.0", "--port", "8000"]
+ENTRYPOINT ["python", "-m", "pasarbench.service"]
+CMD ["serve", "--host", "0.0.0.0", "--port", "8000"]
