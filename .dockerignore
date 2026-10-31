@@ -1,0 +1,24 @@
+# Never in the build context: keys, runs, data. The image copies only the
+# package and alembic.ini (Dockerfile); this keeps the rest from even being
+# sent to the builder.
+.env
+.env.*
+*.env
+**/.env
+.git
+.github
+traces/
+data/
+logs/
+checkpoints/
+hf-dataset*/
+**/__pycache__
+**/*.py[cod]
+*.tar
+*.tar.gz
+*.log
+models_check.txt
+tests/
+scripts/
+docs/
+deploy/

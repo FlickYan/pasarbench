@@ -26,3 +26,34 @@ jobs:
         run: bash run_tests.sh
         env:
           PYTHON: python
+
+  # The agent service (pasarbench/service): its own dependencies, a real
+  # PostgreSQL beside SQLite, and the image built from the Dockerfile.
+  service:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: pasar_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d pasar_test"
+          --health-interval 5s --health-timeout 5s --health-retries 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: the service's dependencies
+        run: pip install -r requirements-service.txt
+      - name: service tests, on SQLite and on PostgreSQL
+        run: python -m tests.test_service
+        env:
+          # a database the tests may wipe: they drop and recreate its schema
+          PASAR_TEST_POSTGRES_URL: postgresql+psycopg://postgres:postgres@localhost:5432/pasar_test
+      - name: the image builds
+        run: docker build -t pasarbench-service:ci .

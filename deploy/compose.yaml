@@ -1,0 +1,62 @@
+# PostgreSQL 16, the schema migrated, the API on http://127.0.0.1:8000.
+#
+#   docker compose -f deploy/compose.yaml up --build
+#   docker compose -f deploy/compose.yaml run --rm api \
+#       python -m pasarbench.service create-tenant acme --name "Acme Mart"
+#
+# This file lives in deploy/ on purpose: Compose fills ${...} from a .env in
+# the directory of its file, and the repo root's .env holds the benchmark's API
+# keys. Here there is none, so a key reaches the service only when the shell
+# that runs compose has it set, and only the variables named below.
+name: pasarbench
+
+x-database: &database
+  PASAR_DATABASE_URL: postgresql+psycopg://pasar:${PASAR_DB_PASSWORD:-pasar-local-only}@db:5432/pasar
+
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: pasar
+      POSTGRES_PASSWORD: ${PASAR_DB_PASSWORD:-pasar-local-only}
+      POSTGRES_DB: pasar
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U pasar -d pasar"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  migrate:
+    build: &build
+      context: ..
+      dockerfile: Dockerfile
+    image: pasarbench-service:local
+    command: ["python", "-m", "pasarbench.service", "migrate"]
+    environment:
+      <<: *database
+    depends_on:
+      db:
+        condition: service_healthy
+
+  api:
+    build: *build              # the same image: built once, the second a cache hit
+    image: pasarbench-service:local
+    environment:
+      <<: *database
+      PASAR_ADMIN_TOKEN: ${PASAR_ADMIN_TOKEN:-}
+      PASAR_MODELS: ${PASAR_MODELS:-mock,scripted:*}
+      PASAR_DEFAULT_MODEL: ${PASAR_DEFAULT_MODEL:-mock}
+      PASAR_MOCK_LATENCY_MS: ${PASAR_MOCK_LATENCY_MS:-0}
+      # Real models: each provider's key, from the shell, to that provider only.
+      DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
+      OPENCODE_API_KEY: ${OPENCODE_API_KEY:-}
+    ports:
+      - "127.0.0.1:8000:8000"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+
+volumes:
+  pgdata:

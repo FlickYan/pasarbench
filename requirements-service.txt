@@ -1,0 +1,20 @@
+# The agent service (pasarbench/service, docs/SERVICE.md) and its tests. The
+# benchmark itself needs none of this: it stays dependency-free.
+#
+#   pip install -r requirements-service.txt
+#
+# Direct dependencies, pinned to the versions the service is tested with.
+fastapi==0.162.0
+starlette==1.10.0
+pydantic==2.14.2
+anyio==4.15.1
+uvicorn==0.54.0
+uvloop==0.23.0; sys_platform != "win32" and platform_python_implementation == "CPython"
+httptools==0.9.0
+sqlalchemy==2.1.6
+alembic==1.20.1
+psycopg==3.3.6
+psycopg-binary==3.3.6
+prometheus-client==0.26.0
+# the tests' client, and scripts/load_test.py
+httpx==0.28.1

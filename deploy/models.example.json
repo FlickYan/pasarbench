@@ -1,0 +1,21 @@
+{
+  "_comment": "More models for PASAR_MODELS_FILE (pasarbench/service/models.py). Each is charged at the price-book row (provider, price_model or model), which must exist. The settings are the ones RUNBOOK 1s and scripts/add_model.py try first for each model; a provider that refuses one says so on the first turn. Allow a model by name in PASAR_MODELS.",
+  "models": [
+    {"name": "go:kimi-k2.6", "provider": "opencode-go", "model": "kimi-k2.6", "api": "chat",
+     "base_url": "https://opencode.ai/inference/go/v1",
+     "extra_body": {"thinking": {"type": "disabled"}}, "max_tokens": 2048},
+    {"name": "go:claude-haiku-5-5", "provider": "opencode-go", "model": "claude-haiku-5-5",
+     "api": "messages", "base_url": "https://opencode.ai/inference/go/v1", "max_tokens": 2048},
+    {"name": "go:minimax-m3", "provider": "opencode-go", "model": "minimax-m3", "api": "messages",
+     "base_url": "https://opencode.ai/inference/go/v1", "max_tokens": 4096},
+    {"name": "glm-5.3-flash", "provider": "zai", "model": "glm-5.3-flash", "api": "chat",
+     "base_url": "https://api.z.ai/api/paas/v4", "extra_body": {"reasoning_effort": "low"},
+     "max_tokens": 4096},
+    {"name": "mimo-v2.6-flash", "provider": "xiaomi", "model": "mimo-v2.6-flash", "api": "chat",
+     "base_url": "https://api.xiaomimimo.com/v1",
+     "extra_body": {"thinking": {"type": "disabled"}}, "max_tokens": 2048},
+    {"name": "grok-4.3", "provider": "xai", "model": "grok-4.3", "api": "chat",
+     "base_url": "https://api.x.ai/v1", "extra_body": {"reasoning_effort": "none"},
+     "max_tokens": 2048}
+  ]
+}
