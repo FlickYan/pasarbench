@@ -320,6 +320,32 @@ def test_migrations(kind: str):
                                  metadata)
     check(f"[{kind}] an empty database migrated to head is exactly schema.py", drift == [],
           drift[:3])
+    if kind == "postgres":
+        # 0002 on a database that already has tenants (v79): each gets its
+        # sequence, starting after its counter; down again, the counter takes
+        # the sequence's last value back.
+        from sqlalchemy import text
+        from pasarbench.service.store import id_sequence
+        seq = {"s": id_sequence("old-tenant")}
+        command.downgrade(cfg, "0001")
+        with engine.begin() as conn:
+            conn.execute(text("INSERT INTO tenants (tenant_id, name, world, world_digest) "
+                              "VALUES ('old-tenant', 'Old', 'demo', 'x')"))
+            conn.execute(text("INSERT INTO id_counters (tenant_id, value) "
+                              "VALUES ('old-tenant', 7)"))
+        command.upgrade(cfg, "head")
+        with engine.begin() as conn:
+            first = conn.execute(text("SELECT nextval(CAST(:s AS regclass))"), seq).scalar()
+        command.downgrade(cfg, "0001")
+        with engine.begin() as conn:
+            kept = conn.execute(text("SELECT value FROM id_counters "
+                                     "WHERE tenant_id = 'old-tenant'")).scalar()
+            gone = conn.execute(text("SELECT to_regclass(:s)"), seq).scalar()
+            conn.execute(text("DELETE FROM tenants WHERE tenant_id = 'old-tenant'"))
+        command.upgrade(cfg, "head")
+        check("[postgres] migration 0002: a tenant there already gets its sequence after its "
+              "counter (7, then 8), and down again its counter takes the last value back",
+              (first, kept, gone) == (8, 8, None), (first, kept, gone))
     command.downgrade(cfg, "base")
     with engine.connect() as conn:
         left = set(inspect(conn).get_table_names()) - {"alembic_version"}
@@ -612,6 +638,62 @@ def test_concurrency(kind: str):
           f"both changes kept", attempts[False] == (2, True, "cancelled", True, 3), attempts)
     check(f"[{kind}] with the lock it waits instead, and runs once",
           attempts[True] == (1, True, "cancelled", True, 3), attempts)
+    engine.dispose()
+
+
+def test_ids(kind: str):
+    """A new row's id, from the tenant's sequence (PostgreSQL, v79): taken with
+    no lock held to commit, so no write waits for another customer's."""
+    print(f"ids [{kind}]")
+    from pasarbench.db import Database
+    from pasarbench.service.store import run_tool, seed_tenant
+
+    engine, _ = database(kind, "ids")
+    seed_tenant(engine, "ids", "ids", "synthetic:3")
+    t = Database.fresh().tables
+    owners = [(u, next(o for o, x in t["orders"].items() if x["user_id"] == u))
+              for u in t["users"] if any(x["user_id"] == u for x in t["orders"].values())]
+    people = [(f"{u}-C{i:04d}", f"{o}-C{i:04d}") for i in (1, 2, 3) for u, o in owners]
+
+    def escalate(user, order, hooks=None):
+        return run_tool(engine, tenant_id="ids", user_id=user, name="escalate_to_human",
+                        args={"order_id": order, "category": "customer_request",
+                              "reason": "test"},
+                        verified=[user], prior_actions=[], hooks=hooks)
+
+    took, go, box = threading.Event(), threading.Event(), {}
+    held = threading.Thread(target=lambda: box.update(a=escalate(
+        *people[0], hooks={"before_commit": lambda: (took.set(), go.wait(10))})))
+    held.start()
+    took.wait(5)
+    t0 = time.monotonic()
+    other = escalate(*people[1])
+    waited = time.monotonic() - t0
+    go.set()
+    held.join()
+    a = box["a"]
+    check(f"[{kind}] a write that makes a row does not wait for another customer's write "
+          f"still open in the tenant ({waited:.2f}s; the counter row held it to the other's "
+          f"commit, 10s here)", waited < 2.0 and a.result["ok"] and other.result["ok"]
+          and a.allocated != other.allocated, (waited, a.allocated, other.allocated))
+
+    n = len(people) - 2
+    gate = threading.Barrier(n)
+    outs: list = [None] * n
+
+    def at_once(i):
+        gate.wait()
+        outs[i] = escalate(*people[2 + i])
+    threads = [threading.Thread(target=at_once, args=(i,)) for i in range(n)]
+    for th in threads:
+        th.start()
+    for th in threads:
+        th.join()
+    ids = sorted(x for o in outs for x in o.allocated)
+    check(f"[{kind}] {n} customers' writes at once: each its own id, none lost or "
+          f"repeated -- ESC0003 to ESC{n + 2:04d}, after the two above",
+          all(o.result["ok"] for o in outs)
+          and ids == [f"ESC{i:04d}" for i in range(3, n + 3)], ids)
     engine.dispose()
 
 
@@ -1494,6 +1576,7 @@ def main() -> int:
         if PG:
             test_migrations("postgres")
             test_concurrency("postgres")
+            test_ids("postgres")
             test_bad_arguments("postgres")
             test_nul("postgres")
             test_order("postgres")
