@@ -51,7 +51,7 @@ PostgreSQL. Each is fixed and pinned by a test ([WHAT_FAILED](WHAT_FAILED.md)
 
 ```
 pip install -r requirements-service.txt      # the benchmark itself still needs nothing
-python -m tests.test_service                 # 100 checks on SQLite; PASAR_TEST_POSTGRES_URL, 27 more
+python -m tests.test_service                 # 100 checks on SQLite; PASAR_TEST_POSTGRES_URL, 30 more
 python scripts/service_sweep.py --self-test  # the real-model kit on a stand-in provider: no key
 ```
 
@@ -195,9 +195,14 @@ fact.
   Singapore (the 11.11 sale), as the benchmark's; the prompt says so and the
   conversation records it (`provenance.world_clock`). The service's own times
   are UTC.
-- **Ids as the benchmark makes them.** One counter per tenant, so a
-  conversation on a fresh tenant names what it creates exactly as the
-  benchmark's episode does (`RET0001`, `REF0002`); each call's ids are kept.
+- **Ids as the benchmark makes them.** One sequence per tenant (on SQLite, a
+  counter row), so a conversation on a fresh tenant names what it creates
+  exactly as the benchmark's episode does (`RET0001`, `REF0002`); each call's
+  ids are kept. A sequence gives its next value without holding anything to
+  commit (v79): the counter row it replaced made every write of a tenant that
+  created a row wait for every other (Measured, below). What a sequence gives
+  is never taken back, so a call rolled back and run again leaves a gap, which
+  replay does not mind: it gives each call the ids it was given.
 - **Provenance.** A conversation records the model and its settings, digests of
   its system prompt, the policy and the tool schemas it was shown, the tools'
   checks version and the platform's money guard — fixed when it opens.
@@ -243,7 +248,10 @@ table below); a tampered row found.
   lock is what stops two inserts that each read the same total (two refunds).
   The tests race both on PostgreSQL: without the lock the version check still
   turns a stale cancellation into a retry that keeps both changes, and two
-  refunds both pass.
+  refunds both pass. Since v79 that holds for a new row's id too: it comes
+  from the tenant's sequence, taken without a lock, where the counter row it
+  replaced was one lock all of a tenant's creating writes shared (Measured;
+  `test_ids` holds one customer's write open and times another's).
 - **Reads take no lock** and see one snapshot (REPEATABLE READ).
 - **Backpressure, not queues.** Per process: at most `PASAR_MAX_CONCURRENT_TURNS`
   turns (else 503 at once, Retry-After); per provider, at most
@@ -349,7 +357,7 @@ runs it:
 | parity with the benchmark | all 313 reference solutions through the HTTP API; verdict, final world and action log against the benchmark's own episode, and the system prompt the model is shown, byte for byte; on SQLite and PostgreSQL |
 | the benchmark's episodes through the API | the episode driver behind `scripts/service_sweep.py`: each traced step for step as the benchmark traces the same episode (calls, arguments, the answers' digests, replies, context length), re-scored to the same verdict; the whole kit on a stand-in provider with no key (`--self-test`, in CI): the model's real HTTP path, the customer's, the ledger, replay, and no key in the server's process |
 | replay | a quarter of those tenants replayed; a tampered row found; every load run replayed |
-| concurrency | eight refunds raced; the lock removed and the double refund shown; a stale cancellation retried by the version check (PostgreSQL) |
+| concurrency | eight refunds raced; the lock removed and the double refund shown; a stale cancellation retried by the version check; one customer's write held open while another's takes a new id without waiting (10 s with v78's counter row), and sixteen at once each get their own, none lost or repeated (PostgreSQL) |
 | isolation | another customer's order invisible, a credit naming it refused, two tenants' rows apart |
 | protocol | idempotency (replay, mismatch, in progress), the lease (409), admission (503), rate limit (429), SSE order and recovery, problem details, auth and revocation, pagination |
 | failure | a provider down: retries, fallback reply, breaker open, nothing charged; a crash mid-turn: the lease holds, then the unanswered call is answered; a lease lost mid-turn: nothing more written, the answer kept under the key |
@@ -357,7 +365,7 @@ runs it:
 | long turns | a model call twice the lease: the heartbeat keeps the lease and the key, a retry and another message are both turned away, and the retry then gets the answer (the test fails with the heartbeat off); a stream on a server that ran no startup |
 | order and logs | a customer's rows in the benchmark's order after updates, on both databases; an exception logged without its message |
 | money | prices exact to the microdollar, costs additive, effective dates, budgets for a conversation and a tenant's day |
-| schema | migration to head equals `schema.py`; down and up again |
+| schema | migration to head equals `schema.py`; down and up again; 0002 on a database that has tenants: each gets its sequence after its counter, and down again the counter takes the last value back |
 | the API's shape | the route list pinned; every `/v1` operation documents its problem responses |
 | the image | on every push, run as a user runs it (`scripts/smoke_image.sh`): its CLI migrates and makes a tenant; its HEALTHCHECK says healthy; it runs as a user other than root and holds no `.env`; over real HTTP a turn, the turn retried under its key (the same bytes, no second turn), a stream, the audit log (`scripts/smoke_api.py`); every call replayed; stopped by SIGTERM. Published only after it passes |
 
@@ -471,7 +479,8 @@ What it says:
 4. **Contention where it was designed to be.** Sixteen clients on one customer
    write one at a time (write p99 3.5 s), while their reads do not wait; the
    tenant's single id counter is visible but not yet the limit (the same load
-   over 16 tenants: write p99 575 → 305 ms, +6% turns).
+   over 16 tenants: write p99 575 → 305 ms, +6% turns) — v79 removes it
+   (below).
 5. **With a model's latency, the provider gate is the limit, as configured.**
    16 calls in flight at 400 ms is 40 calls a second, ~13 turns: measured 12.2
    at 32 clients and 12.1 at 64, the extra clients waiting at the gate (p50
@@ -480,7 +489,48 @@ What it says:
    shares shows: a write holds the tenant's id counter from its first new id to
    its commit, and with 64 threads on two cores that hold stretches — writes
    p50 1,207 ms, reads (no lock) 145 ms, 64 clients on 64 different customers.
+   v79 removes that lock (below): writes 346 ms at the median.
 6. **Under all of it, every tool call replayed identically.**
+
+### Ids without the tenant's lock (v79)
+
+The table above was measured with a counter row per tenant: a write that made
+a row took the tenant's next id with an `UPDATE` in its own transaction, and
+held that row's lock to its commit — so every write of a tenant that created
+a row, any customer's, waited for every other. Since v79 PostgreSQL gives each
+tenant a sequence, which hands out its next value at once and holds nothing
+(`store.id_sequence`; migration 0002 makes one for each tenant already there).
+Measured on the same two vCPUs, 2026-10-31: the old code and the new
+alternating, three runs of each (median, and the range):
+
+| PostgreSQL, one process | ids from | turns/s | write tool call p50 / p99 (ms) | read p50 (ms) | turn p95 / p99 (ms) |
+|---|---|---|---|---|---|
+| 1 tenant, 16 clients | the counter row | 19.3 (17.7–19.6) | 217 / 507 | 112 | 1,128 / 1,434 |
+| | a sequence | 18.7 (17.9–19.1) | 170 / 329 | 120 | 1,119 / 1,271 |
+| 16 tenants, 16 clients (one run each) | the counter row | 18.6 | 173 / 350 | 119 | 1,168 / 1,380 |
+| | a sequence | 19.7 | 158 / 352 | 116 | 1,112 / 1,251 |
+| 1 tenant, 64 clients, 400 ms model, gate 64 | the counter row | 15.0 (14.9–15.5) | 1,446 / 5,765 | 153 | 6,513 / 8,120 |
+| | a sequence | 16.4 (16.3–17.6) | 346 / 672 | 247 | 4,352 / 4,722 |
+
+What it says:
+
+1. **The counter was the cost.** One tenant now writes as sixteen did (170 /
+   329 ms, against sixteen tenants' 158 / 352) where it paid 217 / 507; sixteen
+   tenants, each of which had a counter of its own already, did not change.
+2. **Where it showed most, it is gone.** At 64 clients on 64 customers a write
+   waited 1,446 ms at the median and now takes 346; its p99 went from 5.8 s to
+   0.7 s; a turn's p99 from 8.1 s to 4.7 s; and the process does 9% more turns,
+   the two ranges apart.
+3. **The process is CPU-bound now, everywhere.** Reads, which never waited for
+   the counter, got slower at 64 clients (153 → 247 ms): the writes no longer
+   sit idle on a lock, so more of them share the two cores at once; at 16
+   clients the throughput is within noise. The next limit is the interpreter
+   and the cores: a second process (+41%, above), and the model calls off the
+   worker threads (Not built yet, 1).
+4. **Nothing else moved.** Every run replayed identically (3,791 to 3,808 calls
+   a configuration), no conflict was retried, every request was answered 200,
+   and the parity test's 313 tasks on PostgreSQL still name every row as the
+   benchmark does.
 
 ### With a real model
 
@@ -615,29 +665,29 @@ no such variable.
 
 ## Not built yet, in the order they matter
 
-1. **Ids without a tenant-wide lock.** A PostgreSQL sequence per tenant (no row
-   lock; gaps on rollback, which replay does not mind — it gives each call its
-   recorded ids). Measured above as the next limit once the gate is widened.
-2. **Model calls off the worker threads.** An async client for the providers
+Built since this list was first written: ids without a tenant-wide lock
+(v79, above).
+
+1. **Model calls off the worker threads.** An async client for the providers
    would let one process hold hundreds of waiting turns instead of
    `PASAR_THREADS`; the tools and their transactions stay synchronous.
-3. **Limits shared across processes.** The token bucket, the provider gate and
+2. **Limits shared across processes.** The token bucket, the provider gate and
    the breaker are per process (N processes allow N times the rate); Redis (or
    PostgreSQL advisory locks) for one limit per deployment.
-4. **Tokens streamed from the provider.** Events are per step today; the
+3. **Tokens streamed from the provider.** Events are per step today; the
    backends do not stream.
-5. **The customer's own identity.** The storefront asserts which customer a
+4. **The customer's own identity.** The storefront asserts which customer a
    conversation is for; the agent still verifies her digits per the policy. A
    signed customer token from the storefront would bind the two.
-6. **Retention and erasure.** Conversations hold what customers said; a
+5. **Retention and erasure.** Conversations hold what customers said; a
    per-tenant retention period and an erase-a-customer path (the ledger and
    audit rows keep ids, not text).
-7. **An outbox relay** that delivers tickets to a helpdesk with retries, rather
+6. **An outbox relay** that delivers tickets to a helpdesk with retries, rather
    than an endpoint a relay polls.
-8. **Prompt caching per conversation on providers that support a key**, and the
+7. **Prompt caching per conversation on providers that support a key**, and the
    policy's preload/JIT choice per tenant — both measured in the benchmark,
    neither wired here.
-9. **Prices by the hour.** DeepSeek's page has a peak and an off-peak rate
+8. **Prices by the hour.** DeepSeek's page has a peak and an off-peak rate
    (RUNBOOK 1y ran at the second); the price book holds one rate a model and a
    date, the peak, so a conversation run off-peak is charged above its bill.
    1z's figures are at the peak rate, whatever hour they ran in.
