@@ -64,9 +64,21 @@ python -m pasarbench.service serve --port 8000          # http://127.0.0.1:8000/
 
 ```bash
 docker compose -f deploy/compose.yaml up --build        # PostgreSQL 16, migrate, the API
-docker compose -f deploy/compose.yaml run --rm api \
-    python -m pasarbench.service create-tenant acme --name "Acme Mart"
+docker compose -f deploy/compose.yaml run --rm api create-tenant acme --name "Acme Mart"
 ```
+
+**The published image** (Docker Hub, once CI publishes it:
+[below](#the-image-on-docker-hub)). Its entrypoint is the CLI above; with no
+command, it serves. SQLite in a volume, to try it:
+
+```bash
+IMAGE=<Docker Hub user>/pasarbench-service
+docker run --rm -v pasar-data:/app/data $IMAGE migrate
+docker run --rm -v pasar-data:/app/data $IMAGE create-tenant acme --name "Acme Mart"
+docker run -d --name pasar -v pasar-data:/app/data -p 127.0.0.1:8000:8000 $IMAGE
+```
+
+For PostgreSQL, give each `docker run` `-e PASAR_DATABASE_URL=postgresql+psycopg://...`.
 
 The compose file lives in `deploy/` on purpose: Compose fills `${...}` from a
 `.env` beside its file, and the repo root's `.env` holds the benchmark's API
@@ -318,7 +330,8 @@ table below); a tampered row found.
 
 `tests/test_service.py`, in the repo's own style, run by `run_tests.sh` when
 the service's dependencies are installed and by its own CI job against a real
-PostgreSQL (`.github/workflows/tests.yml`), which also builds the image:
+PostgreSQL (`.github/workflows/tests.yml`), which also builds the image and
+runs it:
 
 | what | how |
 |---|---|
@@ -334,9 +347,11 @@ PostgreSQL (`.github/workflows/tests.yml`), which also builds the image:
 | money | prices exact to the microdollar, costs additive, effective dates, budgets for a conversation and a tenant's day |
 | schema | migration to head equals `schema.py`; down and up again |
 | the API's shape | the route list pinned; every `/v1` operation documents its problem responses |
+| the image | on every push, run as a user runs it (`scripts/smoke_image.sh`): its CLI migrates and makes a tenant; its HEALTHCHECK says healthy; it runs as a user other than root and holds no `.env`; over real HTTP a turn, the turn retried under its key (the same bytes, no second turn), a stream, the audit log (`scripts/smoke_api.py`); every call replayed; stopped by SIGTERM. Published only after it passes |
 
 `scripts/load_test.py` measures a real server (uvicorn in its own process,
-real HTTP) and replays what it made.
+real HTTP) and replays what it made. `scripts/smoke_api.py` checks any running
+server, a deployed one included, on a tenant made for it.
 
 ### 6. Cost accounting
 
@@ -392,8 +407,8 @@ joined to.
 | database | PostgreSQL 16; SQLite 3 (WAL) | row locks, snapshot reads and JSONB; SQLite for a laptop and the tests |
 | migrations | Alembic | revisions generated from the schema, checked against it |
 | metrics | prometheus-client | the counters an operator alerts on, one registry per app |
-| packaging | Docker (python:3.12-slim, non-root), Compose | one image, one command to PostgreSQL + migration + API |
-| CI | GitHub Actions | the benchmark on 3.10–3.13 with no dependencies; the service on 3.12 against a PostgreSQL service container; the image built |
+| packaging | Docker (python:3.12-slim, non-root, the CLI as entrypoint), Compose, Docker Hub | one image, one command to PostgreSQL + migration + API; `docker run` from the registry for amd64 and arm64 |
+| CI | GitHub Actions | the benchmark on 3.10–3.13 with no dependencies; the service on 3.12 against a PostgreSQL service container; the image built and run; published when all of it passes |
 
 ---
 
@@ -478,6 +493,32 @@ daily for expired Idempotency-Keys; `replay <tenant>` after a deploy that
 touches the tools or the policy, and after anything touches the database by
 hand; the outbox relay acknowledges what it delivered. Back up PostgreSQL as
 usual; the world, the conversations and the ledger are all in it.
+
+### The image on Docker Hub
+
+CI publishes the image once every job has passed (`.github/workflows/tests.yml`,
+job `publish`): from a push to `main` as `latest` and `sha-<commit>`, and from
+a version tag `v1.2.3` as `1.2.3` and `1.2`. Each tag holds linux/amd64 and
+linux/arm64 (Apple silicon, Graviton), with an SBOM and a provenance
+attestation. The amd64 image passes the smoke test first; if it fails, nothing
+is pushed. The job is skipped until it is turned on, once:
+
+1. **A token.** Docker Hub → Account settings → Personal access tokens →
+   Generate new token, with access **Read & Write**, the least that can push.
+   The first push creates the repository `pasarbench-service`, public or
+   private as the account's default privacy says (My Hub → Settings →
+   Default privacy).
+2. **The repository's settings.** GitHub → the repository → Settings →
+   Secrets and variables → Actions: a *variable* `DOCKERHUB_USERNAME` (the
+   Docker Hub user name; it names the image, so it is not a secret) and a
+   *secret* `DOCKERHUB_TOKEN` (the token; the one step that logs in is all
+   that sees it). With the GitHub CLI: `gh variable set DOCKERHUB_USERNAME
+   --body <name>`, then `gh secret set DOCKERHUB_TOKEN`, which asks for the
+   token rather than taking it on the command line.
+
+The Docker actions in that job are pinned to their commits, the version beside
+each pin. A pull request never publishes, and neither does a fork, which has
+no such variable.
 
 ---
 
