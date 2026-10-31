@@ -2240,6 +2240,244 @@ cap.
 Test it where it matters: the test here would have been one reply of nothing
 but reasoning.
 
+## 56. A retried request got back a different body than the first one did
+
+**What happened.** The service (v75, docs/SERVICE.md) answers a request
+carrying an Idempotency-Key once and keeps the answer: a retry with the same
+key gets it back instead of running again — one customer message, one refund,
+however often a flaky network makes the storefront send it. The test sent one
+message twice with one key and compared the two bodies. They differed: the
+first had `"error": null`, the retry had no `error` at all.
+
+**Why.** The handler returned a dict, and FastAPI serialized it through the
+response model, which writes every field, defaults included; the key kept the
+dict itself, from before that. Each was right on its own, and a client that
+signs, hashes or diffs a body would have seen two answers to one request.
+
+**Fix.** The answer is rendered once and the key keeps those bytes; a retry
+gets them back, and a retried stream gets the turn's last event. The first fix
+kept the response model's dump in a JSON column, and the review (#59–#64) found
+it still differed on PostgreSQL, whose JSONB reorders keys: the bytes are now
+kept as text, and the tests compare bytes, on both databases.
+
+**Lesson.** "The same answer" has to be checked at the boundary that sends it.
+What a function returned is not what the client received.
+
+## 57. The load test's slow-model runs measured the provider gate, not the service
+
+**What happened.** With the mock model at 400 ms a call, 32 clients gave 12.2
+turns a second and 64 clients 12.0, with the latency doubled. Read as it stood,
+that is the service topping out at 12 turns a second — half what the same
+server did with no model latency at all.
+
+**Why.** Every model call goes through its provider's gate (resilience.py),
+16 calls in flight per process by default. 16 slots at 400 ms is 40 calls a
+second; a turn of that workload is three or four calls: 12–13 turns. The extra
+clients were waiting at the gate, as it is built to make them, rather than
+overrunning a provider. The number was the setting's, not the service's.
+
+**Fix.** `scripts/load_test.py --provider-concurrency` sets the gate and the
+result records it; SERVICE.md reads the gate's arithmetic first. With 64 slots
+the same run gave 17–18 turns a second (two runs), CPU-bound on its two cores —
+and showed the next limit, the tenant's id counter.
+
+**Lesson.** Before a throughput number is the system's, work out what each
+limit you configured allows. A bound you set yourself is the easiest one to
+measure by accident.
+
+## 58. The service's quickstart sent a form, and got a 422
+
+**What happened.** SERVICE.md's curl examples posted JSON with `-d` and no
+`Content-Type`. Run as written against the archive, the first one answered
+`422: body: Input should be a valid dictionary` — the server was right: curl's
+`-d` sends `application/x-www-form-urlencoded`. Every test passed, because the
+tests' client sets the header itself.
+
+**Fix.** The examples send `Content-Type: application/json`; the reply shown
+is the one the mock agent gives (its digits are the customer's, so the example
+reaches the cancellation).
+
+**Lesson.** Documentation is code that nothing runs. Run it — here, the
+quickstart from the extracted archive, as a reader would.
+
+The next six were found by an independent review of the service, by a reader
+that had not written it: each finding reproduced with a script before anything
+was changed, each fixed with a test of its own in tests/test_service.py (and
+#63 in tests/test_harness.py).
+
+## 59. A model's bad arguments took a turn down
+
+**What happened.** `"amount_minor": 1e400` is valid JSON, and Python reads it
+as infinity; the platform's money guard took `int()` of it and raised. A
+goodwill voucher of 0 broke the vouchers table's CHECK constraint; a credit of
+10**19 overflowed its column. Each ended the turn as an HTTP 500 — no fallback
+reply, the tool call left unanswered — and on PostgreSQL a tool name longer
+than its column was worse: the next turn's crash repair wrote the same name to
+answer it, failed the same way, and the conversation could never take another
+turn.
+
+**Why.** The turn caught one kind of failure from a tool call, the store's own,
+and the benchmark's tools trust their inputs further than a database does: in
+the benchmark a voucher of 0 is granted, because nothing stops it.
+
+**Fix.** A tool call that fails in any way is answered as one the platform
+could not carry out, and the turn goes on. The money guard reads an amount as
+the tools' schema does. A new row's amount must be a positive whole number a
+column can hold (`value_guard`), and a write the database refuses anyway is
+undone inside a savepoint and recorded as refused, by the rule it broke —
+never by the values it carried. Tool names and call ids are stored at any
+length. Model arguments that are not numbers JSON has (`inf`, `nan`) are kept
+as their names.
+
+**Lesson.** The model is an untrusted client. Every value it sends goes
+through what the client of a public API's would, down to the column type.
+
+## 60. An Idempotency-Key was freed after its turn had written
+
+**What happened.** A turn that failed part-way — its lease lost after an
+escalation had committed — answered 409, and the key was deleted so that the
+client could try again. It did: the retry ran a second turn, the customer's
+message was stored twice, and two escalations went to the outbox.
+
+**Why.** "Free the key on failure" is right for a request that failed before it
+changed anything, and was applied to one that had.
+
+**Fix.** A key is freed only when its request was turned away before anything
+was written (busy, a budget spent, a closed conversation). Once a turn has
+begun, its answer is kept under the key whatever it is, an error included, and
+a retry gets that answer back. A key whose request died with its process
+expires with the turn's lease instead of in 24 hours.
+
+**Lesson.** Exactly-once is decided at the first write, not at the response.
+Ask of every error path whether anything committed before it.
+
+## 61. PostgreSQL gave a customer's rows back in another order
+
+**What happened.** After an address change on one of her orders,
+`list_user_orders` gave `[O1003, O1009, O1002]` where the benchmark gives
+`[O1002, O1003, O1009]`, and replay — which rebuilds on SQLite — called the
+correct, recorded call one that "answered differently".
+
+**Why.** The benchmark's tables are dicts, which keep their insertion order;
+SQL tables keep none. PostgreSQL writes an updated row to a new place and
+returns rows in whatever order it finds them; SQLite happens to return them in
+insertion order, so every SQLite test passed.
+
+**Fix.** Every world row carries its place (`pos`): the seed's order, then each
+new row in the order its customer's writes committed. Every read orders by it,
+on both databases.
+
+**Lesson.** Where a reference implementation iterates, the order is part of the
+result. A test on one database cannot see what another does with the order no
+query asked for.
+
+## 62. A new turn read the conversation before it held the lease
+
+**What happened.** On PostgreSQL, a turn read its conversation and then took
+the lease. A turn finishing between the two statements left the new one with
+the conversation as it had been — its tool calls, who it had verified, its turn
+number — and the new turn crashed on a duplicate key. The lease's UPDATE also
+did not check that the conversation was still open.
+
+**Fix.** The lease first: one `UPDATE ... WHERE (lease free or expired) AND
+status = 'open' RETURNING *`, which waits for a turn that is finishing and gives
+back the row it left; every check runs on that row. And every write a turn makes
+renews and checks the lease, so a turn that outlived it writes nothing more.
+
+**Lesson.** Read what a lock protects after taking the lock. SQLite hid this
+too: its write transaction holds the whole database from the first statement.
+
+## 63. An API key would have followed a redirect to another host
+
+**What happened.** The harness reaches every provider with urllib. Asked to
+POST somewhere that answers 307 with another host, urllib follows — as a GET,
+with the request's headers, the key's `Authorization` among them. Shown with
+two local servers; it reaches a real key only if a provider or a gateway
+redirects, which none here does.
+
+**Why.** Every key goes only to its provider's endpoint (#47) — at the first
+hop. What urllib does at the second was never asked.
+
+**Fix.** Requests that carry a key go through an opener that refuses redirects:
+a 30x is the HTTP error it would be, and nothing is sent on. The benchmark's
+model calls and `scripts/add_model.py`'s model listing both;
+`tests/test_harness.py` redirects one.
+
+**Lesson.** "This key goes only to this host" is a property of the whole client,
+redirects included.
+
+## 64. Three smaller things the money and the logs let through
+
+**What happened.** (1) A provider that sent no usage was charged nothing: the
+estimate ran only for backends that never report usage, and every real one
+says it does. (2) The money guard counts credit against an order only in the
+order's currency — minor units of two currencies do not add — so credit for an
+IDR order granted in SGD passed it, four times over. (3) A database error's
+message can quote the row it refused (PostgreSQL's "Failing row contains ..."),
+and it went to the logs with the exception, a customer's words with it.
+
+**Fix.** (1) No usage reported is estimated, marked so, and charged. (2) Credit
+naming an order is given in the order's currency, or refused. (3) The log
+formatter writes an exception's type, SQLSTATE and frames, never its message;
+the engines keep bound values out of their errors; uvicorn's own loggers go
+through the same formatter.
+
+**Lesson.** A guard's "never" needs its precondition next to it. "What goes
+back never passes what was paid" was true only in one currency.
+
+## 65. A NUL character took a turn down on PostgreSQL
+
+**What happened.** JSON can carry a NUL character (`"\u0000"`), and PostgreSQL's
+text cannot hold one. A customer's message with one, a model's reply or tool
+arguments with one, a conversation id or a user id with one: each ended in a
+500 on PostgreSQL. A NUL in the model's reply failed the step's transaction,
+and took the step's ledger row with it — a model call made and not charged.
+Every SQLite test passed: SQLite stores NUL.
+
+**Fix.** From the customer, a NUL is invalid input: request fields refuse it
+and every id in a path or a query must have its shape (422). From the model, it
+is stored as U+FFFD, with its numbers that are not numbers, before anything
+reads it (`store.storable`), so the call and its replay see the same arguments.
+
+**Lesson.** A second database is a second set of rules about what a string is.
+Test the inputs a client can send against each database the service runs on.
+
+## 66. Three fixes that made new failures
+
+**What happened.** A second review read the fixes of #59–#64 as new code, and
+three were.
+
+- **#60's key expiry.** A running request's key was made to expire with the
+  turn's lease, so a crash would not wedge it for a day — but the lease was
+  renewed by every write and the key by nothing. A turn longer than the lease
+  outlived its key; a retry took the key, was told a turn was running, freed
+  the key, and the next retry ran the turn again: two escalations. And one
+  step could outlast the lease itself — a 30-second wait at the provider's
+  gate, then three tries at a slow provider — so another turn could take the
+  conversation over mid-call.
+- **#64's currency rule.** "Credit against an order in the order's currency"
+  contradicts P5.3: store credit is issued in the customer's account currency.
+  For a Malaysian customer's IDR order it refused the credit the policy
+  requires, and granted the one it forbids — IDR minor units added to her MYR
+  balance, IDR 270,000 becoming MYR 2,700.00.
+- **The stream's early start (#59–#64 round).** The streamed turn's thread
+  read the event loop the app keeps at startup; on a server that ran no startup
+  it raised after the turn had taken its slot and lease, and both stayed held.
+
+**Fix.** A heartbeat renews a running turn's lease — and its key — every third
+of the lease, from its own thread, so the lease outlives any one step; the
+lease drops to 60 seconds, so a dead process frees its conversation within a
+minute; an answer is kept under its key even if the key's row was taken in the
+meantime. Store credit is in the account's currency, and what has gone back
+for an order is counted across currencies, exactly, in SGD at the platform's
+rates. The stream asks the loop for itself when it was not kept, and gives the
+turn back if anything fails before its thread starts. Each has a test that
+fails without it (`test_long_turns` with the heartbeat switched off: two
+escalations, three stored messages).
+
+**Lesson.** A fix is new code with the original's blind spots. Review it as
+code, against the same spec — here the policy the benchmark already had.
+
 ---
 
 ## What this list is for

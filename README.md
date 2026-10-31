@@ -296,6 +296,7 @@ re-scored by replaying their tool calls (`scripts/rescore.py`).
 | The swap on three other agents, each from its own recorded conversations (RUNBOOK 1w) | run (2026-10-13): not seen beyond DeepSeek-V4-Pro, and not testable here — DeepSeek-V4.1-Flash and MiMo escalate in 90–94% of runs in every language (NO ROOM), GLM's decision splits from run to run (its reproduction 23 of 35: not read); Grok left out before the run |
 | A hard edition of combined cases; a multi-model baseline | hard edition built (v48): 36 cases outside the suite, `--suite edition3`, their reading fixed (RUNBOOK 1s; on round 2's models, phase 4); its customer, customer 3, checked (WHAT_FAILED #43); on round 2's models: room (base 0.861), RFT and GRPO INCONCLUSIVE, hard in one case; on five API models (2026-10-13): not harder than its parts for any, and it separates no two the parts do not (RESULTS §8) — one command adds a model (`scripts/add_model.py`, v55; `--check` for which keys and models work, v56); OpenCode Go's models through one key, each in the API it is served in — chat, Anthropic's or OpenAI's Responses — with each run's share of the plan shown before it starts (v73; RUNBOOK 1s): seven run (2026-10-16), none harder than its parts, and the profile's phone (WHAT_FAILED #48) counted in both its faces in section 8; a Contributor model refused for privacy stops at once (v74) |
 | Serving cost: the agent served three ways — the policy in the prompt with SGLang's radix cache on and off, and looked up instead (RUNBOOK phase 3) | built (v68): one GPU stage, ~1 h of a B200, each bar's quality verdict before any speed or cost claim, the cache's hits split into a conversation's first request (shared — flattered by this suite's six customers) and its later ones; not yet run |
+| The agent as a service: an HTTP API on PostgreSQL or SQLite that runs the benchmark's own tools, policy and backends ([docs/SERVICE.md](docs/SERVICE.md)) | built (v75): conversations over REST and Server-Sent Events, Idempotency-Keys, one turn at a time per conversation, every tool call one locked, version-checked transaction with its audit rows, replayable against the rebuilt world, a cost ledger in integer picodollars with budgets, Alembic migrations, Docker; every reference solution through the API leaves the world the benchmark's episode leaves (313/313, both databases); load-tested |
 
 ---
 
@@ -312,7 +313,7 @@ mistake):
 ```bash
 python -m pasarbench.run          # null agent → 0.0, reference agent → 1.0
 python -m tests.test_traps        # 10 naive solutions, all must be rejected
-python -m tests.test_harness      # 196 harness invariants, the claim guardrail and the model that can read for it in any language -- made one way, one cache, its quotes found without the reply's markdown, an answer cached under the old check read again without a call, and the check in a run's header, which --resume compares (WHAT_FAILED #50), what it could not read on the step, and an episode ended as a server error when it cannot be reached (v50), the closing check -- 1j's note, the case record (RUNBOOK 1n) and the guard that does not run a repeat (1o), a phase with room of its own when asked (v49), which no reference solution trips and which since v41 reads a payment's amount (WHAT_FAILED #39) -- and every context strategy keeping either note, tools that refuse what their schemas don't allow and a cancellation that settles the payment once while old runs replay under the tools they ran with, a simulated customer told to wait for what she agreed to, and customer 3, who leaves after a promise she cannot keep and never sends photos she lacks (WHAT_FAILED #43), and every key sent to its own provider and no other, under any of the names it goes by (WHAT_FAILED #47), with one routing id a conversation to xAI, whose cache is per server, and to Z.ai messages as its schema documents them -- and OpenCode Go (v73): its key to it alone, its user agent and session id per conversation to it alone, Anthropic's API at any endpoint and OpenAI's Responses API, a temperature not sent recorded as not sent, the gateway named in the trace header, and no request sent after the plan's usage limit refused one
+python -m tests.test_harness      # 197 harness invariants, the claim guardrail and the model that can read for it in any language -- made one way, one cache, its quotes found without the reply's markdown, an answer cached under the old check read again without a call, and the check in a run's header, which --resume compares (WHAT_FAILED #50), what it could not read on the step, and an episode ended as a server error when it cannot be reached (v50), the closing check -- 1j's note, the case record (RUNBOOK 1n) and the guard that does not run a repeat (1o), a phase with room of its own when asked (v49), which no reference solution trips and which since v41 reads a payment's amount (WHAT_FAILED #39) -- and every context strategy keeping either note, tools that refuse what their schemas don't allow and a cancellation that settles the payment once while old runs replay under the tools they ran with, a simulated customer told to wait for what she agreed to, and customer 3, who leaves after a promise she cannot keep and never sends photos she lacks (WHAT_FAILED #43), and every key sent to its own provider and no other, under any of the names it goes by (WHAT_FAILED #47), with one routing id a conversation to xAI, whose cache is per server, and to Z.ai messages as its schema documents them -- and OpenCode Go (v73): its key to it alone, its user agent and session id per conversation to it alone, Anthropic's API at any endpoint and OpenAI's Responses API, a temperature not sent recorded as not sent, the gateway named in the trace header, and no request sent after the plan's usage limit refused one -- and a provider's redirect refused, so that no key follows it to another host (v75, WHAT_FAILED #63)
 python -m tests.test_reward       # 30 reward + dataset invariants
 python -m tests.test_generated    # 213 checks over all 199 generated tasks, the 62 of the second edition (RUNBOOK 1m) and the hard edition's 36 (1s): dates in causal order, the same world in every process, reads of the task's own order, simulator QA -- the photos a customer told she has none says she sent, in eight languages (WHAT_FAILED #43) -- each hard case's wrong turns failing in every market, her change of mind read in eight languages, in the Malay round 2's customer wrote and in customer 3's words on 1s, the new address asked for by its use, the profile's phone read both ways -- her digits refused by it, told apart where the task needs no verification, or hers verified with it unasked (v74) -- each case against its part -- and read again as the policy reads a declined voucher (WHAT_FAILED #46) -- and the suite and the second edition pinned byte for byte
 python -m tests.test_rescore      # 29 re-scoring invariants: the pre-v19 world, replay by digest and by length, the same tool errors on every Python, nothing re-scored on a guess
@@ -322,6 +323,8 @@ python -m tests.test_exposure     # 307 tool-scaling + diagnosis invariants, the
 python -m tests.test_serving      # 70 metrics (SGLang and vLLM), cost and quality-guard invariants, and phase 3's bars: each measured whole, its server's cache as the bar needs, its report from the counters' diffs and the traces at the price the stage ran at, and RESULTS' section 5 read from them or marked not measured
 python -m tests.test_report       # 98 report invariants: paired verdicts, ties, replication, calibration and its planted mistakes (before they are read, only the steps not yet taken), noise floor, post-training with one customer and one tool version, round 2 first and round 1 as context, GRPO read as fixed before it ran and the voucher trap's escalations read as the policy reads them beside it, its learning curve's measured point, the hard edition on round 2's models read as fixed before it ran, the hard edition against its parts on several labs' models and which pairs only the cases separate (section 8), both scorings in every section, a figure that matches its numbers and drops a title they stop bearing out, an agent run at its provider's default temperature named in section 8 (v73), and in it her digits never given told from her digits given without her change, and the profile's phone counted both ways (v74)
 python -m tests.test_training     # 264 checks: split, customer family, collection and resume, examples (Qwen3 and Qwen3.8 formats) against an SGLang-like server, adapter routing, the LoRA probe, serve and Modal scripts, the serving stage's three bars, one-GPU memory plans, the notebook helper (progress in place, an interrupt-proof cleanup, a pack of only what is new since the last), the CUDA compiler, run settings, LoRA steps on Qwen3 and Qwen3.8's hybrid architecture, training data picked by today's checks, a push script that keeps runs and keys off GitHub, closing-check runs refused as training data, one simulated customer in every step, kept from stage 1 to stage 2, server errors reported, round 2's training data balanced by trap and its runs named apart from round 1's, GRPO's build, update and stage, its tasks without the photo trap, its reward's reading of the voucher she declined (WHAT_FAILED #46) and its learning curve measured on its own tasks (grpo-measure), the customer check, the hard edition's stage (195 without transformers/torch)
+
+python -m tests.test_service      # the agent service (needs requirements-service.txt; skipped without): every reference solution through the HTTP API, against the benchmark's own episode; replay; refunds raced with and without the customer's lock (PostgreSQL, with PASAR_TEST_POSTGRES_URL); idempotency, leases, streams, budgets, a failing provider, a crash mid-turn, a lease lost mid-turn, a model call longer than the lease; a model's bad arguments and NUL characters answered, never crashing a turn; rows in the benchmark's order on both databases; logs without what anyone said; migrations against the schema (WHAT_FAILED #56-#66)
 
 python -m pasarbench.sweep --backend scripted --suite all
 python scripts/make_report.py     # regenerates RESULTS.md; never hand-fill it
@@ -439,6 +442,48 @@ Four decisions worth defending:
 
 Interrupt and resume are real: `snapshot()` serialises episode state plus the
 database, `restore()` continues, and the test asserts an identical final DB.
+
+---
+
+## The agent service
+
+The agent the benchmark measures, as a backend a storefront calls
+(`pasarbench/service`, **[docs/SERVICE.md →](docs/SERVICE.md)**): conversations
+over REST, a turn's steps as Server-Sent Events, PostgreSQL (or SQLite on one
+machine), Alembic migrations, Docker. It runs the benchmark's tools, policy,
+prompt and model backends unchanged — every reference solution sent through the
+API leaves the world and the action log the benchmark's own episode leaves,
+313 of 313, on both databases.
+
+```bash
+pip install -r requirements-service.txt     # only the service needs these
+export PASAR_DATABASE_URL=sqlite:///data/pasar.db
+python -m pasarbench.service migrate
+python -m pasarbench.service create-tenant acme --name "Acme Mart"    # prints its API key once
+python -m pasarbench.service serve                                    # :8000/docs
+docker compose -f deploy/compose.yaml up --build                      # or: PostgreSQL, in containers
+```
+
+Four decisions worth defending:
+
+- **No transaction spans a model call.** A model call takes seconds; each tool
+  call is its own transaction of milliseconds — the customer's row locked, her
+  slice of the world loaded, the benchmark's tool run on it, each changed row
+  written only if its version is the one read, and the call's audit rows in the
+  same commit. A crash leaves every call either done and recorded or neither.
+- **The lock is load-bearing, and the tests show it.** On PostgreSQL, with the
+  customer's lock removed, two raced refunds both pass the money guard (19,500
+  paid back on a 16,250 order); the version check alone catches a stale
+  read-modify-write but not that.
+- **Every tool call can be run again.** Each records the state of the customer's
+  world it read, who was verified and the ids it was given; `replay` rebuilds
+  the starting world and re-runs them all — identical after every load test,
+  1,926 calls from 64 concurrent clients in the largest — and finds a row edited
+  by hand.
+- **Money is integers.** Prices in microdollars per million tokens, costs in
+  picodollars, a dated price book, a ledger row per model call, budgets per
+  conversation and per tenant per day; at 1s's measured token counts a
+  conversation costs $0.0019 on DeepSeek-V4.1-Flash and $0.0082 on V4-Pro.
 
 ---
 
@@ -604,6 +649,8 @@ pasarbench/
   analyze.py diagnose.py simqa.py                 turning sweeps into findings
   rescore.py                                      recorded episodes, today's checks
   serving/                                        metrics, cost, quality guards
+  service/                                        the agent as a backend: API, store, runtime,
+                                                  ledger, replay, migrations (docs/SERVICE.md)
   sweep.py run.py                                 entry points
 scripts/    gpu_pipeline.sh gpu_plan.py modal_pipeline.py pasar_notebook.py
             cuda_home.py setup_node.sh download_weights.sh
@@ -612,9 +659,12 @@ scripts/    gpu_pipeline.sh gpu_plan.py modal_pipeline.py pasar_notebook.py
             compare_cells.py naming_tasks.py guardrail_dry_run.py make_figure.py
             slurm_train.sh slurm_sweep.sh modal_vllm.py closing_guard_dry_run.py
             closing_report.py language_lead.py export_hf.py judge_calibration.py
-            read_failures.py serving_bars.py
-tests/      12 suites, 1,000+ assertions
+            read_failures.py serving_bars.py load_test.py
+tests/      13 suites, 1,000+ assertions
+deploy/     compose.yaml (PostgreSQL, the migration, the API), models.example.json
+Dockerfile  requirements-service.txt  alembic.ini        the service's image and dependencies
 docs/       RUNBOOK.md  GPU_GUIDE.md  WHAT_FAILED.md  WRITEUP.md  BLOG.md  README_weekly.md
+            SERVICE.md
             img/  the results figure, light and dark, wide and narrow, and its numbers
 ```
 
