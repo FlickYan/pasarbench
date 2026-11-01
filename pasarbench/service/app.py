@@ -37,6 +37,7 @@ from datetime import datetime, timezone
 from decimal import InvalidOperation
 from typing import Annotated, Any, AsyncIterator
 
+import anyio
 import anyio.to_thread
 from fastapi import Depends, FastAPI, Header, Path, Query, Request
 from fastapi.exceptions import RequestValidationError
@@ -58,7 +59,8 @@ from .profiling import MAX_SECONDS, Busy, Sampler, running
 from .replay import replay_tenant
 from .resilience import TenantLimits
 from .runtime import LeaseLost, Runtime, Turn, iso, utcnow
-from .store import is_sqlite, make_engine, seed_tenant, slices, transaction
+from .store import (SQLITE_BUSY_SECONDS, DatabaseSilent, deadline, is_sqlite, make_engine,
+                    seed_tenant, slices, transaction, unavailable)
 
 log = logging.getLogger("pasar.http")
 PROBLEM = "application/problem+json"
@@ -67,6 +69,7 @@ TENANT_ID = r"^[a-z0-9][a-z0-9-]{1,62}$"
 CONVERSATION_ID = r"^cv_[0-9a-f]{24}$"
 KEY_ID = r"^key_[0-9a-f]{12}$"
 NAME = r"^[^\x00-\x1f]{1,64}$"          # an id a storefront names: no control characters
+READY_SECONDS = 2.0                     # /readyz answers within it (v83)
 
 
 def _no_nul(v: str) -> str:
@@ -318,7 +321,7 @@ def create_app(settings: Settings | None = None, engine: Engine | None = None) -
     configure_logging(settings.log_level)
     if engine is None:
         engine = make_engine(settings.database_url, pool_size=settings.pool_size,
-                             max_overflow=settings.max_overflow)
+                             max_overflow=settings.max_overflow, timeout=settings.db_timeout)
     slices(engine).size = settings.slice_cache
     metrics = Metrics()
     runtime = Runtime(engine, settings, metrics=metrics)
@@ -332,6 +335,10 @@ def create_app(settings: Settings | None = None, engine: Engine | None = None) -
     limits = deployment.rate if deployment else TenantLimits(settings.rate, settings.burst)
     keys = KeyCache(engine)
     idem = Idempotency(engine, settings.idempotency_hours, settings.lease_seconds)
+    # /readyz's own connection (v83): one, apart from the pool's.
+    ready = None if is_sqlite(engine) else make_engine(
+        engine.url.render_as_string(hide_password=False), pool_size=1, max_overflow=0,
+        timeout=READY_SECONDS)
     streams: set[asyncio.Task] = set()          # streamed turns, each a task of its own
 
     @asynccontextmanager
@@ -356,6 +363,8 @@ def create_app(settings: Settings | None = None, engine: Engine | None = None) -
         if deployment is not None:
             await anyio.to_thread.run_sync(deployment.stop)
         await runtime.registry.transport.aclose()
+        if ready is not None:
+            ready.dispose()
 
     app = FastAPI(title="PasarBench Agent Service", version=__version__, lifespan=lifespan,
                   description="The customer-service agent PasarBench measures, as a backend: "
@@ -382,12 +391,56 @@ def create_app(settings: Settings | None = None, engine: Engine | None = None) -
         e.status, e.kind, e.title = err.status_code, f"http-{err.status_code}", str(err.detail)
         return problem_response(e, request)
 
+    # A database that did not answer: handled where the routes' errors are,
+    # not by the catch-all, which answers and then re-raises to the server.
+    from sqlalchemy.exc import OperationalError
+    from sqlalchemy.exc import TimeoutError as PoolTimeout
+
+    @app.exception_handler(OperationalError)
+    @app.exception_handler(PoolTimeout)
+    async def _database(request: Request, err: Exception) -> JSONResponse:
+        if unavailable(err):
+            return problem_response(database_down(err), request)
+        return unexpected(request, err)         # a conflict not tried again: a defect
+
     @app.exception_handler(Exception)
     async def _unexpected(request: Request, err: Exception) -> JSONResponse:
+        if unavailable(err):
+            return problem_response(database_down(err), request)
+        return unexpected(request, err)
+
+    def unexpected(request: Request, err: Exception) -> JSONResponse:
         log.error("unhandled", exc_info=err,
                   extra={"request_id": request.scope.get("state", {}).get("request_id")})
         return problem_response(E.ServiceError("an unexpected error; it has been logged"),
                                 request)
+
+    told = {"at": -1e9}
+
+    def database_down(err: BaseException) -> E.DatabaseUnavailable:
+        """A database that did not answer in time, or could not (v83): 503,
+        come back in a few seconds; counted by what it said, and logged by
+        its type once a minute -- an outage is not a traceback a request."""
+        from sqlalchemy.exc import TimeoutError as PoolTimeout
+        if isinstance(err, DatabaseSilent):
+            why = "silent"                      # refused at once: it has stopped answering
+        elif type(getattr(err, "orig", None)).__name__ == "QueryCanceled":
+            why = "statement_timeout"           # the server ended it, at 80% of the timeout
+        elif isinstance(err, PoolTimeout):
+            why = "pool"                        # no connection free in time
+        else:
+            why = "connection"                  # lost, refused, timed out, or shut down
+        metrics.database_unavailable.labels(why).inc()
+        if why == "silent":
+            return E.DatabaseUnavailable(f"{err}; try again shortly", retry_after=5)
+        waits = (f"{SQLITE_BUSY_SECONDS:g}s (SQLite's wait for its write lock)"
+                 if is_sqlite(engine) else f"{settings.db_timeout:g}s (PASAR_DB_TIMEOUT)")
+        if time.monotonic() - told["at"] > 60:
+            told["at"] = time.monotonic()
+            log.warning(f"the database did not answer ({why}: {type(err).__name__}) within "
+                        f"{waits}; answered 503")
+        return E.DatabaseUnavailable(
+            f"the database did not answer within {waits}; try again shortly", retry_after=5)
 
     # --- who is calling ---------------------------------------------------
     def tenant(request: Request,
@@ -426,7 +479,8 @@ def create_app(settings: Settings | None = None, engine: Engine | None = None) -
         rh = request_hash(request.method, request.url.path, body.model_dump_json().encode())
         request.state.idem_hash = rh
         got = idem.begin(tenant_id, key, rh)
-        if got is None:
+        if isinstance(got, datetime):
+            request.state.idem_held = got       # the hold, by its time (forget_later)
             return None
         status, stored = got
         replayed = {"Idempotent-Replayed": "true"}
@@ -438,11 +492,33 @@ def create_app(settings: Settings | None = None, engine: Engine | None = None) -
 
     def answered(request: Request, tenant_id: str, key: str | None,
                  response: JSONResponse) -> JSONResponse:
-        """A response as it goes out, kept under its key if it has one."""
+        """A response as it goes out, kept under its key if it has one -- and
+        if the database does not answer that, the response goes out all the
+        same, kept under the key once it does (Runtime.later): a request that
+        was carried out is not told to try again (v83)."""
         if key:
-            idem.complete(tenant_id, key, response.status_code, response.body.decode(),
-                          request.state.idem_hash)
+            status, body = response.status_code, response.body.decode()
+            rh, held = request.state.idem_hash, getattr(request.state, "idem_held", None)
+            try:
+                idem.complete(tenant_id, key, status, body, rh, held)
+            except Exception as e:
+                if not unavailable(e):
+                    raise
+                runtime.later(("answer", tenant_id, key), lambda conn: idem.complete_in(
+                    conn, tenant_id, key, status, body, rh, held))
         return response
+
+    def forget_later(request: Request, tenant_id: str, key: str | None) -> None:
+        """The key of a request the database did not answer: forgotten as soon
+        as it answers again (Runtime.later), so that the request can be sent
+        again under it -- not held until it expires, a lease on, which would
+        answer that retry 409 until then. As a crashed request's key would be,
+        sooner: the turn may have done part of its work, which the retry's
+        turn sees and goes on from (v83)."""
+        held = getattr(request.state, "idem_held", None)
+        if key and held is not None:
+            runtime.later(("key", tenant_id, key),
+                          lambda conn: idem.forget_in(conn, tenant_id, key, held))
 
     async def kept(request: Request, tenant_id: str, key: str | None,
                    response: JSONResponse) -> JSONResponse:
@@ -464,6 +540,8 @@ def create_app(settings: Settings | None = None, engine: Engine | None = None) -
             return problem_response(E.Conflict(str(e)), request)
         if isinstance(e, E.ServiceError):
             return problem_response(e, request)
+        if unavailable(e):
+            return problem_response(database_down(e), request)
         log.error("turn failed", exc_info=e,
                   extra={"request_id": request.scope.get("state", {}).get("request_id")})
         return problem_response(E.ServiceError("the turn failed; it has been logged"), request)
@@ -475,12 +553,29 @@ def create_app(settings: Settings | None = None, engine: Engine | None = None) -
         return {"status": "ok", "version": __version__}
 
     @app.get("/readyz", tags=["ops"], responses={503: ERRORS[503]})
-    def readyz() -> dict[str, Any]:
-        """The database answers and holds the schema: send traffic here."""
-        try:
-            with engine.connect() as conn:
+    async def readyz() -> dict[str, Any]:
+        """The database answers -- within READY_SECONDS, whatever it does, so
+        that a balancer stops sending traffic to a server whose database has
+        gone silent (v83): a probe that does not hear back in time is
+        answered 503 and its thread left to finish on its own, which the
+        watchdog and connect_timeout bound -- and holds the schema: send
+        traffic here."""
+        def check() -> bool:
+            # On a connection of its own, so that a pool busy with requests
+            # is not taken for a database that does not answer; through the
+            # pool while the database is taken to be silent, so that the
+            # probe is refused at once, or is the trial that ends it.
+            silence = getattr(engine, "pasar_silence", None)
+            probe = engine if ready is None or (silence is not None and
+                                                silence.since is not None) else ready
+            with deadline(READY_SECONDS), probe.connect() as conn:
                 conn.execute(text("SELECT 1"))
-                migrated = inspect(conn).has_table("conversations")
+                return inspect(conn).has_table("conversations")
+        try:
+            with anyio.fail_after(READY_SECONDS):
+                migrated = await anyio.to_thread.run_sync(check, abandon_on_cancel=True)
+        except TimeoutError:
+            raise E.Unavailable(f"database: no answer within {READY_SECONDS:g}s") from None
         except Exception as e:  # noqa: BLE001
             raise E.Unavailable(f"database: {type(e).__name__}") from None
         if not migrated:
@@ -493,6 +588,12 @@ def create_app(settings: Settings | None = None, engine: Engine | None = None) -
     def prometheus() -> Response:
         for provider, g in runtime.gates.snapshot().items():
             metrics.provider_in_flight.labels(provider).set(g["in_flight"])
+        watchdog = getattr(engine, "pasar_watchdog", None)
+        if watchdog is not None:
+            metrics.db_watchdog_aborts.set(watchdog.aborted)
+        silence = getattr(engine, "pasar_silence", None)
+        if silence is not None:
+            metrics.database_silent.set(0 if silence.since is None else 1)
         return Response(generate_latest(metrics.registry), media_type=CONTENT_TYPE_LATEST)
 
     # --- conversations ----------------------------------------------------
@@ -506,10 +607,14 @@ def create_app(settings: Settings | None = None, engine: Engine | None = None) -
         try:
             out = sent(Conversation, runtime.open_conversation(tenant_id, body.user_id,
                                                                body.model, body.market))
-        except BaseException:
-            # One transaction, rolled back: nothing happened, and the key is free.
-            if idempotency_key:
-                idem.abandon(tenant_id, idempotency_key)
+        except BaseException as e:
+            # One transaction, rolled back: nothing happened, and the key is
+            # free -- now, or if the database did not answer, once it does.
+            if idempotency_key and unavailable(e):
+                forget_later(request, tenant_id, idempotency_key)
+            elif idempotency_key:
+                idem.abandon(tenant_id, idempotency_key, getattr(request.state, "idem_held",
+                                                                 None))
             raise
         return answered(request, tenant_id, idempotency_key, JSONResponse(out, status_code=201))
 
@@ -573,10 +678,14 @@ def create_app(settings: Settings | None = None, engine: Engine | None = None) -
                 return stored
         try:
             turn = await runtime.abegin_turn(tenant_id, cid)
-        except BaseException:
-            # Turned away before anything was written: the key is free.
-            if idempotency_key:
-                await thread(idem.abandon, tenant_id, idempotency_key)
+        except BaseException as e:
+            # Turned away before anything was written: the key is free -- now,
+            # or if the database did not answer, once it does.
+            if idempotency_key and unavailable(e):
+                forget_later(request, tenant_id, idempotency_key)
+            elif idempotency_key:
+                await thread(idem.abandon, tenant_id, idempotency_key,
+                             getattr(request.state, "idem_held", None))
             raise
         if stream:
             return streamed(turn, body.content, tenant_id, idempotency_key, request)
@@ -589,6 +698,11 @@ def create_app(settings: Settings | None = None, engine: Engine | None = None) -
             raise
         except BaseException as e:  # noqa: BLE001 -- answered, and the answer kept
             response = failed(e, request)
+            if unavailable(e):
+                # Not kept: the database that did not answer would be asked
+                # again, for as long. The key is forgotten once it answers.
+                forget_later(request, tenant_id, idempotency_key)
+                return response
         return await kept(request, tenant_id, idempotency_key, response)
 
     def streamed(turn: Turn, content: str, tenant_id: str, key: str | None,
@@ -612,7 +726,10 @@ def create_app(settings: Settings | None = None, engine: Engine | None = None) -
             except BaseException as e:  # noqa: BLE001 -- told to the stream, and kept
                 response = failed(e, request)
                 try:
-                    await kept(request, tenant_id, key, response)
+                    if not unavailable(e):      # (not asked again: post_message says why)
+                        await kept(request, tenant_id, key, response)
+                    else:
+                        forget_later(request, tenant_id, key)
                 finally:
                     queue.put_nowait(("error", response.body.decode()))
 

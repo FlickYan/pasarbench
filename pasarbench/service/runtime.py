@@ -49,6 +49,7 @@ import anyio
 import anyio.to_thread
 from sqlalchemy import Connection, Engine, bindparam, or_, select, update
 from sqlalchemy import insert as sql_insert
+from sqlalchemy.exc import IntegrityError
 
 from ..db import NOW
 from ..harness.prompts import policy_text, system_prompt
@@ -62,9 +63,11 @@ from .costs import Price
 from .models import ModelError, ModelSpec, Registry, achat
 from .resilience import CircuitOpen, Gates, Overloaded, Slots
 from .store import (ToolOutcome, conversation_actions, result_digest, run_tool, storable,
-                    transaction)
+                    transaction, unavailable)
 
 log = logging.getLogger("pasar.runtime")
+
+RELEASE_EVERY = 2.0     # seconds between tries to give back leases the database did not hear
 
 TOOL_NAMES = list(DEFAULT_TOOLS)
 TOOL_SCHEMAS = schemas(TOOL_NAMES)
@@ -206,11 +209,71 @@ class Runtime:
         self._prices: dict[tuple[str, str], tuple[float, Price | None]] = {}
         self._lock = threading.Lock()
         self._in_flight = 0
+        # Writes the database did not take, owed until it answers (v83):
+        # what -> (until, the write).
+        self._unreleased: dict[tuple, tuple[float, Callable[[Connection], Any]]] = {}
+        self._releaser: threading.Thread | None = None
 
     @property
     def in_flight(self) -> int:
         """Turns admitted and not yet finished, in this process."""
         return self._in_flight
+
+    # --- writes the database did not take (v83) ---------------------------
+    def later(self, what: tuple, write: Callable[[Connection], Any]) -> None:
+        """A write the database did not take -- a lease to give back, an
+        Idempotency-Key to forget or to keep an answer under -- made as soon as
+        it answers again, from a thread of its own, every RELEASE_EVERY
+        seconds, each in a transaction of its own; for as long as a lease
+        lasts, after which it would mean nothing (a lease, a key's hold, has
+        expired by itself). `what` names it: owed again, it is owed once."""
+        until = time.monotonic() + self.settings.lease_seconds
+        with self._lock:
+            self._unreleased[what] = (until, write)
+            if self._releaser is None or not self._releaser.is_alive():
+                self._releaser = threading.Thread(target=self._release_loop, daemon=True,
+                                                  name="pasar-release-later")
+                self._releaser.start()
+
+    def release_later(self, cid: str, owner: str) -> None:
+        """A lease whose release did not reach the database: given back as
+        soon as it answers again (later()) -- not held until it expires,
+        which would turn the conversation's next turns away (409) for up to a
+        lease after the database is back. The release names its owner, so it
+        is harmless if the lease was never taken, or was taken over."""
+        self.later(("lease", cid, owner),
+                   lambda conn: conn.execute(_Q_RELEASE, {"cid": cid, "owner": owner}))
+
+    def unreleased(self) -> int:
+        """Writes still owed to the database."""
+        with self._lock:
+            return len(self._unreleased)
+
+    def _release_loop(self) -> None:
+        while True:
+            time.sleep(RELEASE_EVERY)
+            with self._lock:
+                pending = list(self._unreleased.items())
+                if not pending:
+                    self._releaser = None
+                    return
+            for what, (until, write) in pending:
+                if time.monotonic() >= until:   # expired by itself meanwhile
+                    with self._lock:
+                        self._unreleased.pop(what, None)
+                    continue
+                try:
+                    with transaction(self.engine, write=True) as conn:
+                        write(conn)
+                except Exception as e:  # noqa: BLE001 -- the next round tries again
+                    if unavailable(e):
+                        break                   # still not answering: wait a round
+                    if not isinstance(e, IntegrityError):   # (an answer kept first stands)
+                        log.exception("a write owed to the database failed",
+                                      extra={"owed": what[0]})
+                with self._lock:
+                    if self._unreleased.get(what, (None, None))[1] is write:
+                        self._unreleased.pop(what, None)
 
     def steps(self) -> anyio.CapacityLimiter:
         """The worker threads an admitted turn's transactions take turns on --
@@ -227,9 +290,13 @@ class Runtime:
             got = self._steps[id(loop)] = (loop, anyio.CapacityLimiter(self.settings.threads))
         return got[1]
 
-    async def in_thread(self, fn: Callable[..., Any], *args: Any) -> Any:
-        """fn(*args) in one of the turns' worker threads (steps())."""
-        return await anyio.to_thread.run_sync(fn, *args, limiter=self.steps())
+    async def in_thread(self, fn: Callable[..., Any], *args: Any, abandon: bool = False) -> Any:
+        """fn(*args) in one of the turns' worker threads (steps()). `abandon`:
+        a coroutine cancelled while it waits returns at once, and the thread
+        finishes on its own -- for a wait nothing needs the result of (a
+        lease's heartbeat on a database that has stopped answering, v83)."""
+        return await anyio.to_thread.run_sync(fn, *args, limiter=self.steps(),
+                                              abandon_on_cancel=abandon)
 
     def _admitted(self, delta: int) -> None:
         with self._lock:
@@ -418,12 +485,26 @@ class Runtime:
         return E.Overloaded("too many turns are running here; try again shortly",
                             retry_after=2)
 
+    def _owed(self, cid: str) -> list[str]:
+        """The owners of the conversation's leases this process has yet to
+        give back (release_later)."""
+        if not self._unreleased:
+            return []
+        with self._lock:
+            return [w[2] for w in self._unreleased if w[0] == "lease" and w[1] == cid]
+
     def _lease(self, tenant_id: str, cid: str) -> "Turn":
-        """The lease, on an admitted slot -- given back if the lease is refused."""
+        """The lease, on an admitted slot -- given back if the lease is refused.
+        A lease of the conversation's that this process owes (release_later)
+        is given back first, in the same transaction: the turn that asks for
+        it once the database answers again is not refused for it (409)."""
+        owner = f"{self.node}:{uuid.uuid4().hex[:8]}"
         try:
-            owner = f"{self.node}:{uuid.uuid4().hex[:8]}"
             s = self.settings
+            owed = self._owed(cid)
             with transaction(self.engine, write=True) as conn:
+                for old in owed:
+                    conn.execute(_Q_RELEASE, {"cid": cid, "owner": old})
                 # The lease first, and the conversation as the lease finds it:
                 # the UPDATE waits out a turn that is finishing, and RETURNING
                 # gives the row that turn left -- a row read before the lease
@@ -456,9 +537,18 @@ class Runtime:
                     spec = self.registry.resolve(row.model)
                 except ModelError as e:
                     raise E.BadRequest(f"this conversation's model is no longer offered: {e}")
+            if owed:                            # committed: given back
+                with self._lock:
+                    for old in owed:
+                        self._unreleased.pop(("lease", cid, old), None)
             turn = Turn(self, tenant_id, row, owner, spec, daily)
-        except BaseException:
+        except BaseException as e:
             self.admission.release()
+            if unavailable(e):
+                # The lease may have been taken -- its COMMIT reached the
+                # database and the answer did not come back: given back
+                # once it answers, in case.
+                self.release_later(cid, owner)
             raise
         self._admitted(+1)
         return turn
@@ -480,19 +570,30 @@ class Turn:
         self.number = row.turns + 1
         self._released = False
         self._lease_cleared = False     # the turn's last transaction gave the lease back
+        self._unanswered = False        # the database did not answer this turn (v83)
 
     # --- the lease --------------------------------------------------------
     def release(self) -> None:
+        """The slot back at once, and the lease: now, or -- if the database
+        does not answer -- as soon as it does (Runtime.release_later), not
+        only when the lease expires. A turn the database already failed does
+        not ask it again: that would wait as long a second time."""
         if self._released:
             return
         self._released = True
         try:
             if self._lease_cleared:
                 return
+            if self._unanswered:
+                self.rt.release_later(self.cid, self.owner)
+                return
             with transaction(self.rt.engine, write=True) as conn:
                 conn.execute(_Q_RELEASE, {"cid": self.cid, "owner": self.owner})
-        except Exception:  # noqa: BLE001 -- the lease expires by itself
-            log.exception("lease release failed", extra={"conversation_id": self.cid})
+        except Exception as e:  # noqa: BLE001 -- tried again until the lease would expire
+            if unavailable(e):
+                self.rt.release_later(self.cid, self.owner)
+            else:
+                log.exception("lease release failed", extra={"conversation_id": self.cid})
         finally:
             self.rt.admission.release()
             self.rt._admitted(-1)
@@ -531,11 +632,15 @@ class Turn:
         beat = asyncio.ensure_future(self._beat(keepalive))
         try:
             return await self._arun(text, emit or (lambda _e: None))
+        except Exception as e:
+            if unavailable(e):
+                self._unanswered = True
+            raise
         finally:
             beat.cancel()
             await asyncio.gather(beat, return_exceptions=True)
-            if self._lease_cleared:
-                self.release()                  # nothing left to write: no thread needed
+            if self._lease_cleared or self._unanswered:
+                self.release()                  # nothing to write now: no thread needed
             else:
                 await self.rt.in_thread(self.release)
 
@@ -549,12 +654,16 @@ class Turn:
         while True:
             await asyncio.sleep(every)
             try:
-                if not await self.rt.in_thread(self._renew):
+                if not await self.rt.in_thread(self._renew, abandon=True):
                     return          # the lease is another's now: the turn finds out at its next write
                 if keepalive is not None:
-                    await self.rt.in_thread(keepalive)
-            except Exception:  # noqa: BLE001 -- the next beat tries again
-                log.exception("lease heartbeat failed", extra={"conversation_id": self.cid})
+                    await self.rt.in_thread(keepalive, abandon=True)
+            except Exception as e:  # noqa: BLE001 -- the next beat tries again
+                if unavailable(e):
+                    log.warning("lease heartbeat: the database did not answer",
+                                extra={"conversation_id": self.cid})
+                else:
+                    log.exception("lease heartbeat failed", extra={"conversation_id": self.cid})
 
     async def _arun(self, text: str, emit: Emit) -> dict[str, Any]:
         rt, s, spec = self.rt, self.rt.settings, self.spec
@@ -837,6 +946,8 @@ class Turn:
         except LeaseLost:
             raise
         except Exception as e:  # noqa: BLE001 -- one call fails, not the turn
+            if unavailable(e):
+                raise       # the database did not answer: the turn ends (503), not the call
             # Nothing was written (the call's transaction rolled back): it is
             # answered as one the platform could not carry out, and the turn
             # goes on -- a model's arguments must never take the server down.

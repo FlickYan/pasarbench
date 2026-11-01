@@ -47,6 +47,13 @@ registry (models.py), each from its own provider's variables only.
                                   turn frees its conversation within one
     PASAR_IDEMPOTENCY_HOURS       24
     PASAR_POOL_SIZE / PASAR_MAX_OVERFLOW  10 / 20 database connections
+    PASAR_DB_TIMEOUT              10: the longest, in seconds, a request waits on PostgreSQL
+                                  (v83) -- a connection lent comes back within it or is
+                                  shut down, a statement is ended by the server at 80% of
+                                  it, a free connection is waited for as long, a new one
+                                  5 s at most; past it the request is answered 503, and
+                                  until the database answers again the next are refused
+                                  at once, but for one a second (store.Silence)
     PASAR_SLICE_CACHE             2000 customers' slices kept, per process, by the write
                                   each was read at (store.Slices); 0 where another
                                   system writes the world tables
@@ -104,6 +111,7 @@ class Settings:
     idempotency_hours: float = 24.0
     pool_size: int = 10
     max_overflow: int = 20
+    db_timeout: float = 10.0
     slice_cache: int = 2000
     limits: str = "auto"
     heartbeat_seconds: float = 5.0
@@ -143,6 +151,7 @@ class Settings:
             idempotency_hours=float(_env("PASAR_IDEMPOTENCY_HOURS", "24")),
             pool_size=int(_env("PASAR_POOL_SIZE", "10")),
             max_overflow=int(_env("PASAR_MAX_OVERFLOW", "20")),
+            db_timeout=float(_env("PASAR_DB_TIMEOUT", "10")),
             slice_cache=int(_env("PASAR_SLICE_CACHE", "2000")),
             limits=_env("PASAR_LIMITS", "auto").lower(),
             heartbeat_seconds=float(_env("PASAR_HEARTBEAT_SECONDS", "5")),
@@ -164,6 +173,8 @@ class Settings:
             raise ValueError(f"PASAR_LIMITS {self.limits!r}: auto, deployment or process")
         if self.heartbeat_seconds <= 0:
             raise ValueError("PASAR_HEARTBEAT_SECONDS is more than 0")
+        if self.db_timeout < 1:
+            raise ValueError("PASAR_DB_TIMEOUT is 1 second or more")
         for f in fields(self):
             v = getattr(self, f.name)
             if isinstance(v, (int, float)) and not isinstance(v, bool) and v < 0:

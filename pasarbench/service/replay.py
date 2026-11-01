@@ -39,8 +39,8 @@ from sqlalchemy import Engine, select
 
 from ..db import Action
 from . import schema as S
-from .store import (StoreError, create_all, make_engine, run_tool, seed_tenant, tenant_world,
-                    transaction, world_tables)
+from .store import (StoreError, create_all, deadline, make_engine, run_tool, seed_tenant,
+                    tenant_world, transaction, world_tables)
 
 
 def _norm(x: Any) -> Any:
@@ -69,7 +69,8 @@ def replay_tenant(engine: Engine, tenant_id: str) -> dict[str, Any]:
     tc, a, c = S.tool_calls, S.actions, S.conversations
     # One snapshot for the log and the world it is compared with: on PostgreSQL
     # a statement apart from the others would see writes committed between them.
-    with transaction(engine, write=False, snapshot=True) as conn:
+    # An operator's long work: no deadline on it (store.deadline, v83).
+    with deadline(None), transaction(engine, write=False, snapshot=True) as conn:
         tenant = conn.execute(select(S.tenants).where(S.tenants.c.tenant_id == tenant_id)).first()
         if tenant is None:
             raise StoreError(f"no tenant {tenant_id!r}")

@@ -911,6 +911,609 @@ def test_liveness():
     other.dispose()
 
 
+def test_database_errors():
+    """What counts as the database not answering, which the service answers
+    503 for (v83) -- and what does not, on SQLite as well: a lock waited out
+    is an outage to wait out, a missing table a defect to fix."""
+    print("a database that does not answer [sqlite]")
+    import sqlite3
+    from sqlalchemy import event, text
+    from sqlalchemy.exc import IntegrityError, OperationalError
+    from sqlalchemy.exc import TimeoutError as PoolTimeout
+    from pasarbench.service.store import (DatabaseSilent, Silence, SilencePool, make_engine,
+                                          no_answer, unavailable)
+
+    class Said(Exception):
+        def __init__(self, sqlstate):
+            super().__init__(sqlstate)
+            self.sqlstate = sqlstate
+
+    path = f"{TMP}/locked.db"
+    first, second = sqlite3.connect(path), sqlite3.connect(path, timeout=0)
+    first.execute("BEGIN IMMEDIATE")
+    try:
+        second.execute("BEGIN IMMEDIATE")
+        locked = None
+    except sqlite3.OperationalError as e:
+        locked = e
+    first.rollback()
+    first.close()
+    try:
+        second.execute("SELECT * FROM no_such_table")
+        missing = None
+    except sqlite3.OperationalError as e:
+        missing = e
+    second.close()
+    def op(code):
+        return unavailable(OperationalError("x", {}, Said(code)))
+
+    said = {
+        "a connection lost": unavailable(OperationalError("x", {}, Exception("closed"))),
+        "a statement the server ended (57014)": op("57014"),
+        "a server shutting down (57P01)": op("57P01"),
+        "a connection failure (08006)": op("08006"),
+        "too many connections (53300)": op("53300"),
+        "an I/O error (58030)": op("58030"),
+        "no connection free in the pool": unavailable(PoolTimeout("x")),
+        "a checkout refused while it is silent": unavailable(DatabaseSilent("x")),
+        "SQLite's lock waited out": locked is not None and unavailable(
+            OperationalError("x", {}, locked)),
+        "a serialization failure (40001)": op("40001"),
+        "a deadlock (40P01)": op("40P01"),
+        "a statement too complex (54001)": op("54001"),
+        "a lock not available (55P03)": op("55P03"),
+        "a constraint broken": unavailable(IntegrityError("x", {}, Exception())),
+        "SQLite's missing table": missing is not None and unavailable(
+            OperationalError("x", {}, missing)),
+    }
+    want = dict.fromkeys(list(said)[:9], True) | dict.fromkeys(list(said)[9:], False)
+    check("the database not answering (503) is a connection lost or refused, a statement it "
+          "ended, a server going down, resources it ran out of, no connection free in time, "
+          "SQLite's lock waited out; not a serialization failure or a deadlock, which are "
+          "tried again, nor a limit a statement ran into, nor a constraint broken, nor a "
+          "table SQLite does not have -- which SQLite calls operational too",
+          said == want, {k: v for k, v in said.items() if v != want[k]})
+
+    import psycopg
+    told = {
+        "a FATAL it sent (too many connections)": no_answer(psycopg.OperationalError(
+            'connection to server at "127.0.0.1", port 5432 failed: FATAL:  too many '
+            'connections for role "app"')),
+        "timed out": no_answer(psycopg.errors.ConnectionTimeout("connection timeout expired")),
+        "refused": no_answer(psycopg.OperationalError(
+            'connection to server at "127.0.0.1", port 5432 failed: Connection refused')),
+    }
+    far = make_engine("postgresql+psycopg://x@127.0.0.1:9/x", timeout=60)
+    check("a connection the server refused with a FATAL is the server answering, and does "
+          "not make it silent; one that timed out or was refused does; and a trial lasts "
+          "three timeouts at most before another may try",
+          told == {"a FATAL it sent (too many connections)": False, "timed out": True,
+                   "refused": True} and far.pasar_silence.trial_seconds == 180,
+          (told, far.pasar_silence.trial_seconds))
+    far.dispose()
+
+    # Silence: refused at once while the database is silent, but for one
+    # checkout at a time, every `retry` seconds; the first answer ends it.
+    g = Silence(retry=0.2)
+
+    def refused(into=None, key=None):
+        try:
+            g.admit()
+            out = False
+        except DatabaseSilent:
+            out = True
+        if into is not None:
+            into[key] = out
+        return out
+
+    def elsewhere(key):
+        t = threading.Thread(target=refused, args=(seen, key))
+        t.start()
+        t.join()
+
+    seen: dict = {}
+    seen["answering"] = refused()
+    g.silent("a test")
+    seen["at once"] = refused()
+    time.sleep(0.25)
+    seen["the trial"] = refused()
+    elsewhere("another, meanwhile")
+    seen["the trial again"] = refused()
+    g.trial_over()
+    elsewhere("another, at once")
+    time.sleep(0.25)
+    elsewhere("another, later")
+    seen["the first, now"] = refused()
+    g.answered()
+    seen["answered"] = refused()
+    spells = g.spells
+    stale = Silence(retry=0.05, trial_seconds=0.2)
+    stale.silent("a test")
+    time.sleep(0.06)
+    g = stale
+    seen["a trial"] = refused()
+    elsewhere("another, during it")
+    time.sleep(0.25)
+    elsewhere("another, the trial lost")
+    want = {"answering": False, "at once": True, "the trial": False,
+            "another, meanwhile": True, "the trial again": False, "another, at once": True,
+            "another, later": False, "the first, now": True, "answered": False,
+            "a trial": False, "another, during it": True, "another, the trial lost": False}
+    check("a database seen silent is not waited on: a checkout is refused at once, but for "
+          "one at a time every SILENT_RETRY seconds -- the next after a trial fails, or after "
+          "one that is never heard from -- and the first answer ends it",
+          seen == want and spells == 1 and unavailable(DatabaseSilent("x")),
+          {k: v for k, v in seen.items() if v != want.get(k)})
+
+    # Said once a minute at most: a database that comes and goes logs one
+    # line as it stops answering and one as it answers, not one each time.
+    lines = []
+
+    class Keep(logging.Handler):
+        def emit(self, record):
+            lines.append(record.getMessage())
+
+    keep = Keep()
+    logging.getLogger("pasar.db").addHandler(keep)
+    try:
+        g = Silence(retry=0.01)
+        for _ in range(4):
+            g.silent("a test")
+            g.answered()
+    finally:
+        logging.getLogger("pasar.db").removeHandler(keep)
+    check("a database that stops and starts answering four times in a minute is said to, "
+          "once each way",
+          len(lines) == 2 and "stopped answering" in lines[0] and "answers again" in lines[1]
+          and g.spells == 4, lines)
+
+    # A trial is a whole checkout: one whose connection has to be made again
+    # and cannot be -- a dead one found in the pool -- ends the trial too,
+    # and another tries a retry later, not when the trial would have expired.
+    import sqlite3 as _sq
+    down = {"now": False}
+
+    def dial():
+        if down["now"]:
+            raise _sq.OperationalError("unable to open database file")
+        return _sq.connect(":memory:", check_same_thread=False)
+
+    pool = SilencePool(dial, pool_size=1, max_overflow=0, timeout=1)
+    pool.pasar_silence = g = Silence(retry=0.1)
+    dead = pool.connect()
+    dead.invalidate()                           # back in the pool with no connection
+    dead.close()
+    g.silent("a test")
+    time.sleep(0.12)
+    down["now"] = True
+    try:
+        pool.connect()
+        failed_trial = None
+    except _sq.OperationalError as e:
+        failed_trial = e
+    ended = g._trial is None
+    down["now"] = False
+    time.sleep(0.12)
+    seen = {}
+    elsewhere("another, a retry later")
+    pool.dispose()
+    check("a trial whose checkout fails as it makes its connection again ends there: another "
+          "tries SILENT_RETRY later",
+          failed_trial is not None and ended and seen == {"another, a retry later": False},
+          (failed_trial, ended, seen))
+
+    # A write behind another process's write lock, past SQLite's wait for
+    # it (30 s; 0.3 here): 503, and nothing left held.
+    db, url = database("sqlite", "busy")
+    db.dispose()
+
+    @event.listens_for(db, "connect")
+    def _short(dbapi_conn, _record):            # noqa: ANN001
+        dbapi_conn.execute("PRAGMA busy_timeout=300")
+
+    app = make_app(db, url)
+    with client(app) as c:
+        h = tenant(c, "acme")
+        cid = c.post("/v1/conversations", headers=h, json={"user_id": "U002"}).json()[
+            "conversation_id"]
+        blocker = sqlite3.connect(url.split("sqlite:///", 1)[1])
+        blocker.execute("BEGIN IMMEDIATE")
+        t0 = time.monotonic()
+        r = c.post(f"/v1/conversations/{cid}/messages", headers=h,
+                   json={"content": "where is my order O1002?"})
+        took = time.monotonic() - t0
+        keyed = {**h, "Idempotency-Key": "busy-1"}
+        rk = c.post(f"/v1/conversations/{cid}/messages", headers=keyed,
+                    json={"content": "and O1003?"})
+        blocker.rollback()
+        blocker.close()
+        nxt = c.post(f"/v1/conversations/{cid}/messages", headers=h,
+                     json={"content": "where is my order O1002?"})
+        t0 = time.monotonic()
+        again = until(lambda: c.post(f"/v1/conversations/{cid}/messages", headers=keyed,
+                                     json={"content": "and O1003?"}).status_code == 200, 6)
+        again_took = time.monotonic() - t0
+    check("[sqlite] a write that waits out SQLite's lock is answered 503 database-unavailable, "
+          "Retry-After, saying which wait it was; the conversation's next turn runs",
+          r.status_code == 503 and r.json().get("type") == "/problems/database-unavailable"
+          and r.headers.get("retry-after") == "5" and "SQLite" in r.json().get("detail", "")
+          and took < 2 and nxt.status_code == 200,
+          (r.status_code, r.json().get("type"), r.json().get("detail"), round(took, 2),
+           nxt.status_code))
+    check("[sqlite] …and under an Idempotency-Key, the key is forgotten once the database "
+          "answers: the request sent again under it runs, within RELEASE_EVERY, not 409 "
+          "until the key would expire",
+          rk.status_code == 503 and again and again_took < 4,
+          (rk.status_code, again, round(again_took, 2)))
+    db.dispose()
+
+    # A lease the database may have taken -- the lease's transaction failed
+    # as the database stopped answering, its COMMIT perhaps heard and its
+    # answer lost -- is given back once it answers, in case.
+    import pasarbench.service.runtime as R
+    db, url = database("sqlite", "lost")
+    app = make_app(db, url)
+    rt = app.state.runtime
+    real = R.costs.spent_today
+    calls = {"n": 0}
+
+    def flaky(conn, tenant_id):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise OperationalError("SELECT", {}, Exception("server closed the connection"))
+        return real(conn, tenant_id)
+
+    with client(app) as c:
+        h = tenant(c, "acme", budget="5.00")
+        cid = c.post("/v1/conversations", headers=h, json={"user_id": "U002"}).json()[
+            "conversation_id"]
+        R.costs.spent_today = flaky
+        try:
+            lost = c.post(f"/v1/conversations/{cid}/messages", headers=h,
+                          json={"content": "where is my order O1002?"})
+            owed = rt.unreleased()
+        finally:
+            R.costs.spent_today = real
+        after = c.post(f"/v1/conversations/{cid}/messages", headers=h,
+                       json={"content": "where is my order O1002?"})
+        left = rt.unreleased()
+    check("[sqlite] a lease whose transaction the database did not answer is owed back all "
+          "the same -- it may have been taken -- and the conversation's next turn takes it "
+          "over and runs",
+          lost.status_code == 503 and owed == 1 and after.status_code == 200 and left == 0,
+          (lost.status_code, owed, after.status_code, left))
+    db.dispose()
+
+    bare = make_engine(sqlite_url("bare"))
+    with bare.connect() as conn:
+        conn.execute(text("SELECT 1"))
+    app = make_app(bare, sqlite_url("bare"))
+    with client(app) as c:
+        asked = c.get("/v1/conversations", headers={"Authorization": "Bearer psk_x"})
+        ready = c.get("/readyz")
+    check("[sqlite] a database without the schema is not an outage: a request is answered "
+          "500, not 503 to come back to; /readyz says what is missing",
+          asked.status_code == 500 and ready.status_code == 503
+          and "schema" in ready.json().get("detail", ""),
+          (asked.status_code, ready.status_code, ready.json().get("detail")))
+    bare.dispose()
+
+
+def test_silent_database():
+    """A database that does not answer (v83): every wait on it is bounded --
+    a statement by the server, a lent connection by the watchdog, a new one
+    by connect_timeout -- and a request is answered 503 within
+    PASAR_DB_TIMEOUT; an operator's long work is not bounded; a lease the
+    database did not hear given back is given back once it answers."""
+    print("a silent database [postgres]")
+    import socket as _socket
+    from sqlalchemy import text
+    from sqlalchemy.exc import OperationalError
+    from pasarbench.service.store import (SILENT_RETRY, DatabaseSilent, deadline, make_engine,
+                                          transaction, unavailable)
+
+    engine = make_engine(PG, timeout=1.0)
+    with transaction(engine, write=False) as conn:
+        shown = [conn.execute(text(f"SHOW {n}")).scalar() for n in
+                 ("statement_timeout", "idle_in_transaction_session_timeout")]
+    tcp = PG.replace("@/pasar_test?host=/var/run/postgresql&port=5433",
+                     "@127.0.0.1:5433/pasar_test")
+    over_tcp = make_engine(tcp, timeout=1.0)
+    fairy = over_tcp.raw_connection()
+    try:
+        sock = _socket.socket(fileno=__import__("os").dup(fairy.driver_connection.pgconn.socket))
+        try:
+            user_timeout = sock.getsockopt(_socket.IPPROTO_TCP, 18)     # TCP_USER_TIMEOUT
+            keepalive = sock.getsockopt(_socket.SOL_SOCKET, _socket.SO_KEEPALIVE)
+        finally:
+            sock.close()
+    finally:
+        fairy.close()
+    check("[postgres] a connection says how long it may be waited on: statements ended by "
+          "the server at 80% of PASAR_DB_TIMEOUT, a session idle in a transaction at three "
+          "times it; over TCP, keepalives on and a user timeout of PASAR_DB_TIMEOUT",
+          shown == ["800ms", "3s"] and user_timeout == 1000 and keepalive == 1,
+          (shown, user_timeout, keepalive))
+
+    t0 = time.monotonic()
+    try:
+        with transaction(engine, write=False) as conn:
+            conn.execute(text("SELECT pg_sleep(5)"))
+        ended = None
+    except OperationalError as e:
+        ended = e
+    took = time.monotonic() - t0
+    with transaction(engine, write=False) as conn:
+        after = conn.execute(text("SELECT 1")).scalar()
+    check("[postgres] a statement past it is ended by the server (0.8 s here) -- a 503, "
+          "not a defect -- and the connection serves the next transaction",
+          ended is not None and unavailable(ended) and 0.7 < took < 1.5 and after == 1,
+          (type(ended).__name__, round(took, 2)))
+
+    # A server that does not answer at all: a session stopped mid-statement
+    # (pg_sleep under SIGSTOP would stop the whole test database; a lock
+    # held by another session is a statement the server cannot end sooner
+    # than its timeout, so the timeout is lifted for it and the watchdog
+    # has to act).
+    holder = make_engine(PG)
+    hc = holder.connect()
+    hc.execute(text("CREATE TABLE IF NOT EXISTS silent_probe (id int PRIMARY KEY)"))
+    hc.execute(text("INSERT INTO silent_probe VALUES (1) ON CONFLICT DO NOTHING"))
+    hc.commit()
+    hc.execute(text("SELECT id FROM silent_probe WHERE id = 1 FOR UPDATE"))
+    watchdog = engine.pasar_watchdog
+    shut_before = watchdog.aborted
+    t0 = time.monotonic()
+    try:
+        with deadline(1.0), engine.connect() as conn:
+            conn.execute(text("SET statement_timeout = 0"))
+            conn.execute(text("SELECT id FROM silent_probe WHERE id = 1 FOR UPDATE"))
+        cut = None
+    except OperationalError as e:
+        cut = e
+    took = time.monotonic() - t0
+    hc.rollback()
+    silence = engine.pasar_silence
+    silent_then = silence.since is not None
+    t0 = time.monotonic()
+    try:
+        with transaction(engine, write=False) as conn:
+            conn.execute(text("SELECT 1"))
+        turned = None
+    except DatabaseSilent as e:
+        turned = e
+    turned_took = time.monotonic() - t0
+    time.sleep(SILENT_RETRY + 0.1)
+    with transaction(engine, write=False) as conn:
+        again = conn.execute(text("SELECT 1")).scalar()
+    ten = make_engine(PG)                       # 10 s, and a connection lent for 1 of them
+    hc.execute(text("SELECT id FROM silent_probe WHERE id = 1 FOR UPDATE"))
+    try:
+        with deadline(1.0), ten.connect() as conn:
+            conn.execute(text("SET statement_timeout = 0"))
+            conn.execute(text("SELECT id FROM silent_probe WHERE id = 1 FOR UPDATE"))
+    except OperationalError:
+        pass
+    hc.rollback()
+    hc.close()
+    short_cut, short_silent = ten.pasar_watchdog.aborted, ten.pasar_silence.since is not None
+    with transaction(ten, write=False) as conn:
+        short_after = conn.execute(text("SELECT 1")).scalar()
+    ten.dispose()
+    check("[postgres] a lent connection not back within its deadline is shut down by the "
+          "watchdog: the statement waiting on it raises at once (1 s here), counted",
+          cut is not None and unavailable(cut) and 0.9 < took < 1.6
+          and watchdog.aborted == shut_before + 1,
+          (type(cut).__name__, round(took, 2), watchdog.aborted - shut_before))
+    check("[postgres] …and the database is taken to have stopped answering: the next "
+          "checkout is refused at once (503), not waited on; one tries it a second later, "
+          "its answer ends the silence, and the pool's next connection serves",
+          silent_then and turned is not None and unavailable(turned) and turned_took < 0.1
+          and again == 1 and silence.since is None,
+          (silent_then, type(turned).__name__, round(turned_took, 3), again, silence.since))
+    check("[postgres] …but one lent for less than the timeout -- a readiness probe's 2 s, a "
+          "rate limit's -- shut down says only that the database is slower than that: "
+          "nothing is refused",
+          short_cut == 1 and not short_silent and short_after == 1,
+          (short_cut, short_silent, short_after))
+
+    one = make_engine(PG, timeout=1.0)
+    hc = holder.connect()
+    hc.execute(text("SELECT id FROM silent_probe WHERE id = 1 FOR UPDATE"))
+    t0 = time.monotonic()
+    try:
+        with deadline(2.0), one.connect() as conn:
+            conn.execute(text("SET statement_timeout = 0"))
+            conn.execute(text("SELECT id FROM silent_probe WHERE id = 1 FOR UPDATE"))
+    except OperationalError:
+        pass
+    held_to = time.monotonic() - t0
+    hc.rollback()
+    hc.close()
+    one.dispose()
+    check("[postgres] a deadline longer than PASAR_DB_TIMEOUT is held to it: a connection "
+          "lent for 2 s on an engine of 1 is shut down at 1",
+          0.9 < held_to < 1.6, round(held_to, 2))
+
+    # A restart: the pool's sessions ended and the database taken to be
+    # silent, as a connection refused while it was down leaves it. The first
+    # trial after finds a dead connection in the pool, makes it again within
+    # its own checkout, and answers: the silence over at once.
+    named = PG + ("&" if "?" in PG else "?") + "application_name=pasar_restart"
+    restart = make_engine(named, pool_size=3, max_overflow=0)
+    warm = [restart.connect() for _ in range(3)]
+    for w in warm:
+        w.execute(text("SELECT 1"))
+    for w in warm:
+        w.close()
+    with holder.connect() as conn:
+        ended = conn.execute(text("SELECT count(pg_terminate_backend(pid)) FROM "
+                                  "pg_stat_activity WHERE application_name = "
+                                  "'pasar_restart'")).scalar()
+    time.sleep(0.2)
+    restart.pasar_silence.silent("a test")
+    time.sleep(SILENT_RETRY + 0.1)
+    t0 = time.monotonic()
+    try:
+        with transaction(restart, write=False) as conn:
+            back_answer = conn.execute(text("SELECT 1")).scalar()
+    except Exception as e:  # noqa: BLE001
+        back_answer = type(e).__name__
+    back_took = time.monotonic() - t0
+    over = restart.pasar_silence.since is None
+    restart.dispose()
+    check("[postgres] after a restart -- the pool's sessions ended, the database taken to be "
+          "silent -- the first trial finds a dead connection, makes it again within its own "
+          "checkout and answers: the silence is over at once, not a dead connection a second",
+          ended == 3 and back_answer == 1 and over and back_took < 1,
+          (ended, back_answer, over, round(back_took, 2)))
+
+    t0 = time.monotonic()
+    with deadline(None), transaction(engine, write=True) as conn:
+        conn.execute(text("SELECT pg_sleep(1.5)"))
+        lifted = conn.execute(text("SHOW statement_timeout")).scalar()
+    took = time.monotonic() - t0
+    check("[postgres] an operator's long work (deadline(None): seeding, replay) is not "
+          "bounded: 1.5 s of it on an engine of 1, its transaction's statement timeout lifted",
+          took >= 1.5 and lifted == "0", (round(took, 2), lifted))
+
+    # A database that answers nothing: a listener that never speaks.
+    hole = _socket.socket()
+    hole.bind(("127.0.0.1", 0))
+    hole.listen(64)
+    port = hole.getsockname()[1]
+    silent = make_engine(f"postgresql+psycopg://postgres@127.0.0.1:{port}/x", timeout=1.0)
+    t0 = time.monotonic()
+    try:
+        with silent.connect() as conn:
+            conn.execute(text("SELECT 1"))
+        refused = None
+    except OperationalError as e:
+        refused = e
+    took = time.monotonic() - t0
+    from pasarbench.service.app import create_app
+    from pasarbench.service.config import Settings
+    from fastapi.testclient import TestClient
+    app = create_app(Settings(database_url=f"postgresql+psycopg://postgres@127.0.0.1:{port}/x",
+                              admin_token="op-token", log_level="WARNING", db_timeout=1.0),
+                     silent)
+    c = TestClient(app)
+    t0 = time.monotonic()
+    ready = c.get("/readyz")
+    ready_took = time.monotonic() - t0
+    t0 = time.monotonic()
+    asked = c.get("/v1/conversations", headers={"Authorization": "Bearer psk_x"})
+    asked_took = time.monotonic() - t0
+    check("[postgres] a database that answers nothing: a new connection gives up within "
+          "connect_timeout (2 s here); after it, /readyz and a request are answered 503 "
+          "database-unavailable at once, Retry-After, not left waiting",
+          refused is not None and 1.5 < took < 3 and ready.status_code == 503
+          and ready_took < 0.5 and asked.status_code == 503
+          and asked.json().get("type") == "/problems/database-unavailable"
+          and "has not answered" in asked.json().get("detail", "")
+          and asked.headers.get("retry-after") == "5" and asked_took < 0.5,
+          (round(took, 2), ready.status_code, round(ready_took, 2), asked.status_code,
+           asked.json().get("type"), asked.json().get("detail"), round(asked_took, 2)))
+    silent.dispose()
+    slow = make_engine(f"postgresql+psycopg://postgres@127.0.0.1:{port}/x")    # 10 s: 5 to connect
+    app = create_app(Settings(database_url=f"postgresql+psycopg://postgres@127.0.0.1:{port}/x",
+                              admin_token="op-token", log_level="WARNING"), slow)
+    c = TestClient(app)
+    t0 = time.monotonic()
+    ready = c.get("/readyz")
+    ready_took = time.monotonic() - t0
+    check("[postgres] /readyz answers within 2 s whatever the database does -- here one "
+          "that never answers, where the service's own connections are given 5 s: 503 "
+          "(its own connection is given 2 s, and a probe that takes longer is answered "
+          "without it)",
+          ready.status_code == 503 and 1.9 < ready_took < 2.6,
+          (ready.status_code, round(ready_took, 2), ready.json().get("detail")))
+    time.sleep(3.5)                     # the probe's thread gives up meanwhile
+    slow.dispose()
+    hole.close()
+
+    # A turn whose write waits past the timeout (on a lock another session
+    # holds on the messages a turn appends to, reads still allowed): 503,
+    # and its lease -- the turn holds it by then -- given back once the
+    # database answers, not held for its 60 s: by the releaser, or by the
+    # conversation's next turn here, whichever comes first.
+    schema, url = database("postgres", "silent")
+    schema.dispose()
+    db = make_engine(url, timeout=1.0)
+    app = make_app(db, url, db_timeout=1.0)
+    rt = app.state.runtime
+
+    def stuck_turn(c, h, cid):
+        lock = make_engine(PG).connect()
+        lock.execute(text("LOCK TABLE messages IN SHARE MODE"))
+        t0 = time.monotonic()
+        r = c.post(f"/v1/conversations/{cid}/messages", headers=h,
+                   json={"content": "where is my order O1002?"})
+        took = time.monotonic() - t0
+        owed = rt.unreleased()
+        lock.rollback()
+        lock.close()
+        return r, took, owed
+
+    with client(app) as c:
+        h = tenant(c, "acme")
+        cids = [c.post("/v1/conversations", headers=h, json={"user_id": "U002"}).json()[
+            "conversation_id"] for _ in range(3)]
+        r, took, owed = stuck_turn(c, h, cids[0])
+        t0 = time.monotonic()
+        loop = until(lambda: rt.unreleased() == 0, 6)
+        loop_took = time.monotonic() - t0
+        with transaction(db, write=False) as conn:
+            holder_left = conn.execute(text("SELECT lease_owner FROM conversations WHERE "
+                                            "conversation_id = :c"), {"c": cids[0]}).scalar()
+        r2, _, owed2 = stuck_turn(c, h, cids[1])
+        t0 = time.monotonic()
+        nxt = c.post(f"/v1/conversations/{cids[1]}/messages", headers=h,
+                     json={"content": "hello?"})
+        next_took = time.monotonic() - t0
+        left = rt.unreleased()
+        keyed = {**h, "Idempotency-Key": "silent-1"}
+        rk, _, _ = stuck_turn(c, keyed, cids[2])
+        t0 = time.monotonic()
+        rerun = until(lambda: c.post(f"/v1/conversations/{cids[2]}/messages", headers=keyed,
+                                     json={"content": "where is my order O1002?"}
+                                     ).status_code == 200, 6)
+        rerun_took = time.monotonic() - t0
+    check("[postgres] a turn whose write waits past the timeout is answered 503 within it, and "
+          "its lease, which it does not ask the database for again, is given back once the "
+          "database answers -- by the releaser within RELEASE_EVERY (2 s), not in its 60 s",
+          r.status_code == 503 and r.json().get("type") == "/problems/database-unavailable"
+          and took < 3 and owed == 1 and loop and loop_took < 4 and holder_left is None,
+          (r.status_code, r.json().get("type"), round(took, 2), owed, loop,
+           round(loop_took, 2), holder_left))
+    check("[postgres] …or by the conversation's next turn on this process, at once, in the "
+          "transaction that takes its own lease: answered 200, not 409",
+          r2.status_code == 503 and owed2 == 1 and nxt.status_code == 200 and next_took < 1.5
+          and left == 0, (r2.status_code, owed2, nxt.status_code, round(next_took, 2), left))
+    check("[postgres] …and its Idempotency-Key is forgotten once the database answers: the "
+          "request sent again under it runs within RELEASE_EVERY, not 409 for a lease",
+          rk.status_code == 503 and rerun and rerun_took < 4, (rk.status_code, rerun,
+                                                              round(rerun_took, 2)))
+    db.dispose()
+
+    busy = make_engine(url, pool_size=1, max_overflow=0)
+    app = make_app(busy, url)
+    with client(app) as c:
+        lent = busy.connect()
+        lent.execute(text("SELECT 1"))
+        t0 = time.monotonic()
+        ready = c.get("/readyz")
+        ready_took = time.monotonic() - t0
+        lent.close()
+    busy.dispose()
+    check("[postgres] /readyz on a server whose pool is busy -- every connection lent -- asks "
+          "the database on a connection of its own: 200 at once, not 503 for the queue",
+          ready.status_code == 200 and ready_took < 1, (ready.status_code, round(ready_took, 2)))
+    holder.dispose()
+    engine.dispose()
+    over_tcp.dispose()
+
+
 def test_profiler():
     """The sampling profiler (profiling.py, v80): every thread's CPU charged to
     calls that ran throughout, waiting charged nothing -- against threads
@@ -2520,6 +3123,7 @@ def main() -> int:
         test_limits_and_budgets()
         test_market()
         test_provider_failure()
+        test_database_errors()
         test_bad_arguments("sqlite")
         test_nul("sqlite")
         test_order("sqlite")
@@ -2541,6 +3145,7 @@ def main() -> int:
             test_ids("postgres")
             test_slices("postgres")
             test_liveness()
+            test_silent_database()
             test_shared_limits("postgres")
             test_bad_arguments("postgres")
             test_nul("postgres")

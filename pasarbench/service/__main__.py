@@ -125,7 +125,7 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     from .store import make_engine, seed_tenant, transaction
-    engine = make_engine(url)
+    engine = make_engine(url, timeout=settings.db_timeout)
     try:
         if args.cmd == "migrate":
             from alembic import command
@@ -156,7 +156,8 @@ def main(argv: list[str] | None = None) -> int:
             return 0 if report["ok"] else 1
         elif args.cmd == "usage":
             from .costs import usage_report
-            with engine.connect() as conn:
+            from .store import deadline
+            with deadline(None), transaction(engine, write=False) as conn:   # an operator's
                 rows = usage_report(conn, args.tenant_id, args.group_by)
             print(f"{'key':<34} {'calls':>7} {'prompt':>11} {'cached':>11} {'out':>9} "
                   f"{'hit':>6} {'cost':>12}")

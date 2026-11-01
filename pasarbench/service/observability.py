@@ -81,6 +81,20 @@ class Metrics:
         self.limits_errors = Counter("pasar_limits_errors_total",
                                      "Shared limits that could not be read or written",
                                      ["part"], registry=r)
+        # A database that does not answer (v83, store.py).
+        self.database_unavailable = Counter("pasar_database_unavailable_total",
+                                            "Requests answered 503: the database did not "
+                                            "answer in time, or could not, or had stopped "
+                                            "answering (why: statement_timeout, pool, "
+                                            "connection, silent)", ["why"],
+                                            registry=r)
+        self.db_watchdog_aborts = Gauge("pasar_db_watchdog_aborts",
+                                        "Connections the watchdog shut down, lent past "
+                                        "PASAR_DB_TIMEOUT, since the process started",
+                                        registry=r)
+        self.database_silent = Gauge("pasar_database_silent",
+                                     "1 while the database has stopped answering and "
+                                     "requests are refused at once", registry=r)
 
     # --- what the runtime reports -------------------------------------------
     def model_call(self, provider: str, model: str, seconds: float, prompt: int, cached: int,

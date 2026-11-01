@@ -68,7 +68,7 @@ from sqlalchemy.engine import Engine
 
 from . import __version__
 from .resilience import Gates, TenantLimits
-from .store import is_sqlite, transaction
+from .store import deadline, is_sqlite, transaction
 
 log = logging.getLogger("pasar.limits")
 
@@ -76,6 +76,7 @@ CHANNEL = "pasar_limits"        # LISTEN/NOTIFY: a process joined, left, or open
 EXPIRY = 3                      # heartbeats a process may miss before it is not counted
 FORGET = 3600.0                 # seconds after which a dead process's row is deleted
 LOCAL_SECONDS = 5.0             # after a failed statement, counted here alone this long
+RATE_SECONDS = 2.0              # the longest a request's check waits on the database (v83)
 STOP_SECONDS = 5.0              # the longest a process stopping waits for the database
 
 
@@ -162,13 +163,12 @@ class SharedRate:
     sending as fast as it can past its limit costs the database a statement
     for each request that arrives as a refusal runs out, not one a request.
 
-    A bucket that cannot be read -- a database not migrated to 0003, or a
-    statement that fails -- is this process's own for the next LOCAL_SECONDS
-    (resilience.TenantLimits, as before v82), then asked again; it is counted
-    (pasar_limits_errors_total{part="rate"}) and logged once a minute. A
-    database that does not answer at all holds the request as it holds every
-    statement a request makes: no statement has a client-side bound
-    (docs/SERVICE.md, roadmap)."""
+    A bucket that cannot be read -- a database not migrated to 0003, a
+    statement that fails, or one not answered within RATE_SECONDS (v83: the
+    connection's watchdog shuts it down) -- is this process's own for the next
+    LOCAL_SECONDS (resilience.TenantLimits, as before v82), then asked again;
+    it is counted (pasar_limits_errors_total{part="rate"}) and logged once a
+    minute."""
 
     def __init__(self, engine: Engine, rate: float, burst: int, metrics: Any = None,
                  errors: Counter | None = None):
@@ -244,7 +244,8 @@ class SharedRate:
         """None if admitted; else what the bucket holds now, and how far
         ahead of now its time is."""
         params = {"bucket": bucket, **self._params}
-        fairy = self.engine.raw_connection()
+        with deadline(RATE_SECONDS):            # a database this slow: counted here instead
+            fairy = self.engine.raw_connection()
         conn = fairy.driver_connection
         try:
             conn.autocommit = True

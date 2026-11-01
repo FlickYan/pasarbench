@@ -2729,6 +2729,125 @@ once from many.
 
 ---
 
+## 72. Bounded waits that did not add up to a bounded request
+
+**What happened.** v83 set out to bound every wait on PostgreSQL by one
+setting, and the first version did bound every wait — each on its own. A
+measurement against a database stopped mid-load (SIGSTOP, so that its kernel
+still acknowledges what it is sent) found what that did not cover, in turn:
+
+- **The error the bounds raised was not answered.** An `OperationalError` from
+  a handler went to Starlette's catch-all, which logs a traceback and re-raises
+  it into uvicorn: a traceback a request, and a client that saw its connection
+  reset rather than a 503.
+- **A failed turn asked the silent database again.** A turn whose transaction
+  timed out then waited on its heartbeat's renewal, stuck in a thread, before
+  it could answer (15.5 s for a 10 s timeout); a failed tool call wrote its
+  failure record in another transaction, which waited out the timeout a second
+  time (15.3 s); and the release of its lease would have been a third.
+- **A conflict would have been an outage.** psycopg calls a serialization
+  failure and a deadlock operational errors, as it does a lost connection; so
+  does SQLite a missing table. Classed by type alone, a retried conflict
+  answers 503 and a database without its schema says to come back in 5 s.
+- **Bounded waits, unbounded requests.** With new customers arriving four a
+  second whatever the others were answered, requests during a 30 s stall
+  waited up to 27.4 s and 50 were still waiting when the database came back:
+  a request waited out the pool's timeout, then a connection's, then the
+  watchdog's — each 10 s or less — and every request after it did the same,
+  until the threads ran out (78). Bounding each wait bounds no request while
+  the database stays silent.
+- **The readiness probe's 2 s was the connect timeout's 5**, when the probe
+  had to make a connection.
+- **The breaker that fixed it opened too soon.** Once a connection had been
+  shut down, v83 refused every checkout at once but for one trial a second —
+  and the readiness probe's own 2 s deadline counted, so a 5 s stall, shorter
+  than the timeout, had 12 of 20 new customers refused that would have been
+  answered by waiting.
+- **A lease owed was a conversation refused.** A turn cut off gives its lease
+  back once the database answers, from a thread that tries every 2 s; until
+  then the conversation's next turn — the customer trying again — was told
+  409, 16 times in a run.
+
+**Fix.** Explicit handlers answer the database's errors 503
+`database-unavailable`, logged once a minute; a turn the database failed asks
+it nothing more (the heartbeat abandoned, the tool's failure not recorded, the
+lease given back later). `unavailable()` excludes SQLSTATE class 40 and reads
+SQLite's own error names. `/readyz` is bounded by a timer of its own, not by
+what it waits on. A database is taken to be silent only when a connection lent
+for the whole timeout had to be shut down, or a connection could not be made
+(`Silence`); then a checkout is refused before it waits, but for one at a
+time, a second apart, and the first answer ends it. A turn takes over a lease
+its process owes, in the transaction that takes its own. Measured again,
+after the review below, stopped for 30 s: the requests it caught answered
+503 within 10.9 s, the median new customer in 0.06 s, none still waiting when
+the database came back, 49 threads, every client served again within 1.5 s;
+stopped for 5 s, shorter than the timeout, every request waited it out and
+was answered 200.
+
+**The review.** An independent review of v83 before release, with a cluster
+of its own and a TCP relay it could freeze, refuse or silence just after a
+COMMIT, reproduced eight more:
+
+- **A restart held the silence for a pool's worth of seconds.** A restart
+  leaves the pool's sessions dead; each trial found one, and the pool's
+  replacing it within the same checkout was refused as a checkout of its own
+  — one dead connection burnt a second: the first answer 8–9 s after the
+  database was back, 185 requests answered 503 meanwhile, where v82 answered
+  in 1.2 s.
+- **A trial whose new connection failed was never over.** The trial's end was
+  heard where the pool waited for a connection, not where it made one again,
+  so every other request was refused for the trial's whole 30 s: answered
+  28 s after the database was back.
+- **A retry under its Idempotency-Key was told 409 for a minute** after the
+  503 that told it to come back in 5 s: the key was left to expire, though the
+  turn had written nothing.
+- **A lease whose COMMIT was heard and not answered was held to its expiry**,
+  the conversation answered 409 for a minute.
+- **A healthy database that refused one connection too many made the
+  service silent**: a FATAL is an answer, and was taken for none — 173
+  spells of silence and 346 lines of log in 8 s at a role's connection limit.
+- **`/readyz` said 503 for a busy pool**: a probe waiting its turn for a
+  connection was taken for a database that did not answer, on a healthy one.
+- **A deadline longer than the timeout was kept longer**: `PASAR_DB_TIMEOUT=1`
+  and a readiness probe's 2 s gave a connection 2 s.
+- **The healthy path was 6–8.5% slower at 8 threads**, a checkout and a
+  `SELECT 1` at a time: every lend took a lock and woke the watchdog, and
+  asked the kernel for the socket's identity.
+
+Fixed: a checkout is admitted once, whole — its wait, a connection made, a dead
+one replaced — and a trial's that fails, wherever, is over; a key whose request
+the database did not answer is forgotten once it answers (and an answer it did
+not take is sent all the same, and kept once it does); a lease's transaction
+that it did not answer is given back in case; a connection refused with a FATAL
+is an answer; `/readyz` asks on a connection of its own, and through the pool
+only while the database is taken to be silent; a deadline is the timeout at
+most; the watchdog is told of a connection with a dictionary write and no lock
+— it looks four times a second — the socket's identity noted when the
+connection is made: 1,478 transactions a second at 8 threads against v82's
+1,527 and the reviewed build's 1,429 (medians of 15 runs each, alternated;
+what is left is the server arming its statement timer for each statement).
+After a restart (3 s down, 16 clients) the clients are answered again 1.0–1.1 s
+after the database is back at the median, as with v82, where the reviewed
+build took 7.1 s — a trial refused at once is tried again sooner than one that
+waited — and the restart's requests are answered 503, where v82 answered them
+500 and logged 238–252 tracebacks. Two the review suspected are fixed too:
+the watchdog checks the socket on a duplicate of its descriptor before it
+shuts it, so a number reused between the two is never the one shut down; and
+a statement's own limits (SQLSTATE classes 54, 55) are no longer outages —
+only a connection's, the server's resources', an operator's and the system's
+(classes 08, 53, 57, 58). Each has a test.
+
+**Lesson.** A timeout bounds a wait; only refusing to wait bounds an outage.
+The first measurement had no traffic arriving during the stall, so each client
+waited once and the bounds looked like the answer; with arrivals they were the
+start of one. And a breaker is two machines, one that opens and one that
+closes: the first was measured against a database that stopped, the second
+only against one that came back as it went — not one that came back from a
+restart with every pooled session dead, refused a connection with an answer,
+or was merely busy.
+
+---
+
 ## What this list is for
 
 Two things.

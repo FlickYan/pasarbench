@@ -48,9 +48,13 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
+import logging
 import math
+import os
 import random
 import re
+import socket
+import sqlite3
 import threading
 import time
 import weakref
@@ -63,6 +67,8 @@ from typing import Any, Callable, Iterator
 from sqlalchemy import (Connection, Engine, bindparam, create_engine, event, insert, select,
                         text, update)
 from sqlalchemy.exc import DataError, IntegrityError
+from sqlalchemy.exc import TimeoutError as PoolTimeout
+from sqlalchemy.pool import QueuePool
 
 from ..db import CURRENCY_EXPONENT, SGD_RATE, Action, Database, fmt_money, seed
 from ..tools import CHECKS, TOOLS, WRITE_TOOLS
@@ -125,8 +131,14 @@ def id_sequence(tenant_id: str) -> str:
     return "ids_" + hashlib.sha256(tenant_id.encode()).hexdigest()[:24]
 
 
+DB_TIMEOUT = 10.0       # seconds the service waits on the database (PASAR_DB_TIMEOUT, v83)
+
+
+SQLITE_BUSY_SECONDS = 30.0      # a write waits for SQLite's one write lock this long
+
+
 def make_engine(url: str, *, pool_size: int = 10, max_overflow: int = 20,
-                echo: bool = False) -> Engine:
+                echo: bool = False, timeout: float = DB_TIMEOUT) -> Engine:
     """An engine for SQLite or PostgreSQL.
 
     SQLite: one file, WAL so readers do not block the writer, foreign keys on,
@@ -136,7 +148,8 @@ def make_engine(url: str, *, pool_size: int = 10, max_overflow: int = 20,
     if url.startswith("sqlite"):
         engine = create_engine(url, echo=echo, pool_size=pool_size, max_overflow=max_overflow,
                                hide_parameters=True, json_serializer=_json,
-                               connect_args={"check_same_thread": False, "timeout": 30})
+                               connect_args={"check_same_thread": False,
+                                             "timeout": SQLITE_BUSY_SECONDS})
 
         @event.listens_for(engine, "connect")
         def _connect(dbapi_conn, _record):            # noqa: ANN001
@@ -144,7 +157,7 @@ def make_engine(url: str, *, pool_size: int = 10, max_overflow: int = 20,
             cur = dbapi_conn.cursor()
             cur.execute("PRAGMA foreign_keys=ON")
             cur.execute("PRAGMA journal_mode=WAL")
-            cur.execute("PRAGMA busy_timeout=30000")
+            cur.execute(f"PRAGMA busy_timeout={int(SQLITE_BUSY_SECONDS * 1000)}")
             cur.execute("PRAGMA synchronous=NORMAL")
             cur.close()
 
@@ -157,17 +170,320 @@ def make_engine(url: str, *, pool_size: int = 10, max_overflow: int = 20,
     # hide_parameters: a failed statement's error never carries the values it
     # was given (a customer's address, what she said). timezone=UTC: the
     # server's own zone never decides what day a timestamp falls on.
-    engine = create_engine(url, echo=echo, pool_size=pool_size, max_overflow=max_overflow,
-                           pool_recycle=1800, hide_parameters=True, json_serializer=_json,
-                           connect_args={"options": "-c timezone=UTC"})
-    _check_on_checkout(engine)
+    #
+    # PostgreSQL that does not answer (v83) -- stopped, partitioned, a pooler
+    # hung -- is waited on for `timeout` seconds at most, never as long as
+    # the network holds a connection: a statement the server runs is ended by
+    # it after 80% of that (statement_timeout, the connection kept); a
+    # connection lent from the pool comes back within it or its socket is
+    # shut down (Watchdog); a new one is made within 5 s or not at all
+    # (connect_timeout); a free one is waited for as long (pool_timeout); a
+    # session left inside a transaction is ended by the server after three
+    # times it (idle_in_transaction_session_timeout); and the kernel gives up
+    # on a peer that has gone silent (keepalives, tcp_user_timeout).
+    #
+    # And once it has been seen not to answer, it is not waited on by every
+    # request in turn: until a connection answers again, a checkout is
+    # refused at once, but for one at a time that tries it (Silence).
+    ms = int(timeout * 1000)
+    engine = create_engine(
+        url, echo=echo, pool_size=pool_size, max_overflow=max_overflow, pool_recycle=1800,
+        pool_timeout=timeout, poolclass=SilencePool, hide_parameters=True,
+        json_serializer=_json,
+        connect_args={"options": f"-c timezone=UTC -c statement_timeout={int(ms * 0.8)} "
+                                 f"-c idle_in_transaction_session_timeout={ms * 3}",
+                      "connect_timeout": max(2, int(min(timeout, 5))),
+                      "keepalives": 1, "keepalives_idle": 10, "keepalives_interval": 5,
+                      "keepalives_count": 3, "tcp_user_timeout": ms})
+    silence = Silence(trial_seconds=max(30.0, 3 * timeout))
+    engine.pool.pasar_silence = silence         # type: ignore[attr-defined]
+    engine.pasar_silence = silence              # type: ignore[attr-defined]
+
+    @event.listens_for(engine, "do_connect")
+    def _dial(dialect, _record, cargs, cparams):      # noqa: ANN001
+        if not in_checkout():                   # (a checkout was admitted whole)
+            silence.admit()
+        try:
+            return dialect.connect(*cargs, **cparams)
+        except dialect.loaded_dbapi.OperationalError as e:
+            if no_answer(e):
+                silence.silent("a connection could not be made")
+            raise
+
+    _check_on_checkout(engine, Watchdog(timeout, silence), silence)
     return engine
 
 
 PING_AFTER = 10.0       # seconds idle in the pool past which a connection is pinged
 
 
-def _check_on_checkout(engine: Engine) -> None:
+class _Unset:
+    pass
+
+
+_DEADLINE = threading.local()
+
+
+@contextmanager
+def deadline(seconds: float | None) -> Iterator[None]:
+    """The longest a connection taken in this block, in this thread, may be
+    lent: `seconds`, or None for work an operator asked for that takes as
+    long as it takes -- seeding a world, replaying a tenant, forgetting
+    expired keys: no watchdog, and on PostgreSQL no statement or idle
+    timeout in its transactions (v83)."""
+    before = getattr(_DEADLINE, "seconds", _Unset)
+    _DEADLINE.seconds = seconds
+    try:
+        yield
+    finally:
+        if before is _Unset:
+            del _DEADLINE.seconds
+        else:
+            _DEADLINE.seconds = before
+
+
+def unbounded() -> bool:
+    """Whether this thread is in a deadline(None) block."""
+    return getattr(_DEADLINE, "seconds", _Unset) is None
+
+
+class Watchdog:
+    """Every connection lent from the pool comes back within its deadline,
+    or its socket is shut down: a statement waiting on a database that does
+    not answer -- stopped, partitioned, a pooler hung -- then raises at once
+    (the server closed the connection, as psycopg says), the pool replaces
+    the connection, and the request is answered 503 (v83). The server's own
+    statement_timeout ends what it is running first, keeping the connection;
+    this is for when the server cannot answer at all.
+
+    Lending and taking back cost a transaction one dictionary operation each,
+    no lock and no wakeup: the watchdog looks every `every` seconds (a
+    quarter of a second at most), so a deadline is kept to within that. It
+    shuts down only the socket it was lent with -- the same file, by its
+    inode, noted when the connection was made -- never one that took its
+    descriptor's number since."""
+
+    def __init__(self, seconds: float, silence: "Silence | None" = None):
+        self.seconds = seconds
+        self.silence = silence
+        self.aborted = 0
+        self.every = min(0.25, seconds / 4)
+        self._lent: dict[int, tuple[float, int, tuple[int, int], bool]] = {}
+        self._lock = threading.Lock()
+        self._thread: threading.Thread | None = None
+
+    def lend(self, key: int, sock: tuple[int, tuple[int, int]], seconds: float) -> None:
+        """Watch `key`'s socket (its descriptor and identity) for `seconds`,
+        the timeout at most. One lent for the whole timeout that has to be
+        shut down says the database has stopped answering (Silence); one lent
+        for less -- a readiness probe's 2 s, a rate limit's -- says only that
+        it is slower than that."""
+        seconds = min(seconds, self.seconds)
+        self._lent[key] = (time.monotonic() + seconds, sock[0], sock[1],
+                           seconds >= self.seconds)
+        if self._thread is None:
+            with self._lock:
+                if self._thread is None:
+                    self._thread = threading.Thread(target=self._run, daemon=True,
+                                                    name="pasar-db-watchdog")
+                    self._thread.start()
+
+    def back(self, key: int) -> bool:
+        """Whether `key` was lent and is back in time."""
+        return self._lent.pop(key, None) is not None
+
+    def _run(self) -> None:
+        while True:
+            time.sleep(self.every)
+            try:
+                self._look()
+            except Exception:  # noqa: BLE001 -- the watchdog itself must not stop
+                log.exception("the database watchdog failed a round")
+
+    def _look(self) -> None:
+        now = time.monotonic()
+        for key, (due, fd, ident, whole) in list(self._lent.items()):
+            if due > now or self._lent.pop(key, None) is None:
+                continue                        # not due, or back meanwhile
+            if _shut(fd, ident):
+                self.aborted += 1
+                if whole and self.silence is not None:
+                    self.silence.silent(f"a connection lent did not answer in "
+                                        f"{self.seconds:g}s")
+
+
+SILENT_RETRY = 1.0      # seconds between tries of a database that has stopped answering
+TOLD_EVERY = 60.0       # a silence is logged once a minute at most
+log = logging.getLogger("pasar.db")
+_CHECKOUT = threading.local()
+
+
+def in_checkout() -> bool:
+    """Whether this thread is inside a pool checkout admitted by Silence."""
+    return getattr(_CHECKOUT, "depth", 0) > 0
+
+
+class DatabaseSilent(PoolTimeout):
+    """A checkout refused at once: the database has stopped answering
+    (Silence). A pool timeout's kind, so that it is answered as one: 503."""
+
+
+class Silence:
+    """Whether this process's database has stopped answering, as it last
+    saw: from a connection lent for the whole timeout that the watchdog had
+    to shut down, or one that could not be made, until a connection answers
+    again: one lent comes back in time.
+
+    While it is silent a checkout is refused at once (DatabaseSilent), not
+    waited on: a request that came during an outage would otherwise wait
+    out its own timeout, holding a thread and a connection, and so would
+    every one after it, until the pool and the threads ran out -- each
+    bounded, and together without bound. One checkout at a time, every
+    SILENT_RETRY seconds, is let through to try it for real: a request, a
+    heartbeat, a lease given back; its answer, or any other connection's,
+    ends the silence (v83)."""
+
+    def __init__(self, retry: float = SILENT_RETRY, trial_seconds: float = 30.0):
+        self.retry = retry
+        self.trial_seconds = trial_seconds      # a trial not heard from in this long is lost
+        self.since: float | None = None         # monotonic; None while it answers
+        self.refused = 0
+        self.spells = 0
+        self._refused_before = 0
+        self._until = 0.0
+        self._trial: tuple[int, float] | None = None    # (thread, since)
+        self._lock = threading.Lock()
+        self._told = -TOLD_EVERY                # when a silence was last logged
+        self._telling = False                   # this one was: its end is logged too
+
+    def admit(self) -> None:
+        """Return to take a connection; raise DatabaseSilent to be refused."""
+        if self.since is None:
+            return
+        me = threading.get_ident()
+        with self._lock:
+            since = self.since
+            if since is None:
+                return
+            now = time.monotonic()
+            trial = self._trial
+            if trial is not None and trial[0] == me:
+                return
+            if trial is not None and now - trial[1] > self.trial_seconds:
+                trial = self._trial = None
+            # An operator's unbounded work is no trial: nothing would end it.
+            if trial is None and now >= self._until and not unbounded():
+                self._trial = (me, now)
+                return
+            self.refused += 1
+        raise DatabaseSilent(f"the database has not answered for {now - since:.0f}s")
+
+    def silent(self, why: str) -> None:
+        """A connection did not answer, or could not be made."""
+        with self._lock:
+            now = time.monotonic()
+            if self.since is not None:
+                return                          # (the trials' own ends set the next)
+            self._until = now + self.retry
+            self.since = now
+            self.spells += 1
+            self._refused_before = self.refused
+            self._telling = now - self._told >= TOLD_EVERY
+            if not self._telling:
+                return
+            self._told = now
+        log.warning(f"the database has stopped answering ({why}): until it does, a request "
+                    f"is answered 503 at once, and one at a time tries it every "
+                    f"{self.retry:g}s (said once a minute at most)")
+
+    def trial_over(self) -> None:
+        """This thread's checkout failed: if it was the trial, another may
+        try SILENT_RETRY seconds on -- or sooner after one that failed at
+        once, a connection refused (a database restarting), which costs
+        nothing to try again: twice as long as it took, a tenth of
+        SILENT_RETRY at least."""
+        if self._trial is None:
+            return
+        with self._lock:
+            trial = self._trial
+            if trial is not None and trial[0] == threading.get_ident():
+                now = time.monotonic()
+                self._trial = None
+                self._until = now + min(self.retry, max(self.retry / 10, 2 * (now - trial[1])))
+
+    def answered(self) -> None:
+        if self.since is None:
+            return
+        with self._lock:
+            if self.since is None:
+                return
+            took = time.monotonic() - self.since
+            self.since, self._trial = None, None
+            n = self.refused - self._refused_before
+            if not self._telling:
+                return
+        log.warning(f"the database answers again, after {took:.1f}s; {n} "
+                    f"{'checkout' if n == 1 else 'checkouts'} refused at once meanwhile")
+
+
+class SilencePool(QueuePool):
+    """QueuePool, refusing a checkout at once while its database is silent:
+    before it waits for a connection or makes one. A checkout is admitted
+    once, whole -- its wait, a connection made, a dead one found and
+    replaced within it -- and a trial's that fails, wherever it fails, ends
+    the trial."""
+
+    pasar_silence: Silence | None = None
+
+    def connect(self):                          # noqa: ANN201
+        silence = self.pasar_silence
+        if silence is None:
+            return super().connect()
+        silence.admit()
+        depth = getattr(_CHECKOUT, "depth", 0)
+        _CHECKOUT.depth = depth + 1
+        try:
+            return super().connect()
+        except BaseException:
+            silence.trial_over()
+            raise
+        finally:
+            _CHECKOUT.depth = depth
+
+    def recreate(self):                         # noqa: ANN202 -- engine.dispose()
+        new = super().recreate()
+        new.pasar_silence = self.pasar_silence
+        return new
+
+
+def _shut(fd: int, ident: tuple[int, int]) -> bool:
+    """Shut down the socket on `fd` if it is still the one `ident` names --
+    checked on a duplicate of it, so that the descriptor checked is the one
+    shut down even if libpq closes `fd` and its number is taken meanwhile."""
+    try:
+        dup = os.dup(fd)
+    except OSError:
+        return False
+    try:
+        st = os.fstat(dup)
+        if (st.st_dev, st.st_ino) != ident:
+            return False
+        sock = socket.socket(fileno=dup)
+        dup = -1                                # the socket closes it
+        try:
+            sock.shutdown(socket.SHUT_RDWR)
+        finally:
+            sock.close()
+        return True
+    except OSError:
+        return False
+    finally:
+        if dup >= 0:
+            os.close(dup)
+
+
+def _check_on_checkout(engine: Engine, watchdog: Watchdog | None = None,
+                       silence: "Silence | None" = None) -> None:
     """A pooled connection is checked before it is lent: one used within
     PING_AFTER seconds by looking at its socket -- a server that ended the
     session (a restart, an administrator, a crash) leaves it readable or
@@ -175,29 +491,62 @@ def _check_on_checkout(engine: Engine) -> None:
     round trip, as pool_pre_ping would on every checkout. A connection found
     dead is replaced before anyone sees it. A turn checks out a connection
     for each of its transactions: a ping each was an eighth of their round
-    trips (docs/SERVICE.md, v80)."""
+    trips (docs/SERVICE.md, v80). The watchdog has it from before the check
+    -- a ping to a server that does not answer is a wait like any other --
+    until it is back. One lent and back in time says the database answers
+    (Silence) -- not one made: a server can take connections and answer no
+    statement."""
+    engine.pasar_watchdog = watchdog            # type: ignore[attr-defined]
 
     @event.listens_for(engine, "connect")
-    def _connected(_dbapi_conn, record):          # noqa: ANN001
+    def _connected(dbapi_conn, record):           # noqa: ANN001
         record.info["pasar_used"] = time.monotonic()
+        pgconn = getattr(dbapi_conn, "pgconn", None)
+        if watchdog is not None and pgconn is not None:
+            try:                                # the socket, as the watchdog will know it
+                fd = pgconn.socket
+                st = os.fstat(fd)
+                record.info["pasar_sock"] = (fd, (st.st_dev, st.st_ino))
+            except Exception:  # noqa: BLE001 -- no socket to watch: the check finds it
+                pass
 
     @event.listens_for(engine, "checkin")
-    def _returned(_dbapi_conn, record):           # noqa: ANN001
+    def _returned(dbapi_conn, record):            # noqa: ANN001
         record.info["pasar_used"] = time.monotonic()
+        if watchdog is not None and watchdog.back(id(record)) and dbapi_conn is not None \
+                and silence is not None:
+            silence.answered()
+
+    if watchdog is not None:
+        @event.listens_for(engine, "invalidate")
+        def _dropped(_dbapi_conn, record, _exc):  # noqa: ANN001
+            watchdog.back(id(record))
+            if silence is not None and not in_checkout():
+                silence.trial_over()            # (within one, the checkout's end says)
 
     @event.listens_for(engine, "checkout")
     def _lent(dbapi_conn, record, _proxy):        # noqa: ANN001
         from sqlalchemy.exc import DisconnectionError
-        if time.monotonic() - record.info.get("pasar_used", 0.0) <= PING_AFTER:
-            quiet = _quiet(dbapi_conn)
-            if quiet:
-                return
-            if quiet is False:
-                raise DisconnectionError("the server ended the session")
-        try:                                      # idle long, or no way to tell: ping it
-            engine.dialect.do_ping(dbapi_conn)
-        except Exception as e:  # noqa: BLE001 -- any failure: a new connection
-            raise DisconnectionError(f"ping failed: {type(e).__name__}") from None
+        if watchdog is not None:
+            seconds = getattr(_DEADLINE, "seconds", watchdog.seconds)
+            sock = record.info.get("pasar_sock")
+            if seconds is not None and sock is not None:
+                watchdog.lend(id(record), sock, seconds)
+        try:
+            if time.monotonic() - record.info.get("pasar_used", 0.0) <= PING_AFTER:
+                quiet = _quiet(dbapi_conn)
+                if quiet:
+                    return
+                if quiet is False:
+                    raise DisconnectionError("the server ended the session")
+            try:                                  # idle long, or no way to tell: ping it
+                engine.dialect.do_ping(dbapi_conn)
+            except Exception as e:  # noqa: BLE001 -- any failure: a new connection
+                raise DisconnectionError(f"ping failed: {type(e).__name__}") from None
+        except DisconnectionError:
+            if watchdog is not None:
+                watchdog.back(id(record))
+            raise
 
 
 def _quiet(dbapi_conn: Any) -> bool | None:
@@ -233,7 +582,60 @@ def transaction(engine: Engine, *, write: bool, snapshot: bool = False) -> Itera
         opts["isolation_level"] = "REPEATABLE READ"
     with engine.connect().execution_options(**opts) as conn:
         with conn.begin():
+            if unbounded() and not is_sqlite(engine):   # an operator's long work (deadline)
+                conn.exec_driver_sql("SET LOCAL statement_timeout = 0")
+                conn.exec_driver_sql("SET LOCAL idle_in_transaction_session_timeout = 0")
             yield conn
+
+
+SQLITE_UNAVAILABLE = {"BUSY", "LOCKED", "IOERR", "CANTOPEN", "FULL", "NOMEM", "PROTOCOL"}
+# SQLSTATE classes that say the database could not answer: a connection
+# exception, resources it ran out of, an operator's intervention (a statement
+# ended at statement_timeout, a shutdown), a system error.
+UNAVAILABLE_SQLSTATE = {"08", "53", "57", "58"}
+
+
+def unavailable(e: BaseException) -> bool:
+    """Whether `e` says the database did not answer, or could not -- a
+    connection lost, refused, timed out or shut down by the watchdog, a
+    statement it ended at statement_timeout, no free connection in the pool
+    in time, a checkout refused while it is silent, SQLite's lock waited out
+    -- and not that a statement was wrong, nor a conflict tried again (a
+    serialization failure or a deadlock, SQLSTATE class 40, which psycopg
+    also calls operational), nor a limit a statement ran into (class 54):
+    what the service answers 503 for (v83)."""
+    from sqlalchemy.exc import DBAPIError, OperationalError
+    if isinstance(e, PoolTimeout):              # DatabaseSilent among them
+        return True
+    if not isinstance(e, DBAPIError):
+        return False
+    if e.connection_invalidated:                # SQLAlchemy saw the connection go
+        return True
+    orig = getattr(e, "orig", None)
+    if isinstance(orig, sqlite3.Error):
+        if not isinstance(e, OperationalError):
+            return False
+        # SQLite says "operational" of a missing table and a syntax error
+        # too: only a lock waited out, or the file not there to be had, is
+        # the database not answering.
+        name = getattr(orig, "sqlite_errorname", None)        # Python 3.11+
+        if name:
+            return name.split("_")[1] in SQLITE_UNAVAILABLE
+        return any(m in str(orig) for m in ("database is locked", "database table is locked",
+                                            "disk I/O error", "unable to open database file",
+                                            "database or disk is full"))
+    code = getattr(orig, "sqlstate", None) or ""
+    if not code:                                # the client's own: lost, refused, timed out
+        return isinstance(e, OperationalError)
+    return code[:2] in UNAVAILABLE_SQLSTATE
+
+
+def no_answer(e: BaseException) -> bool:
+    """Whether a connection that could not be made got no answer from the
+    server -- timed out, refused, unreachable, closed as it started -- not
+    one: a FATAL the server sent (too many connections, a password refused,
+    no such database) is the server answering, and does not make it silent."""
+    return "FATAL" not in str(e)
 
 
 def create_all(engine: Engine) -> None:
@@ -306,7 +708,9 @@ def seed_tenant(engine: Engine, tenant_id: str, name: str, world: str,
     tables = world_tables(world)
     digest = world_digest(tables)
     slices(engine).forget(tenant_id)
-    with transaction(engine, write=True) as conn:
+    # A world of thousands of customers is seconds of inserts in one
+    # transaction: an operator's long work, with no deadline (v83).
+    with deadline(None), transaction(engine, write=True) as conn:
         conn.execute(insert(S.tenants).values(tenant_id=tenant_id, name=name, world=world,
                                               world_digest=digest,
                                               daily_budget_picousd=daily_budget_picousd))

@@ -24,7 +24,8 @@ import hashlib
 import secrets
 import threading
 import time
-from datetime import timedelta
+from datetime import datetime, timedelta
+from typing import Any
 
 from sqlalchemy import Engine, delete, insert, select, update
 from sqlalchemy.exc import IntegrityError
@@ -32,7 +33,7 @@ from sqlalchemy.exc import IntegrityError
 from . import errors as E
 from . import schema as S
 from .runtime import _aware, utcnow
-from .store import transaction
+from .store import deadline, transaction
 
 
 def hash_key(secret: str) -> str:
@@ -95,9 +96,10 @@ class Idempotency:
         self.ttl = timedelta(hours=ttl_hours)
         self.running = timedelta(seconds=running_seconds)
 
-    def begin(self, tenant_id: str, key: str, req_hash: str) -> tuple[int, str] | None:
-        """None: run the request (the key is now held for it). (status, body):
-        the answer the first request with this key got, as it was sent."""
+    def begin(self, tenant_id: str, key: str, req_hash: str) -> tuple[int, str] | datetime:
+        """A time: run the request -- the key is held for it, since then, and
+        that time names the hold (forget, complete). (status, body): the
+        answer the first request with this key got, as it was sent."""
         if not key or len(key) > 200:
             raise E.BadRequest("Idempotency-Key must be 1 to 200 characters")
         k = S.idempotency_keys
@@ -114,7 +116,7 @@ class Idempotency:
                                                   request_hash=req_hash, state="in_progress",
                                                   created_at=now,
                                                   expires_at=now + self.running))
-                    return None
+                    return now
         except IntegrityError:
             # Another request with this key inserted it first, a moment ago.
             raise E.IdempotencyInProgress(retry_after=1) from None
@@ -134,35 +136,51 @@ class Idempotency:
                          .values(expires_at=utcnow() + self.running))
 
     def complete(self, tenant_id: str, key: str, status: int, body: str,
-                 req_hash: str) -> None:
+                 req_hash: str, held: datetime | None = None) -> None:
         """Keep the answer. The first answer stands; and an answer is kept even
         if its key's row is gone (expired and taken by a retry that was then
         turned away): a retry must find it, not run the request again."""
+        try:
+            with transaction(self.engine, write=True) as conn:
+                self.complete_in(conn, tenant_id, key, status, body, req_hash, held)
+        except IntegrityError:
+            pass                        # another answer was kept first: it stands
+
+    def complete_in(self, conn: Any, tenant_id: str, key: str, status: int, body: str,
+                    req_hash: str, held: datetime | None = None) -> None:
+        """complete(), in the caller's transaction; with `held`, over that
+        hold only -- a later request's under the same key is its own."""
         k = S.idempotency_keys
         now = utcnow()
         values = dict(state="completed", status_code=status, response=body,
                       expires_at=now + self.ttl)
-        try:
-            with transaction(self.engine, write=True) as conn:
-                if conn.execute(update(k).where(k.c.tenant_id == tenant_id, k.c.key == key,
-                                                k.c.state == "in_progress")
-                                .values(**values)).rowcount == 1:
-                    return
-                if conn.execute(select(k.c.key).where(k.c.tenant_id == tenant_id,
-                                                      k.c.key == key)).first() is None:
-                    conn.execute(insert(k).values(tenant_id=tenant_id, key=key,
-                                                  request_hash=req_hash, created_at=now,
-                                                  **values))
-        except IntegrityError:
-            pass                        # another answer was kept first: it stands
+        mine = [k.c.tenant_id == tenant_id, k.c.key == key, k.c.state == "in_progress"]
+        if held is not None:
+            mine.append(k.c.created_at == held)
+        if conn.execute(update(k).where(*mine).values(**values)).rowcount == 1:
+            return
+        if conn.execute(select(k.c.key).where(k.c.tenant_id == tenant_id,
+                                              k.c.key == key)).first() is None:
+            conn.execute(insert(k).values(tenant_id=tenant_id, key=key, request_hash=req_hash,
+                                          created_at=now, **values))
 
-    def abandon(self, tenant_id: str, key: str) -> None:
-        k = S.idempotency_keys
+    def abandon(self, tenant_id: str, key: str, held: datetime | None = None) -> None:
+        """Free the key of a request turned away before it wrote anything."""
         with transaction(self.engine, write=True) as conn:
-            conn.execute(delete(k).where(k.c.tenant_id == tenant_id, k.c.key == key,
-                                         k.c.state == "in_progress"))
+            self.forget_in(conn, tenant_id, key, held)
+
+    def forget_in(self, conn: Any, tenant_id: str, key: str,
+                  held: datetime | None = None) -> None:
+        """abandon(), in the caller's transaction; with `held`, that hold only:
+        a key forgotten late never frees another request's hold on it."""
+        k = S.idempotency_keys
+        mine = [k.c.tenant_id == tenant_id, k.c.key == key, k.c.state == "in_progress"]
+        if held is not None:
+            mine.append(k.c.created_at == held)
+        conn.execute(delete(k).where(*mine))
 
     def purge(self) -> int:
         k = S.idempotency_keys
-        with transaction(self.engine, write=True) as conn:
+        # An operator's work, as long as there are keys to forget (v83).
+        with deadline(None), transaction(self.engine, write=True) as conn:
             return conn.execute(delete(k).where(k.c.expires_at <= utcnow())).rowcount

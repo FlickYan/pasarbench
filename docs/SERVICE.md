@@ -58,6 +58,13 @@ What holds it together, and how each claim is checked:
   6.4–6.5 a second against 3.9–4.2 ([below](#one-limit-for-the-deployment-v82)). A
   tenant's rate holds whichever server it reaches, and a provider failing for
   one server is not called from the other 11–16 ms on.
+- **A database that stops answering is answered for.** Stopped for 30 s under
+  load, v82 held every request until it came back — 123 of them waiting by
+  then, on up to 108 threads — and its readiness probe waited with them, then
+  said ready. v83 answers each 503 within its 10 s timeout, and at once once
+  it has seen the database silent — a new customer in 0.06 s at the median —
+  says 503 on `/readyz` within 2 s, and serves every client again within
+  1.5 s of the database's return ([below](#a-database-that-goes-silent-v83)).
 
 An independent review of the service before release reported thirteen defects
 — a model's bad arguments could crash a turn, a key could be freed after its
@@ -68,11 +75,16 @@ PostgreSQL. Each is fixed and pinned by a test ([WHAT_FAILED](WHAT_FAILED.md)
 #59–#66). The review of v82's shared limits reproduced seven more — what they
 did when the database was not migrated, not answering or busy behind a
 writer — and its second and third passes, over the fixes, one each that a fix
-had made; each is fixed and tested before release (#71).
+had made; each is fixed and tested before release (#71). The review of v83's
+bounded waits reproduced eight — a restart that kept the service refusing
+requests for a pool's worth of seconds, a trial that never ended, a key and a
+lease held for a minute after a 503, a connection limit and a busy pool each
+taken for a database that does not answer — each fixed and tested before
+release (#72).
 
 ```
 pip install -r requirements-service.txt      # the benchmark itself still needs nothing
-python -m tests.test_service                 # 148 checks on SQLite; PASAR_TEST_POSTGRES_URL, 52 more
+python -m tests.test_service                 # 157 checks on SQLite; PASAR_TEST_POSTGRES_URL, 66 more
 python scripts/service_sweep.py --self-test  # the real-model kit on a stand-in provider: no key
 ```
 
@@ -191,6 +203,9 @@ Turn.arun ── txn: answer what a crash left unanswered; her message ───
   │
   └─ until the agent replies — or a cap, a budget, the provider: a fallback reply
      txn: the lease checked and released, the fallback ─────────────────▶ event turn.completed
+
+  any wait on the database: PASAR_DB_TIMEOUT (10 s) at most, then        503 Retry-After
+  and while it has stopped answering, at once (v83)
 ```
 
 Every step commits before the next begins, and each event a stream sends is the
@@ -295,6 +310,14 @@ table below); a tampered row found.
   an expiry (60 s), taken with the row it protects (`UPDATE ... RETURNING`),
   renewed by a heartbeat every 20 s while the turn runs and checked by every
   write the turn makes; a dead process frees its conversation within a minute.
+- **Every wait on the database ends** (v83). On PostgreSQL, `PASAR_DB_TIMEOUT`
+  (10 s) bounds them all: a statement the server ends at 80% of it, a
+  connection lent from the pool is back within it or a watchdog shuts its
+  socket, a new one is made within 5 s, and the kernel gives up on a peer
+  gone silent. Once the database has been seen not to answer, a checkout is
+  refused at once — but for one at a time, a second apart, that tries it —
+  until a connection answers again, so an outage holds no thread and no
+  connection a request (Measured).
 - **Fewer round trips, and less CPU in each.** The catalog (products, sellers,
   livestream claims) is read-only to the tools and cached per process; a
   customer's slice is kept by the write it was read at, so a tool call whose
@@ -351,16 +374,18 @@ table below); a tampered row found.
   event since.
 - **Errors are RFC 9457 problem details** (`application/problem+json`), each
   kind its own `type` — `turn-in-progress`, `budget-exhausted`,
-  `idempotency-key-reused`, ... — so a client branches on the type, never the
-  wording; 429 and 503 carry `Retry-After` wherever waiting helps (not a
-  conversation that has spent its budget: it needs a new one).
+  `idempotency-key-reused`, `database-unavailable`, ... — so a client branches
+  on the type, never the wording; 429 and 503 carry `Retry-After` wherever
+  waiting helps (not a conversation that has spent its budget: it needs a new
+  one).
 - **Idempotency-Key** on the two POSTs that create things; replayed answers
   carry `Idempotent-Replayed: true` and the first answer's bytes (kept as text:
   JSONB would reorder their keys), a retried stream its last event. Freed only
   for a request turned away before it wrote anything; a running request's key
-  lives as long as its turn (the lease's heartbeat), and one whose request died
-  with its process expires with the lease. The same key with another body: 422;
-  while the first is still running: 409.
+  lives as long as its turn (the lease's heartbeat), one whose request died
+  with its process expires with the lease, and one whose request the database
+  did not answer is forgotten once it answers (v83). The same key with another
+  body: 422; while the first is still running: 409.
 - **Input with the shape it should have.** Every id in a path or query must look
   like one, and no field may carry a NUL character, which PostgreSQL's text
   cannot hold (422); a NUL the model sends is stored as U+FFFD.
@@ -369,10 +394,12 @@ table below); a tampered row found.
   Another tenant's conversation answers 404, not 403.
 - **Pagination by key**, not offset (`before=<id>`); `X-Request-ID` on every
   response.
-- **Operations:** `/healthz` (the process), `/readyz` (the database answers and
-  has the schema), `/metrics` (Prometheus: requests by route template, turns by
-  how they stopped, model calls, tokens and cost, tool calls, conflicts,
-  rejections, calls in flight per provider — never an id in a label). Logs are
+- **Operations:** `/healthz` (the process), `/readyz` (the database answers
+  within 2 s, whatever it does, and has the schema), `/metrics` (Prometheus:
+  requests by route template, turns by how they stopped, model calls, tokens
+  and cost, tool calls, conflicts, rejections, calls in flight per provider,
+  requests the database did not answer and why, whether it has stopped
+  answering — never an id in a label). Logs are
   one JSON object a line, with ids, counts and timings, never what anyone said —
   by construction: an exception is logged as its type, SQLSTATE and frames, not
   its message (a database's can quote the row it refused), the engines keep
@@ -406,6 +433,7 @@ runs it:
 | money | prices exact to the microdollar, costs additive, effective dates, budgets for a conversation and a tenant's day |
 | a customer's slice, kept | a second read with her write_seq unchanged uses the first's slice (one read of her tables, the same answer); a write makes the next read read again, and it sees the write; rows keyed by plain str; `copy_world` equal to `deepcopy`, a nested value included, and nothing the copy changes reaching the original; off at 0; on both databases |
 | the pool | a connection back within seconds is lent with no round trip, one idle longer is pinged, and one whose session the server ended (`pg_terminate_backend`) is replaced either way before it is lent: the next transaction runs, on a new session (PostgreSQL) |
+| a database that goes silent | a connection's bounds as the server holds them (`statement_timeout` at 80% of `PASAR_DB_TIMEOUT`, idle in a transaction at three times it) and as the kernel does (keepalives, `TCP_USER_TIMEOUT`); a statement past it ended by the server, the connection kept; one held on a lock past its deadline shut down by the watchdog, the next checkout refused at once, one a second later answered and the silence over; a shorter deadline's shutdown refusing nothing, and a longer one held to the timeout; after a restart, the first trial replacing a dead connection within its own checkout and ending the silence at once; an operator's long work not bounded; a listener that never answers: a connection given up in 2 s, then `/readyz` and a request answered 503 at once; `/readyz` within 2 s where connecting takes 5, and 200 at once with every connection of the pool lent; a turn's write held past the timeout answered 503, its lease given back by the releaser within 2 s or by the conversation's next turn at once, and its Idempotency-Key forgotten so that the same request runs again under it (PostgreSQL); the rules for a trial — one at a time, the next after one fails, even as it makes its connection again, or is never heard from — and a silence said once a minute at most; what is not the database failing to answer — a serialization failure, a deadlock, a statement's own limits, a constraint broken, a table SQLite does not have, a FATAL refusing a connection; a write that waits out SQLite's lock answered 503 and its key forgotten; a lease whose transaction went unanswered owed back; a database without the schema 500 |
 | turns that wait | 24 turns at once on 4 worker threads, three model calls of 0.5 s each, done together in 1.7 s, not the 9 they would take a thread each; a running turn finishes in 0.6 s while every other handler's thread is held for three; a turn cancelled while it waits for a thread gives its slot back; the gate's slots shared by threads and coroutines, its retries the same from either |
 | limits a deployment shares | 16 calls at once shared out 6, 5 and 5, and given back by a process that leaves at once and by one that dies within three heartbeats; a limit resized under waiting threads and coroutines, and shrunk below the slots in use; a tenant's bucket for two processes refusing the 4th request where each process's own admitted 6, remembering a refusal until the time it gave, draining a bucket spent under a slower rate at the new one, two processes with different rates on one bucket admitting no more than the looser allows, 24 clients on 4 processes at 3,000 a second admitting no more than the limit, a full bucket whose time is ahead saying how far, and on a database not migrated counting alone, as v81 did; a stop held on a heartbeat that never ends going within its timeout, and no row written after it; a breaker opening in one process held open in the other and adopted once; a call not sent, nor sent again, once its provider's breaker is open, and not counted the provider's failure; two servers on one database refusing a tenant's 3rd request whichever it reaches; `auto` sharing on PostgreSQL, and on SQLite for `serve --workers 2`; a malformed `PASAR_WORKERS` stopping `serve` alone; on PostgreSQL, with heartbeats 30 s apart, a join, a leave and an opening heard at once, a listener whose session is ended listening again with nothing logged outside the service's lines, and the tables UNLOGGED — on both databases |
 | a model call's transport | the same request through urllib and httpx side by side — the body byte for byte, the key, the content type, the user agent — the same answer, three calls over one connection kept alive; the same failures (a 503 and a 400 word for word, retried and not; a timeout, a refused connection); a redirect followed nowhere, the key never reaching the host it names |
@@ -834,8 +862,7 @@ keeps them each process's own on SQLite, one machine's file (below), unless
   process keeps each limit its own, as v81 did — a tenant's bucket for 5 s at
   a time, then the database asked again — and says so, in its log, in
   `pasar_limits_errors_total` and in `GET /v1/admin/nodes`. A database that
-  does not answer at all holds a request's check as it holds the request's
-  every other statement: none has a client-side bound yet (roadmap).
+  does not answer at all is waited on for 2 s (v83), and then the same.
 - **What stays a process's own** is what one process holds: its turns at once
   (`PASAR_MAX_CONCURRENT_TURNS`) and its threads.
 
@@ -953,6 +980,169 @@ What sharing does not do:
   process's own unless `PASAR_LIMITS=deployment` says otherwise, for several
   processes on one machine's file.
 
+### A database that goes silent (v83)
+
+Through v82 nothing the service asked PostgreSQL had a bound on its own side.
+A database that stops answering — a stalled disk, a frozen VM, a failover not
+made yet, a partition — does not close its connections: a stopped server's
+kernel still acknowledges what it is sent, and behind a partition TCP
+retransmits for a quarter of an hour. Every request waited as long, holding
+its thread, its connection and its turn's slot; so did every request after
+it, until the threads and the pool ran out; and `/readyz`, which asks the
+database, waited with them, so a balancer went on sending traffic. v83 bounds
+every wait by one setting, `PASAR_DB_TIMEOUT` (10 s), and stops waiting
+altogether once the database has been seen not to answer (store.py):
+
+- **What the server can end, it ends**: a statement at 80% of the timeout
+  (`statement_timeout`, 8 s), the connection kept; a session left idle inside
+  a transaction at three times it.
+- **What it cannot, the service does.** A connection lent from the pool is
+  back within the timeout or a watchdog thread shuts its socket down, and the
+  statement waiting on it raises at once — a stopped server ends nothing. A
+  new connection is made within 5 s or not at all (`connect_timeout`), a free
+  one is waited for as long as the timeout, and the kernel gives up on a peer
+  gone silent (keepalives from 10 s, `tcp_user_timeout`).
+- **Not waited on twice.** Once a connection lent for the whole timeout has
+  had to be shut down, or one could not be made, the database is taken to be
+  silent: a checkout is refused at once, before it waits for a connection or
+  makes one — but for one at a time, a second after the last (sooner after
+  one that failed at once, a connection refused by a database restarting),
+  that tries it for real (a request, a heartbeat, a lease being given back),
+  admitted whole: its wait, a connection it makes, a dead one it finds and
+  replaces. The first connection that answers in time ends it. A shorter
+  deadline's shutdown — a readiness probe's 2 s, a rate limit's — says only
+  that the database is slower than that, and a connection refused with a
+  FATAL — too many connections, a password — is the server answering:
+  neither refuses anything.
+- **Answered, not hung**: 503 `database-unavailable`, `Retry-After: 5`, counted
+  in `pasar_database_unavailable_total{why}` — the server's timeout, a
+  connection, the pool, or refused while silent — with `pasar_database_silent`
+  saying when it is; logged as one line a minute, and one as it stops and
+  starts answering, not a traceback a request. A conflict that is tried again
+  (a serialization failure, a deadlock — operational errors to psycopg) is not
+  one, nor a limit a statement runs into; only a connection's failure, the
+  server's resources, an operator's intervention and a system error are
+  (SQLSTATE classes 08, 53, 57, 58). Nor is a table SQLite does not have,
+  which SQLite calls operational too.
+- **A turn the database failed asks it nothing more**: not to record the
+  failure, not to give back its lease — each would wait as long again. The
+  lease is given back once the database answers, by a thread that tries every
+  2 s or by the conversation's next turn on that process, in the transaction
+  that takes its own; not a minute on, when it would expire. So is a lease
+  whose own transaction went unanswered, in case its COMMIT was heard.
+- **An Idempotency-Key is not held through an outage.** A request the
+  database did not answer has its key forgotten once it answers again, so
+  that the request can be sent again under it, as `Retry-After` says; and an
+  answer the database did not take under its key is sent all the same, and
+  kept once it does.
+- **`/readyz` answers within 2 s** whatever the database does, on a connection
+  of its own, so that a pool busy with requests is not taken for a database
+  that does not answer — and through the pool while the database is taken to
+  be silent, where it is refused at once or is the trial that ends it.
+- **An operator's work is not bounded**: making a tenant, a replay, `gc` —
+  long by design — lift the statement timeout for their transactions
+  (`deadline(None)`).
+- **SQLite**, a file on the machine, cannot go silent; a write that waits out
+  its lock (30 s) is answered 503 too.
+
+`scripts/db_stall_check.py` measures it: a server on PostgreSQL, 16 clients
+asking about their orders (the mock agent, 200 ms a model call) and trying
+again 0.5 s after a 503 or a 409, four new customers a second arriving
+whatever the others are answered, and a readiness probe every 0.5 s. Eight
+seconds in, every PostgreSQL process is sent SIGSTOP — its sockets open, its
+kernel acknowledging, as a database that hangs looks from the other end — and
+SIGCONT 30 s later. Two runs of each, on the same two vCPUs, 2026-11-01:
+
+| PostgreSQL stopped for 30 s, under load | v82 | v83 |
+|---|---|---|
+| the 16 requests the stall caught | 200, after 33.2–33.5 s | 503, after 10.7–10.9 s |
+| new customers during it, 120 | each waited, 21.2–21.8 s at the median and up to 36.6, then 200 | each 503, 0.06 s at the median, the longest 12.4 s |
+| … still waiting when the database was back | 123 | none |
+| the clients trying again during it | none could: each was waiting | 637–650 requests, 0.004–0.005 s at the median, the longest 5.0 s |
+| the server's threads, at most | 104–108 (26–28 before) | 49 (29–30 before) |
+| `/readyz` | one probe, 30.1–30.5 s, then 200 | 503 from 2.2–2.5 s in, each within 2.0 s |
+| … 200 after the database was back | 1.4–1.5 s | 0.24–0.48 s |
+| every client answered 200 again, after the database was back | median 0.5–0.9 s, the last 2.9–3.5 s | median 1.2–1.3 s, the last 1.4–1.5 s |
+| errors in its log | none | none; seven warnings |
+| ***Stopped for 5 s***, shorter than the timeout; one run each | | |
+| the 16 requests the stall caught | 200, after 6.3 s | 200, after 6.2 s |
+| new customers during it, 20 | each 200, 4.2 s at the median, the longest 6.9 s | each 200, 4.3 s at the median, the longest 6.2 s |
+| `/readyz` | one probe, 4.9 s, then 200 | 503 from 2.2 s in, 200 0.26 s after |
+| ***Restarted*** (`--restart`: pg_ctl, 3 s down, every session ended); two runs each | | |
+| requests during it: the clients', the new customers' | 500 `internal`, 88–94 and 11–12 | 503 `database-unavailable`, 90–96 and 12–13 |
+| errors in its log | 238–252 tracebacks | none |
+| every client answered 200 again, after it was back | median 1.0–1.1 s | median 1.0–1.1 s |
+| … refused after it was back | none | 5 |
+
+What it says:
+
+1. **v82 held everything for as long as the database was gone.** The 16
+   requests in flight were answered 200 33 s later, past most balancers' and
+   clients' patience, and every customer who came meanwhile joined them: 123
+   requests were waiting when the database came back, on up to 108 threads,
+   the median new customer for 21 s. Its readiness probe asked the database
+   too, waited the 30 s, and said 200: nothing told a balancer anything. At a
+   partition's quarter of an hour instead of 30 s, the same, for a quarter of
+   an hour.
+2. **v83 answers within its timeout, then at once.** The requests the stall
+   caught were answered 503 10.3 s after it began — the watchdog's 10 s, and
+   the quarter second it looks in — and from then on a checkout was refused
+   before it waited. The 120 new customers were answered 503 in 0.06 s at the
+   median; those that came in its first ten seconds each waited out their own
+   timeout, the longest 12.4 s — the rate limit's 2 s, then its own 10. The
+   clients' 637–650 tries were answered in 0.004–0.005 s; the threads went
+   from 29–30 to 49, not 108. `/readyz` said 503 2.2–2.5 s in.
+3. **It is back as soon as the database is.** A trial runs about once a
+   second through the outage; when the database answered, the first answer
+   ended the silence — `/readyz` said 200 0.24–0.48 s later — and every
+   client's turn was answered within 1.5 s, each taking over the lease its
+   cut-off turn had left owed; 4–8 tries in the second before a trial came
+   round were still refused. Restarted instead of stopped, it was back as
+   soon as v82 — every client answered again 1.0–1.1 s after the database
+   was, at the median, but for 5 requests in the moment before a trial came
+   round — and answered the restart's requests 503 `database-unavailable`,
+   where v82 answered them 500 and logged 238–252 tracebacks.
+4. **A shorter stall is waited out**, as before: stopped for 5 s, every
+   request waited and was answered 200, the new customers 4.3 s at the median;
+   only `/readyz` said 503, from its own 2 s on.
+5. **What a 503 costs is the client's.** v82's caught requests were answered,
+   late; v83's were not, and a turn cut off by the timeout may have done part
+   of its work — the customer's message stored, a tool call made — which the
+   next turn sees and the agent carries on from. A client that sends the same
+   message again adds it again, under its Idempotency-Key or not: the key is
+   forgotten, as a crashed request's would be, a minute sooner.
+
+What it costs one process — the load test (16 clients, no model latency,
+1,000 turns), alternating, three runs each on PostgreSQL; and a bare
+transaction, a checkout and a `SELECT 1`, at 8 threads, 15 runs each (median,
+and the range):
+
+| one process | v82 | v83 |
+|---|---|---|
+| turns a second | 40.7 (38.1–41.4) | 40.7 (35.0–41.4) |
+| the server's CPU a turn (ms) | 20.3 (19.9–21.8) | 20.3 (20.0–24.2) |
+| bare transactions a second, 8 threads | 1,527 (1,398–1,737) | 1,478 (1,311–1,686) |
+
+A turn pays nothing the load test can see; a bare transaction pays 3% at 8
+threads, most of it the server arming its statement timer for each statement
+(the build the review read paid 6–8.5%, until the watchdog was told of a
+connection without a lock). Every run replayed identically.
+
+What it does not do:
+
+- **A trial is a request.** During an outage, one request at a time waits for
+  the database — 5 s for a new connection, the timeout for one lent — and is
+  answered 503; a second on, the next.
+- **Each process finds out for itself.** Two servers on one database each
+  wait out a connection before they stop waiting, and each tries it on its own.
+- **A database that answers slowly is not silent.** A statement the server
+  ends at its timeout is a 503 for that request, the connection kept, and
+  nothing else is refused; a connection the watchdog shuts down for a shorter
+  deadline neither.
+- **A request's own work is bounded like any other.** A usage report
+  (`GET /v1/usage`) whose statement takes past 8 s is answered 503; the
+  operator's `usage` command is not bounded.
+
 ### With a real model
 
 The load test runs the service's own mock agent, so that what it measures is
@@ -1043,6 +1233,7 @@ found [WHAT_FAILED #67](WHAT_FAILED.md).
 | `PASAR_RATE` / `PASAR_BURST` | 10 / 40 | requests a second per tenant, and at once, for the deployment |
 | `PASAR_LIMITS` | `auto` | `deployment` on PostgreSQL, and on SQLite for `serve --workers N`; else `process`: each limit a process's own, as before v82 — N processes allow N times each |
 | `PASAR_HEARTBEAT_SECONDS` | 5 | how often a process says it is serving; one silent for three is not counted |
+| `PASAR_DB_TIMEOUT` | 10 | the longest anything waits on PostgreSQL: a statement is ended by the server at 80% of it, a connection lent is shut down past it, a new one is given 5 s; then 503, and until the database answers again every request is refused at once but for one a second that tries it (v83). Not an operator's work — making a tenant (`create-tenant`, `POST /v1/admin/tenants`), `replay`, `gc` — which takes as long as it takes |
 | `PASAR_MAX_STEPS_PER_TURN` / `..._TOOL_CALLS_PER_TURN` / `PASAR_MAX_TURN_SECONDS` | 16 / 24 / 120 | a turn's caps |
 | `PASAR_CONVERSATION_BUDGET_USD` | 0.50 | |
 | `PASAR_CONVERSATION_MAX_STEPS` | 0 | model calls a conversation may make in all; 0 is no cap (the kit sets the benchmark's 30) |
@@ -1131,35 +1322,29 @@ no such variable.
 
 Built since this list was first written: ids without a tenant-wide lock
 (v79), a turn's CPU cut by three fifths (v80), turns that wait on their model
-without a thread (v81), and one limit for the deployment (v82; all above).
+without a thread (v81), one limit for the deployment (v82), and a database
+that goes silent answered for (v83; all above).
 
-1. **A database that goes silent.** No statement has a client-side bound:
-   behind a partition a request waits as long as the network holds its
-   connection, and so does a turn's every transaction (v82's review found it
-   in the shared bucket; it was already true of everything else).
-   `tcp_user_timeout` and keepalives on the pool's connections, and a
-   `statement_timeout` for each kind of transaction, would turn it into an
-   error the service already answers.
-2. **Fewer statements a step.** A turn is 42.8 statements (v80); an event could
+1. **Fewer statements a step.** A turn is 42.8 statements (v80); an event could
    be written with the row it reports, in one statement on PostgreSQL.
-3. **Tokens streamed from the provider.** Events are per step today; the
+2. **Tokens streamed from the provider.** Events are per step today; the
    backends do not stream.
-4. **The customer's own identity.** The storefront asserts which customer a
+3. **The customer's own identity.** The storefront asserts which customer a
    conversation is for; the agent still verifies her digits per the policy. A
    signed customer token from the storefront would bind the two.
-5. **Retention and erasure.** Conversations hold what customers said; a
+4. **Retention and erasure.** Conversations hold what customers said; a
    per-tenant retention period and an erase-a-customer path (the ledger and
    audit rows keep ids, not text).
-6. **An outbox relay** that delivers tickets to a helpdesk with retries, rather
+5. **An outbox relay** that delivers tickets to a helpdesk with retries, rather
    than an endpoint a relay polls.
-7. **Prompt caching per conversation on providers that support a key**, and the
+6. **Prompt caching per conversation on providers that support a key**, and the
    policy's preload/JIT choice per tenant — both measured in the benchmark,
    neither wired here.
-8. **Prices by the hour.** DeepSeek's page has a peak and an off-peak rate
+7. **Prices by the hour.** DeepSeek's page has a peak and an off-peak rate
    (RUNBOOK 1y ran at the second); the price book holds one rate a model and a
    date, the peak, so a conversation run off-peak is charged above its bill.
    1z's figures are at the peak rate, whatever hour they ran in.
-9. **A share that follows the load.** A process's share of a provider's
+8. **A share that follows the load.** A process's share of a provider's
    limit is fixed by how many processes there are, not by their turns (v82):
    with clients spread unevenly, one process's turns wait for slots another
    leaves idle. Slots leased from the database and renewed with the heartbeat

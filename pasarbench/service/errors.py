@@ -86,3 +86,10 @@ class Overloaded(ServiceError):
 
 class Unavailable(ServiceError):
     status, kind, title = 503, "unavailable", "A dependency is unavailable"
+
+
+class DatabaseUnavailable(Unavailable):
+    """The database did not answer in time, or could not (v83): nothing that
+    was asked of it is known to have been done -- what a turn had committed
+    before stays, as after a crash."""
+    kind, title = "database-unavailable", "The database did not answer"
