@@ -67,12 +67,12 @@ fixes, found three more that the fixes had made, and NUL characters on
 PostgreSQL. Each is fixed and pinned by a test ([WHAT_FAILED](WHAT_FAILED.md)
 #59–#66). The review of v82's shared limits reproduced seven more — what they
 did when the database was not migrated, not answering or busy behind a
-writer — and its second pass one that a fix had made; each is fixed and
-tested before release (#71).
+writer — and its second and third passes, over the fixes, one each that a fix
+had made; each is fixed and tested before release (#71).
 
 ```
 pip install -r requirements-service.txt      # the benchmark itself still needs nothing
-python -m tests.test_service                 # 146 checks on SQLite; PASAR_TEST_POSTGRES_URL, 50 more
+python -m tests.test_service                 # 148 checks on SQLite; PASAR_TEST_POSTGRES_URL, 52 more
 python scripts/service_sweep.py --self-test  # the real-model kit on a stand-in provider: no key
 ```
 
@@ -407,7 +407,7 @@ runs it:
 | a customer's slice, kept | a second read with her write_seq unchanged uses the first's slice (one read of her tables, the same answer); a write makes the next read read again, and it sees the write; rows keyed by plain str; `copy_world` equal to `deepcopy`, a nested value included, and nothing the copy changes reaching the original; off at 0; on both databases |
 | the pool | a connection back within seconds is lent with no round trip, one idle longer is pinged, and one whose session the server ended (`pg_terminate_backend`) is replaced either way before it is lent: the next transaction runs, on a new session (PostgreSQL) |
 | turns that wait | 24 turns at once on 4 worker threads, three model calls of 0.5 s each, done together in 1.7 s, not the 9 they would take a thread each; a running turn finishes in 0.6 s while every other handler's thread is held for three; a turn cancelled while it waits for a thread gives its slot back; the gate's slots shared by threads and coroutines, its retries the same from either |
-| limits a deployment shares | 16 calls at once shared out 6, 5 and 5, and given back by a process that leaves at once and by one that dies within three heartbeats; a limit resized under waiting threads and coroutines, and shrunk below the slots in use; a tenant's bucket for two processes refusing the 4th request where each process's own admitted 6, remembering a refusal until the time it gave, draining a bucket spent under a slower rate at the new one, two processes with different rates on one bucket admitting no more than the looser allows, and on a database not migrated counting alone, as v81 did; a stop held on a heartbeat that never ends going within its timeout, and no row written after it; a breaker opening in one process held open in the other and adopted once; a call not sent, nor sent again, once its provider's breaker is open, and not counted the provider's failure; two servers on one database refusing a tenant's 3rd request whichever it reaches; `auto` sharing on PostgreSQL, and on SQLite for `serve --workers 2`; a malformed `PASAR_WORKERS` stopping `serve` alone; on PostgreSQL, with heartbeats 30 s apart, a join, a leave and an opening heard at once, a listener whose session is ended listening again with nothing logged outside the service's lines, and the tables UNLOGGED — on both databases |
+| limits a deployment shares | 16 calls at once shared out 6, 5 and 5, and given back by a process that leaves at once and by one that dies within three heartbeats; a limit resized under waiting threads and coroutines, and shrunk below the slots in use; a tenant's bucket for two processes refusing the 4th request where each process's own admitted 6, remembering a refusal until the time it gave, draining a bucket spent under a slower rate at the new one, two processes with different rates on one bucket admitting no more than the looser allows, 24 clients on 4 processes at 3,000 a second admitting no more than the limit, a full bucket whose time is ahead saying how far, and on a database not migrated counting alone, as v81 did; a stop held on a heartbeat that never ends going within its timeout, and no row written after it; a breaker opening in one process held open in the other and adopted once; a call not sent, nor sent again, once its provider's breaker is open, and not counted the provider's failure; two servers on one database refusing a tenant's 3rd request whichever it reaches; `auto` sharing on PostgreSQL, and on SQLite for `serve --workers 2`; a malformed `PASAR_WORKERS` stopping `serve` alone; on PostgreSQL, with heartbeats 30 s apart, a join, a leave and an opening heard at once, a listener whose session is ended listening again with nothing logged outside the service's lines, and the tables UNLOGGED — on both databases |
 | a model call's transport | the same request through urllib and httpx side by side — the body byte for byte, the key, the content type, the user agent — the same answer, three calls over one connection kept alive; the same failures (a 503 and a 400 word for word, retried and not; a timeout, a refused connection); a redirect followed nowhere, the key never reaching the host it names |
 | the profiler | against threads whose CPU is known: a long call charged 0.392 s of its 0.400, short bursts between waits 0.165 of 0.166, a thread waiting throughout nothing, and the stacks' sum the process's CPU; the endpoint is the operator's, runs one at a time (409), ends on DELETE; the CLI's summary and folded stacks |
 | schema | migration to head equals `schema.py`, 0003's shared tables included; down and up again; 0002 on a database that has tenants: each gets its sequence after its counter, and down again the counter takes the last value back |
@@ -809,11 +809,13 @@ keeps them each process's own on SQLite, one machine's file (below), unless
   requests and not seconds, so that processes with other settings agree on
   what a bucket holds: during a rolling change of `PASAR_RATE` each admission
   adds one whoever makes it, and the deployment admits no more than the
-  looser setting allows; a bucket filled under a slower rate drains at the new
-  one at once. A refusal is remembered until the time it gives — the bucket
-  only drains with time — so a client sending past its limit as fast as it
-  can costs the database a statement for each request that arrives as a
-  refusal runs out, not one a request.
+  larger burst and the faster rate allow together; a bucket filled under a
+  slower rate drains at the new one at once. The bucket's time never moves
+  back, so that two requests that waited on each other's lock never drain it
+  twice. A refusal is remembered until the time it gives — the bucket only
+  drains with time — so a client sending past its limit as fast as it can
+  costs the database a statement for each request that arrives as a refusal
+  runs out, not one a request.
 - **A breaker's opening, for all.** A process whose breaker opens writes until
   when (`provider_breakers`), and the others hold theirs open as long — each
   opening once, so that a call there that succeeds after still closes it. And
@@ -842,25 +844,27 @@ each client talking to one of them, in front of a stand-in provider — an
 OpenAI-compatible server on the same machine that answers as the mock agent
 does, after 400 ms ±30%, and counts what it is sent. Each part ran with every
 limit a process's own and with them shared, on the same two vCPUs,
-2026-11-01; the ranges are the runs'.
+2026-11-01; the ranges are the runs', made as the last fixes went in (#71) —
+none of which changes what a part measures: under one setting a bucket kept
+in seconds and one kept in requests admit the same requests.
 
 | two servers, one database | each limit the process's own (`PASAR_LIMITS=process`, as v81) | shared (`deployment`, v82) |
 |---|---|---|
-| ***A provider that takes 8 calls at once***, and refuses past it (429), each server told 8; 32 clients for 30 s; five runs | | |
+| ***A provider that takes 8 calls at once***, and refuses past it (429), each server told 8; 32 clients for 30 s; seven runs | | |
 | calls in flight, the two servers together, at most | 16 | 8 |
-| calls the provider refused | 862–891 of 1,450–1,492: 59–61% | none, of 605–614 |
+| calls the provider refused | 862–910 of 1,450–1,504: 59–61% | none, of 605–614 |
 | turns answered | 116–127: 3.9–4.2 a second | 191–194, every one: 6.4–6.5 a second |
 | turns that ended unanswered | 250–291 | none |
-| an answered turn, p50 / p95 (s) | 2.9–3.1 / 4.0–4.1 | 4.9 / 6.5–6.7 |
-| ***A tenant allowed 5 requests a second***, bursts of 5; 8 clients as fast as they can for 10 s; three runs | | |
+| an answered turn, p50 / p95 (s) | 2.9–3.1 / 4.0–4.2 | 4.9 / 6.4–6.7 |
+| ***A tenant allowed 5 requests a second***, bursts of 5; 8 clients as fast as they can for 10 s; five runs | | |
 | requests admitted | 104–106: 10.4–10.6 a second | 52–53: 5.2–5.3 a second, of the 55 allowed |
-| requests answered, 200 or 429 | 7,063–8,736 | 7,700–8,784 |
-| ***A provider that fails every call*** (503), 45 s; 14 clients on one server, 1 on the other, 16 calls at once allowed; three runs | | |
+| requests answered, 200 or 429 | 7,063–9,172 | 7,700–10,086 |
+| ***A provider that fails every call*** (503), 45 s; 14 clients on one server, 1 on the other, 16 calls at once allowed; five runs | | |
 | calls sent to it | 59–62 | 33–38 |
 | … by the light server | 18 | 3–8 |
 | the light server's breaker | opened by its own failures, 2.3–4.1 s after the other's | held open for the other's, 11–16 ms after it opened |
-| the light server's turns fail fast from | 4.0–6.1 s | 2.4–2.9 s |
-| ***Processes coming and going***, heartbeats 5 s apart; three runs | | |
+| the light server's turns fail fast from | 4.0–6.1 s | 2.1–2.9 s |
+| ***Processes coming and going***, heartbeats 5 s apart; five runs | | |
 | one killed (SIGKILL): the other takes the whole limit | — | 14.9–15.1 s on |
 | one started: counted by the other | — | 0.05 s after it is ready |
 | one stopped (SIGTERM): counted out | — | 0.05–0.09 s on |
@@ -895,18 +899,18 @@ What it says:
    second with bursts of 5, each server admitted its own 52–53 in ten seconds —
    10.4–10.6 a second between them; sharing the bucket they admitted 52–53, of
    the 55 the rate allows. The refusals cost no statement each: about as many
-   requests were answered in the ten seconds, 7,700–8,784, as with each
-   server's own bucket in memory (7,063–8,736).
+   requests were answered in the ten seconds, 7,700–10,086, as with each
+   server's own bucket in memory (7,063–9,172).
 3. **A provider that fails for one server fails for the other.** With every
-   call failing, the heavy server's breaker opened 2.0–2.4 s in, and the light
-   one held its own open 11–16 ms later; its turns failed fast from 2.4–2.9 s.
+   call failing, the heavy server's breaker opened 1.9–2.4 s in, and the light
+   one held its own open 11–16 ms later; its turns failed fast from 2.1–2.9 s.
    With a breaker of its own it had to see five of its own calls fail first,
    three attempts each, and opened 2.3–4.1 s after the other, its turns
    failing fast from 4.0–6.1 s. The deployment sent the dead provider 33–38
    calls where it sent 59–62; most of them were the heavy server's calls in
    flight as the outage began, which no breaker stops. When the openings
    ended, 30 s on, the first trial to fail opened the other server's breaker
-   again within 10–60 ms.
+   again within 10–90 ms.
 4. **A process's count follows the others.** One killed with no word stopped
    being counted 14.9–15.1 s on — three heartbeats of 5 s — and the other then
    took the provider's whole 8; one started or stopped was counted at once,
@@ -935,7 +939,11 @@ What sharing does not do:
   one bucket, one at 10 requests a second and one at 1, admitted 139 in ten
   seconds where the faster allows 140 and the slower 50: the bucket drains at
   the rate of whichever process writes it, and the one with the faster rate
-  writes it most.
+  writes it most. A rate raised while a burst is cut can be had at once from
+  both: a client that chose its process, filling the bucket through the one
+  with the larger burst and leaving it to the faster to drain, got 133 where
+  the settings allowed 110 and 50 — the larger burst and the faster rate
+  together.
 - **A request's check is a statement.** On PostgreSQL, 104 µs of CPU and a
   round trip: no difference outside the load test's noise. On SQLite it is a
   write transaction of its own, and SQLite has one writer: half a millisecond

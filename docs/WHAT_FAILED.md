@@ -2700,11 +2700,32 @@ rate, two rates on one bucket, a stop held on a heartbeat that never ends, a
 terminated listener, `auto` on both databases and for `--workers 2`, a
 malformed `PASAR_WORKERS`).
 
+**The third pass.** The bucket in requests had one fault of its own, on
+PostgreSQL under contention: in autocommit `now()` is a statement's start,
+and a statement that waited on the bucket's row lock behind one that started
+later wrote an earlier time than the one it replaced, so the next drained
+that interval a second time. At 3,000 requests a second over 32 clients the
+deployment admitted 1.41 times its limit (a trigger counted 3,233–4,144 times
+going back in a run); at the default 10 a second, nothing measurable. The
+bucket's time no longer moves back (`GREATEST(at, now)`): 0.98–0.99 of the
+limit, and the test of it, at 3,000 a second over 24 clients, admits
+1.06–1.29 times the limit with the old statement. A refusal now counts a time
+written ahead of the database's clock — a clock stepped back — where it
+had said 0.1 s for 30 and asked again ten times a second. And the claim that
+a rolling change admits no more than the looser setting allows was true for
+one setting changed at a time; a rate raised while a burst is cut admits up
+to both at once, now said so. The same pass noticed that migration 0003 had
+been changed in place between builds; none of those builds left this
+machine, and a database migrated with one would be at head with a table of
+the wrong shape — the rule every migration tool states, kept now: once a
+revision has run anywhere, a change is a new revision.
+
 **Lesson.** A limit shared through a database is only as good as what it does
 when the database is not there — not migrated, not answering, or slow behind a
-writer — and when the processes sharing it disagree. Each of these had a
-sentence in the docs; none had a test that took the database away, or gave two
-processes two settings.
+writer — and when the processes sharing it disagree, or crowd it. Each of
+these had a sentence in the docs; none had a test that took the database away,
+gave two processes two settings, or sent more requests than the limit at
+once from many.
 
 ---
 

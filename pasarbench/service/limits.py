@@ -148,9 +148,10 @@ class SharedRate:
     that processes with other settings -- during a rolling change of
     PASAR_RATE or PASAR_BURST -- agree on what a bucket holds: each admission
     adds one whoever makes it, and the bucket drains at the rate of whichever
-    process writes it next, so the deployment admits between the two
-    settings' limits; and a new setting takes effect at once on a bucket
-    filled under the old one. On PostgreSQL the statement goes on a pooled
+    process writes it next, so the deployment admits no more than the larger
+    burst and the faster rate allow together -- the looser setting's limit
+    when one of them changes; and a new setting takes effect at once on a
+    bucket filled under the old one. On PostgreSQL the statement goes on a pooled
     connection in autocommit, through psycopg itself: through SQLAlchemy a
     statement of this shape cost twice the CPU (208 µs against 104, measured
     on this machine).
@@ -176,23 +177,30 @@ class SharedRate:
         self.room = max(0, burst - 1)           # what it may hold for one more to go in
         self._pg = not is_sqlite(engine)
         now = _clock(engine)
+        # `at` never moves back: a statement that waited on the row's lock
+        # behind one that started later (PostgreSQL's now() is a statement's
+        # start) would write an earlier time, and the next would drain the
+        # bucket for that interval twice -- 1.4 times the limit at 3,000 a
+        # second (WHAT_FAILED #71). A refusal says how far ahead `at` is too:
+        # the bucket drains only once its time has come (a clock stepped back).
         if self._pg:
             held = f"GREATEST(r.level - GREATEST({now} - r.at, 0) * %(rate)s, 0)"
             self._take = (
                 f"INSERT INTO rate_limits AS r (bucket, level, at) "
                 f"VALUES (%(bucket)s, 1, {now}) "
-                f"ON CONFLICT (bucket) DO UPDATE SET level = {held} + 1, at = {now} "
+                f"ON CONFLICT (bucket) DO UPDATE SET level = {held} + 1, "
+                f"at = GREATEST(r.at, {now}) "
                 f"WHERE {held} <= %(room)s RETURNING r.level")
-            self._held = (f"SELECT GREATEST(level - GREATEST({now} - at, 0) * %(rate)s, 0) "
-                          f"FROM rate_limits WHERE bucket = %(bucket)s")
+            self._held = (f"SELECT GREATEST(level - GREATEST({now} - at, 0) * %(rate)s, 0), "
+                          f"GREATEST(at - {now}, 0) FROM rate_limits WHERE bucket = %(bucket)s")
         else:
             held = f"max(level - max({now} - at, 0) * :rate, 0)"
             self._take = text(
                 f"INSERT INTO rate_limits (bucket, level, at) VALUES (:bucket, 1, {now}) "
-                f"ON CONFLICT (bucket) DO UPDATE SET level = {held} + 1, at = {now} "
+                f"ON CONFLICT (bucket) DO UPDATE SET level = {held} + 1, at = max(at, {now}) "
                 f"WHERE {held} <= :room RETURNING level")
-            self._held = text(f"SELECT max(level - max({now} - at, 0) * :rate, 0) "
-                              f"FROM rate_limits WHERE bucket = :bucket")
+            self._held = text(f"SELECT max(level - max({now} - at, 0) * :rate, 0), "
+                              f"max(at - {now}, 0) FROM rate_limits WHERE bucket = :bucket")
         self._params = {"rate": max(0.0, float(rate)), "room": float(self.room)}
         self._logged = 0.0
         self._lock = threading.Lock()           # the two below, shared by the request threads
@@ -224,15 +232,17 @@ class SharedRate:
             return self._local.take(bucket)
         if held is None:
             return None
-        wait = 60.0 if self.rate <= 0 else max(0.001, (held - self.room) / self.rate)
+        level, ahead = held
+        wait = 60.0 if self.rate <= 0 else max(0.001, (level - self.room) / self.rate + ahead)
         with self._lock:
             if len(self._refused) > 10_000:     # tenants that stopped asking
                 self._refused = {b: u for b, u in self._refused.items() if u > now}
             self._refused[bucket] = now + wait
         return wait
 
-    def _pg_take(self, bucket: str) -> float | None:
-        """None if admitted; else what the bucket holds now."""
+    def _pg_take(self, bucket: str) -> tuple[float, float] | None:
+        """None if admitted; else what the bucket holds now, and how far
+        ahead of now its time is."""
         params = {"bucket": bucket, **self._params}
         fairy = self.engine.raw_connection()
         conn = fairy.driver_connection
@@ -242,7 +252,7 @@ class SharedRate:
                 if conn.execute(self._take, params).fetchone() is not None:
                     return None
                 row = conn.execute(self._held, params).fetchone()
-                return float(row[0]) if row else self.room + 1.0
+                return (float(row[0]), float(row[1])) if row else (self.room + 1.0, 0.0)
             finally:
                 if not conn.closed:
                     conn.autocommit = False
@@ -253,13 +263,13 @@ class SharedRate:
         finally:
             fairy.close()
 
-    def _sqlite_take(self, bucket: str) -> float | None:
+    def _sqlite_take(self, bucket: str) -> tuple[float, float] | None:
         params = {"bucket": bucket, **self._params}
         with transaction(self.engine, write=True) as conn:
             if conn.execute(self._take, params).first() is not None:
                 return None
-            got = conn.execute(self._held, params).scalar()
-            return self.room + 1.0 if got is None else float(got)
+            row = conn.execute(self._held, params).first()
+            return (float(row[0]), float(row[1])) if row else (self.room + 1.0, 0.0)
 
     def _failed(self, e: Exception) -> None:
         self.errors["rate"] += 1

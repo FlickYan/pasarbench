@@ -1191,6 +1191,36 @@ def test_shared_limits(kind: str):
           f"where a bucket kept in seconds would have refused for 400",
           first_wait is not None and first_wait <= 0.11 and then_in is None,
           (first_wait, then_in))
+    with engine.begin() as conn:                 # written by a clock 30 s ahead
+        conn.execute(text(f"INSERT INTO rate_limits (bucket, level, at) VALUES "
+                          f"('ahead', 40, {_clock(engine)} + 30)"))
+    told = SharedRate(engine, 10.0, 40).take("ahead")
+    check(f"[{kind}] a full bucket whose time is 30 s ahead says so: wait 30.1 s, not 0.1 "
+          f"and a statement every tenth of a second",
+          told is not None and 29.5 <= told <= 30.2, told)
+    # Requests that wait on each other's lock (PostgreSQL's now() is a
+    # statement's start): the bucket's time never moves back, so none drains twice.
+    crowd = [SharedRate(engine, 3000.0, 40) for _ in range(4)]
+    let_in = Counter()
+    crowd_until = time.monotonic() + 1.5
+    crowd_from = time.monotonic()
+
+    def crowded(r, i):
+        while time.monotonic() < crowd_until:
+            if r.take("crowd") is None:
+                let_in[i] += 1
+
+    ts = [threading.Thread(target=crowded, args=(crowd[i % 4], i)) for i in range(24)]
+    for t in ts:
+        t.start()
+    for t in ts:
+        t.join()
+    allowed = 40 + 3000.0 * (time.monotonic() - crowd_from)
+    check(f"[{kind}] 24 clients on 4 processes at 3,000 a second admit no more than the "
+          f"limit -- the bucket's time never moves back, so no interval is drained twice "
+          f"(with it moving back, 1.06-1.29 times the limit on PostgreSQL)",
+          sum(let_in.values()) <= 1.03 * allowed,
+          (sum(let_in.values()), round(allowed)))
     # A rolling change of PASAR_RATE: two processes, two settings, one bucket.
     old, new = SharedRate(engine, 10.0, 40), SharedRate(engine, 1.0, 40)
     admitted = Counter()
