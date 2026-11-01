@@ -65,6 +65,13 @@ What holds it together, and how each claim is checked:
   it has seen the database silent — a new customer in 0.06 s at the median —
   says 503 on `/readyz` within 2 s, and serves every client again within
   1.5 s of the database's return ([below](#a-database-that-goes-silent-v83)).
+- **One statement a step.** On PostgreSQL a model call's step — its ledger
+  row, the conversation's counters and lease, the message, its event — is one
+  statement now, as are a tool call's record and a turn's start and end: a
+  turn makes 30.8 round trips to the database where it made 60.7, costs the
+  server 19 ms of CPU where it cost 24–26, and is answered in 37 ms at the
+  median where it took 46; with the database 1.4 ms further off, in 86 ms
+  where it took 144 ([below](#one-statement-a-step-v84)).
 
 An independent review of the service before release reported thirteen defects
 — a model's bad arguments could crash a turn, a key could be freed after its
@@ -80,11 +87,15 @@ bounded waits reproduced eight — a restart that kept the service refusing
 requests for a pool's worth of seconds, a trial that never ended, a key and a
 lease held for a minute after a 503, a connection limit and a busy pool each
 taken for a database that does not answer — each fixed and tested before
-release (#72).
+release (#72). The review of v84's one-statement writes found seven — a turn
+whose end was written and whose answer was lost run again under its key, a
+tool call whose lease was taken mid-call answered 500, inserts made without
+the lease and rolled back, and four in how it was measured — each fixed
+before release (#73).
 
 ```
 pip install -r requirements-service.txt      # the benchmark itself still needs nothing
-python -m tests.test_service                 # 157 checks on SQLite; PASAR_TEST_POSTGRES_URL, 66 more
+python -m tests.test_service                 # 159 checks on SQLite; PASAR_TEST_POSTGRES_URL, 77 more
 python scripts/service_sweep.py --self-test  # the real-model kit on a stand-in provider: no key
 ```
 
@@ -190,6 +201,7 @@ Turn.arun ── txn: answer what a crash left unanswered; her message ───
   │     a slot (16 in flight) · retries with full jitter · circuit breaker
   │   txn: the ledger row (always) · counters + the lease renewed (one UPDATE)
   │        · the assistant message ──────────────────────────────────────▶ event model.call
+  │        (on PostgreSQL one statement, no transaction of its own: v84)
   │
   ├─▶ each tool call: store.run_tool, ONE transaction
   │     lock the customer (FOR UPDATE) · her slice, in order: the one kept
@@ -197,12 +209,14 @@ Turn.arun ── txn: answer what a crash left unanswered; her message ───
   │     benchmark's tool on a copy · guards (money, isolation, values) · diff
   │     · SAVEPOINT: write_seq + 1 · UPDATE ... WHERE version = v · INSERT · outbox
   │     · the tool message and audit rows, the lease checked ───────────▶ event tool.result
+  │       (the record one statement on PostgreSQL: v84)
   │     a version conflict: rolled back, run again on what is there now (3 tries)
   │     a rule the database enforces: undone to the savepoint, recorded as refused
   │     any other failure: answered as one the platform could not carry out
   │
   └─ until the agent replies — or a cap, a budget, the provider: a fallback reply
      txn: the lease checked and released, the fallback ─────────────────▶ event turn.completed
+          (on PostgreSQL one statement, no transaction of its own: v84)
 
   any wait on the database: PASAR_DB_TIMEOUT (10 s) at most, then        503 Retry-After
   and while it has stopped answering, at once (v83)
@@ -262,8 +276,9 @@ fact.
 - **Exactly-once effects.** An `Idempotency-Key` makes a retried request
   return the first one's answer, byte for byte, instead of running again (one
   customer message, one refund) — whatever that answer was, an error included,
-  once the turn had begun; a tool call's change and its record commit
-  together.
+  once the turn had begun, and the turn's own if its end was written and only
+  the database's answer was lost (v84); a tool call's change and its record
+  commit together.
 - **The same model calls.** Real models run at temperature 0 with reasoning
   off where the provider has a switch (RUNBOOK 1s); `mock` and `scripted` are
   deterministic, which is what lets the parity test and the load test's replay
@@ -325,7 +340,12 @@ table below); a tampered row found.
   tables; the step's counters and the lease renewal are one statement; every
   statement is built once; a pooled connection is checked by its socket rather
   than a round trip. A turn of this workload is 42.8 statements in 8.3
-  transactions (68.8 before v80, a ping before each transaction included).
+  transactions (68.8 before v80, a ping before each transaction included). And
+  on PostgreSQL, since v84, a step's writes are one statement — a model call's
+  ledger row, the conversation's counters and lease, the message and its
+  event; a tool call's record; a turn's start and its end — and those that
+  stand alone run without a transaction of their own: a turn is 30.8 round
+  trips where it was 60.7, counted by PostgreSQL (Measured).
 
 *Measured* — below.
 
@@ -384,8 +404,9 @@ table below); a tampered row found.
   for a request turned away before it wrote anything; a running request's key
   lives as long as its turn (the lease's heartbeat), one whose request died
   with its process expires with the lease, and one whose request the database
-  did not answer is forgotten once it answers (v83). The same key with another
-  body: 422; while the first is still running: 409.
+  did not answer is forgotten once it answers (v83) — or, if the turn had
+  finished and only its answer was lost, keeps the turn's answer (v84). The
+  same key with another body: 422; while the first is still running: 409.
 - **Input with the shape it should have.** Every id in a path or query must look
   like one, and no field may carry a NUL character, which PostgreSQL's text
   cannot hold (422); a NUL the model sends is stored as U+FFFD.
@@ -426,7 +447,7 @@ runs it:
 | concurrency | eight refunds raced; the lock removed and the double refund shown; a stale cancellation retried by the version check; one customer's write held open while another's takes a new id without waiting (10 s with v78's counter row), and sixteen at once each get their own, none lost or repeated (PostgreSQL) |
 | isolation | another customer's order invisible, a credit naming it refused, two tenants' rows apart |
 | protocol | idempotency (replay, mismatch, in progress), the lease (409), admission (503), rate limit (429), SSE order and recovery, problem details, auth and revocation, pagination |
-| failure | a provider down: retries, fallback reply, breaker open, nothing charged; a crash mid-turn: the lease holds, then the unanswered call is answered; a lease lost mid-turn: nothing more written, the answer kept under the key |
+| failure | a provider down: retries, fallback reply, breaker open, nothing charged; a crash mid-turn: the lease holds, then the unanswered call is answered; a lease lost mid-turn: nothing more written, the answer kept under the key; a lease taken while a tool call runs, the call's record running into the new holder's rows: 409, kept, and no answer of its own written to the call; a turn whose end was written and whose answer the database lost: 503, then the turn's answer under its key, the retry replayed and nothing run again — on both databases |
 | a model's arguments | 1e400, a voucher of 0, a credit of 10**19, a 300-character tool name, credit not in the account's currency, credit against an order in another currency counted in SGD, an empty order id, NUL characters from the customer and the model — each answered, the turn replying, on both databases |
 | long turns | a model call twice the lease: the heartbeat keeps the lease and the key, a retry and another message are both turned away, and the retry then gets the answer (the test fails with the heartbeat off); a stream on a server that ran no startup |
 | order and logs | a customer's rows in the benchmark's order after updates, on both databases; an exception logged without its message |
@@ -434,6 +455,7 @@ runs it:
 | a customer's slice, kept | a second read with her write_seq unchanged uses the first's slice (one read of her tables, the same answer); a write makes the next read read again, and it sees the write; rows keyed by plain str; `copy_world` equal to `deepcopy`, a nested value included, and nothing the copy changes reaching the original; off at 0; on both databases |
 | the pool | a connection back within seconds is lent with no round trip, one idle longer is pinged, and one whose session the server ended (`pg_terminate_backend`) is replaced either way before it is lent: the next transaction runs, on a new session (PostgreSQL) |
 | a database that goes silent | a connection's bounds as the server holds them (`statement_timeout` at 80% of `PASAR_DB_TIMEOUT`, idle in a transaction at three times it) and as the kernel does (keepalives, `TCP_USER_TIMEOUT`); a statement past it ended by the server, the connection kept; one held on a lock past its deadline shut down by the watchdog, the next checkout refused at once, one a second later answered and the silence over; a shorter deadline's shutdown refusing nothing, and a longer one held to the timeout; after a restart, the first trial replacing a dead connection within its own checkout and ending the silence at once; an operator's long work not bounded; a listener that never answers: a connection given up in 2 s, then `/readyz` and a request answered 503 at once; `/readyz` within 2 s where connecting takes 5, and 200 at once with every connection of the pool lent; a turn's write held past the timeout answered 503, its lease given back by the releaser within 2 s or by the conversation's next turn at once, and its Idempotency-Key forgotten so that the same request runs again under it (PostgreSQL); the rules for a trial — one at a time, the next after one fails, even as it makes its connection again, or is never heard from — and a silence said once a minute at most; what is not the database failing to answer — a serialization failure, a deadlock, a statement's own limits, a constraint broken, a table SQLite does not have, a FATAL refusing a connection; a write that waits out SQLite's lock answered 503 and its key forgotten; a lease whose transaction went unanswered owed back; a database without the schema 500 |
+| one statement a step | each one-statement write compiled again with its own parameters as SQLAlchemy's column keys, nothing added to it; the same two turns — three tool calls, an escalation among them — and a turn its provider fails write the same rows one statement a step as one at a time, in 27 statements and 5 transactions fewer; a turn whose lease is another's writes its model call's ledger row and nothing else — its end, a tool call's record and its start not so much as an event id drawn; a statement that stands alone timed from when it has its connection, not from before a wait for one; a turn that loses its lease mid-way answers as on SQLite, its key kept (PostgreSQL) |
 | turns that wait | 24 turns at once on 4 worker threads, three model calls of 0.5 s each, done together in 1.7 s, not the 9 they would take a thread each; a running turn finishes in 0.6 s while every other handler's thread is held for three; a turn cancelled while it waits for a thread gives its slot back; the gate's slots shared by threads and coroutines, its retries the same from either |
 | limits a deployment shares | 16 calls at once shared out 6, 5 and 5, and given back by a process that leaves at once and by one that dies within three heartbeats; a limit resized under waiting threads and coroutines, and shrunk below the slots in use; a tenant's bucket for two processes refusing the 4th request where each process's own admitted 6, remembering a refusal until the time it gave, draining a bucket spent under a slower rate at the new one, two processes with different rates on one bucket admitting no more than the looser allows, 24 clients on 4 processes at 3,000 a second admitting no more than the limit, a full bucket whose time is ahead saying how far, and on a database not migrated counting alone, as v81 did; a stop held on a heartbeat that never ends going within its timeout, and no row written after it; a breaker opening in one process held open in the other and adopted once; a call not sent, nor sent again, once its provider's breaker is open, and not counted the provider's failure; two servers on one database refusing a tenant's 3rd request whichever it reaches; `auto` sharing on PostgreSQL, and on SQLite for `serve --workers 2`; a malformed `PASAR_WORKERS` stopping `serve` alone; on PostgreSQL, with heartbeats 30 s apart, a join, a leave and an opening heard at once, a listener whose session is ended listening again with nothing logged outside the service's lines, and the tables UNLOGGED — on both databases |
 | a model call's transport | the same request through urllib and httpx side by side — the body byte for byte, the key, the content type, the user agent — the same answer, three calls over one connection kept alive; the same failures (a 503 and a 400 word for word, retried and not; a timeout, a refused connection); a redirect followed nowhere, the key never reaching the host it names |
@@ -1034,7 +1056,9 @@ altogether once the database has been seen not to answer (store.py):
   database did not answer has its key forgotten once it answers again, so
   that the request can be sent again under it, as `Retry-After` says; and an
   answer the database did not take under its key is sent all the same, and
-  kept once it does.
+  kept once it does. Since v84, a turn whose end the database wrote — the
+  answer lost on its way back — keeps the turn's answer under its key
+  instead, so that the retry gets the turn back rather than running it again.
 - **`/readyz` answers within 2 s** whatever the database does, on a connection
   of its own, so that a pool busy with requests is not taken for a database
   that does not answer — and through the pool while the database is taken to
@@ -1110,7 +1134,9 @@ What it says:
    of its work — the customer's message stored, a tool call made — which the
    next turn sees and the agent carries on from. A client that sends the same
    message again adds it again, under its Idempotency-Key or not: the key is
-   forgotten, as a crashed request's would be, a minute sooner.
+   forgotten, as a crashed request's would be, a minute sooner — unless the
+   turn had finished and only its answer was lost, when the key keeps the
+   answer (v84).
 
 What it costs one process — the load test (16 clients, no model latency,
 1,000 turns), alternating, three runs each on PostgreSQL; and a bare
@@ -1142,6 +1168,103 @@ What it does not do:
 - **A request's own work is bounded like any other.** A usage report
   (`GET /v1/usage`) whose statement takes past 8 s is answered 503; the
   operator's `usage` command is not bounded.
+
+### One statement a step (v84)
+
+A turn of the load test's workload sent PostgreSQL 60.7 statements, each a
+round trip: 42.9 that did something, and 17.8 BEGINs, COMMITs and savepoints
+around them — counted by the database itself (`load_test.py --statements`,
+pg_stat_statements). Most of them were a step's writes, one statement each:
+a model call's ledger row, the conversation's counters and lease, the
+assistant's message and its event, in a transaction of their own — six round
+trips, 3.1 times a turn; a tool call's row, its actions, its message, the
+conversation's counters and its event, five more inside the call's
+transaction, 2.1 times a turn; and the turn's start and end the same way.
+
+On PostgreSQL each of those is one statement now (`batched.py`): data-modifying
+CTEs, in which the conversation's UPDATE is the gate the rest depends on — no
+row, and the lease is not the turn's — and those that stand alone run in
+autocommit, with no BEGIN or COMMIT of their own. The statement that takes the
+lease returns the tenant's daily budget with it. SQLite, which answers in
+process, keeps its statements one at a time.
+
+What is written is what was. The same two turns — three tool calls, an
+escalation among them — write the same rows both ways: messages, events, the
+ledger, the tool calls and their actions, the conversation, the escalation;
+so does a turn its provider fails, its fallback reply and all. A turn whose
+lease is another's writes its model call's ledger row, as before, and nothing
+else: every other row a statement makes goes through the gate, so without the
+lease it runs no insert, and draws no id. The 313 reference solutions leave
+the world and the action log as the benchmark's own episodes do, and every
+load run replayed identically.
+
+A statement in autocommit is its own COMMIT, so a turn's end whose answer is
+lost on its way back is a turn finished and not heard. It is answered 503, as
+in v83, and its key settled once the database answers again — with the answer
+its `turn.completed` holds, so that the retry under the key gets the turn back
+rather than running it again; forgotten, as in v83, if the turn did not
+finish. (The same holds one statement at a time, on SQLite too, where the
+answer lost is that of the end's COMMIT.)
+
+Measured on the same two vCPUs, 2026-11-01, v83 and v84 alternating — three
+runs of each, two with the database further off (median, and the range). The
+database further off is a relay of the load test's own in front of
+PostgreSQL (`--db-latency-ms 1`), one thread in a process of its own: on its
+own it adds 1.45–1.53 ms to a round trip from one client to sixteen, as a
+database in another zone might; through a run, sampled every 0.2 s, it added
+1.4 ms at one client and 1.9–3.2 ms at sixteen, where it waits for the two
+cores with everything else:
+
+| PostgreSQL, one process | v83 | v84 |
+|---|---|---|
+| a turn's statements, as PostgreSQL counted them | 60.7: 42.9, and 17.8 BEGIN, COMMIT, savepoints | 30.8: 21.2, and 9.6 |
+| … its transactions | 8.3 | 4.2 |
+| 1 client: turns a second | 20.6 (19.2–21.9) | 25.5 (22.3–25.9) |
+| … the server's CPU a turn (ms) | 25.6 (24.1–26.2) | 19.2 (19.0–21.1) |
+| … a turn, p50 / p95 / p99 (ms) | 46 / 58 / 63 | 37 / 48 / 58 |
+| 16 clients: turns a second | 35.7 (34.6–40.0) | 41.2 (41.2–43.5) |
+| … the server's CPU a turn (ms) | 24.0 (21.3–24.6) | 18.6 (17.3–18.9) |
+| … a turn, p50 / p95 / p99 (ms) | 411 / 585 / 658 | 347 / 499 / 583 |
+| ***The database further off*** | | |
+| 1 client: turns a second | 6.7 (6.6–6.8) | 11.1 (10.8–11.3) |
+| … a turn, p50 / p95 / p99 (ms) | 144 / 174 / 197 | 86 / 104 / 115 |
+| … what the relay added to a round trip, each run (ms) | 1.40, 1.42 | 1.38, 1.39 |
+| 16 clients: turns a second | 35.4 (34.2–36.6) | 42.1 (41.5–42.7) |
+| … a turn, p50 / p95 / p99 (ms) | 414 / 586 / 696 | 341 / 496 / 576 |
+| … what the relay added to a round trip, each run (ms) | 1.86, 2.01 | 2.36, 3.16 |
+
+What it says:
+
+1. **Half the round trips.** A turn is 30.8 statements on PostgreSQL where it
+   was 60.7, in 4.2 transactions where it was 8.3: a model call's step is one
+   statement where it was six, a tool call's record one where it was five,
+   the turn's end one where it was four.
+2. **A quarter less of the server's CPU.** Each statement costs the service
+   its execution in SQLAlchemy and its round trip in the driver: a turn costs
+   19.2 ms of CPU at one client where it cost 25.6, and 18.6 at sixteen where
+   it cost 24.0. One process answers 24% more turns a second at one client
+   and 15% more at sixteen, where its two cores are the limit.
+3. **The further off the database, the more of a turn's time it saves.**
+   With 1.4 ms added to each round trip, a turn at one client took 144 ms — 85 of
+   them the relay's — and takes 86: 66% more turns a second. At sixteen
+   clients the relay moved neither version — as many turns a second, answered
+   as fast, as without it — because a turn there waits for the two cores, not
+   for the database: what one statement a step saves there is the CPU (2).
+   Where the database is in another rack or zone, as a managed one often is,
+   and the service has cores to spare, the round trips are most of the time a
+   turn spends in the service.
+4. **Nothing else moved**: every request answered 200 in every run, every run
+   replayed identically, and the reference solutions' worlds and action logs
+   are the benchmark's.
+
+What it does not do:
+
+- **SQLite is as it was**: it has no data-modifying CTEs, and in process no
+  round trips to save.
+- **The reads are as they were.** Of a turn's 30.8 round trips, 5.5 read a
+  customer's slice again after one of her writes — half of these turns write
+  — and two read the conversation's history and actions as the turn starts;
+  a tool call that reads still has a transaction of its own (roadmap).
 
 ### With a real model
 
@@ -1322,11 +1445,15 @@ no such variable.
 
 Built since this list was first written: ids without a tenant-wide lock
 (v79), a turn's CPU cut by three fifths (v80), turns that wait on their model
-without a thread (v81), one limit for the deployment (v82), and a database
-that goes silent answered for (v83; all above).
+without a thread (v81), one limit for the deployment (v82), a database that
+goes silent answered for (v83), and one statement a step (v84; all above).
 
-1. **Fewer statements a step.** A turn is 42.8 statements (v80); an event could
-   be written with the row it reports, in one statement on PostgreSQL.
+1. **Fewer reads a turn.** Of a turn's 30.8 round trips on PostgreSQL (v84),
+   5.5 read a customer's slice again after one of her writes — the write knows
+   the slice it leaves, and could keep it — and two read the conversation's
+   history and actions as the turn starts, which its counters could say are
+   still the ones kept from its last turn; and a tool call that reads has a
+   transaction of its own, a BEGIN and a COMMIT around its two statements.
 2. **Tokens streamed from the provider.** Events are per step today; the
    backends do not stream.
 3. **The customer's own identity.** The storefront asserts which customer a

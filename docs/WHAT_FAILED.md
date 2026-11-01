@@ -2848,6 +2848,101 @@ or was merely busy.
 
 ---
 
+## 73. A parameter named after a column
+
+**What happened.** v84 writes a model call's step as one statement on
+PostgreSQL: data-modifying CTEs — the ledger row, the conversation's UPDATE,
+the message, the event — executed by SQLAlchemy. The first version named the
+ledger's parameters after the ledger's columns, as every INSERT in the
+service had (`tenant_id`, `model`, `prompt_tokens`, ...), and it failed:
+"a value is required for bind parameter" — a parameter of the statement's
+own nobody had written. SQLAlchemy takes a parameter whose name is a column
+of a DML statement for that column's new value, and adds it to the
+statement; inside a CTE too. The conversation's UPDATE has columns named
+`tenant_id`, `model` and `prompt_tokens`, so the statement had grown a
+`SET tenant_id = …, model = …` of its own. It failed only because those
+parameters had no values; given the ledger's, it would have run, and
+written a ledger's model into the conversation's row, every step, with no
+error.
+
+**Fix.** Every parameter of a one-statement write is named apart from every
+column of the tables it writes (`l_model`, `d_prompt`, `m_seq`, ...), and a
+test compiles each statement again with its own parameters as SQLAlchemy's
+column keys and fails if anything is added.
+
+**What else the measurement caught.** The relay that puts the database 1 ms
+further off (`--db-latency-ms`) was wrong twice before it was right. The
+first ran on an event loop, whose timers are whole milliseconds: it added
+3.0 ms to a round trip, not 1. The second, two threads a connection, added
+1.3 ms with one client and 1.9 ms with sixteen on its own, and under the load
+test's sixteen clients the version that made more round trips lost more to
+it — v83 a quarter of its turns a second, v84 a ninth — so that v84 came out
+29% ahead through it, where in the same session without it it was 10%. It
+is one thread now, waiting on every socket at once and holding each packet
+to its time to the microsecond: on its own, 1.45–1.53 ms from one client to
+sixteen; through the load test, sixteen clients answer as many turns a
+second as without it, in either version. Under load it waits for the two
+cores with everything else — 1.4 ms at one client, 1.9–3.2 ms at sixteen —
+so the round trip it adds is sampled throughout every run and reported with
+it, and its CPU apart from the database's.
+
+**The review.** An independent review of v84 before release, on a cluster of
+its own and with a relay that passes a statement to the server and loses the
+answer, found seven more:
+
+- **A turn's end whose answer was lost ran the turn again.** On PostgreSQL a
+  turn's end is one statement in autocommit: its own COMMIT. When the
+  database ran it and the answer was lost on the way back, the turn answered
+  503 and its key was forgotten, as v83 forgets the key of a request the
+  database did not answer — and the retry ran the whole turn again under the
+  same key: a second escalation, after a turn the log shows completed. (v83
+  has the same case, narrower: its end's COMMIT run, and the answer lost.)
+- **A tool call whose lease was taken mid-call was a 500.** A call's record
+  that ran into the rows the conversation's new holder had written broke a
+  unique key, and the turn answered it as a call the platform could not carry
+  out — whose own record ran into the same rows: a traceback, and a 500 kept
+  under the key. One statement at a time as well: v83's path too.
+- **A statement whose lease was another's ran inserts, and rolled them
+  back.** The first one-statement record and start wrote some of their rows
+  through the gate and some beside it; with the lease gone those ran and were
+  rolled back with the statement's transaction — an event id used up each
+  time, and a unique key broken where the new holder had written the same
+  rows.
+- **A step's time was taken before its wait for a connection**, so a step
+  that waited for one renewed its lease from before the wait: up to the
+  pool's timeout early.
+- **The statement count reset the whole cluster's statistics** — every
+  database's on the server, not the load test's alone — and on a server that
+  does not track utility statements it would have counted no BEGIN and no
+  COMMIT, without saying so: of what v84 saves a turn, the 8.2 that are
+  BEGINs and COMMITs.
+- **The relay's round trip was measured before the run**, on an idle relay,
+  and its CPU counted with the database's.
+- **`--root`, to measure another tree, measured whichever came first on
+  `PYTHONPATH`.**
+
+Fixed: a key whose request the database did not answer is settled once it
+answers — kept with the turn's answer if the turn's end is written, its
+`turn.completed` holding it, forgotten if not — so the retry gets the turn
+back, on both paths; a tool call that fails once the lease is another's ends
+the turn 409, as a step that finds the lease gone does; every row a
+one-statement write makes but the ledger's goes through the gate, so with no
+lease it runs no insert and draws no id; a statement that stands alone takes
+its time once it has its connection; the statements are counted as the
+difference of two snapshots of the database's own, and a server that does
+not track BEGIN and COMMIT is reported as such, not counted; the relay is
+sampled during the run and its CPU reported apart; and `--root` comes first
+on the server's path. Each has a test, or a line of the load test's output.
+
+**Lesson.** A library's convenience is a rule of its own: here, that a
+parameter's name can be a column's value. Code that has always used it
+safely — one table a statement — keeps doing so until one statement writes
+several. And a statement in autocommit is its own COMMIT: an answer lost on
+its way back is a write made and not heard, and a rule that forgets what it
+did not hear makes it twice.
+
+---
+
 ## What this list is for
 
 Two things.

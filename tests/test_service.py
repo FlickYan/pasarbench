@@ -1514,6 +1514,216 @@ def test_silent_database():
     over_tcp.dispose()
 
 
+def test_one_statement_steps():
+    """A step's writes in one statement on PostgreSQL (batched.py, v84): the
+    rows one statement at a time wrote, the same, in fewer statements and
+    transactions; and a turn that has lost its lease writes no more than it
+    did -- its model call's ledger row, nothing else."""
+    print("one statement a step [postgres]")
+    import types
+    from collections import Counter
+    from datetime import timedelta
+    from sqlalchemy import event, select, text, update
+    from sqlalchemy.dialects import postgresql
+    from pasarbench.service import batched as B
+    from pasarbench.service import schema as S
+    from pasarbench.service.runtime import Runtime, utcnow
+    from pasarbench.service.store import make_engine, transaction
+
+    d = postgresql.psycopg.dialect()
+    clashes = {}
+    for name, stmt in B.ALL.items():
+        keys = sorted({b.key for b in stmt.compile(dialect=d).binds.values()})
+        extra = {b.key for b in stmt.compile(dialect=d, column_keys=keys).binds.values()}
+        if extra - set(keys):
+            clashes[name] = sorted(extra - set(keys))
+    check("no parameter of a one-statement write is named after a column of a table it "
+          "writes, which SQLAlchemy would add to the statement's SET or VALUES",
+          not clashes, clashes)
+
+    _, _, proc, users = demo_orders()
+    owner = proc["user_id"]
+    digits = users[owner]["verified_phone_last4"]
+    calls = [("verify_identity", {"user_id": owner, "phone_last4": digits}),
+             ("get_order", {"order_id": proc["order_id"]}),
+             ("escalate_to_human", {"order_id": proc["order_id"], "category": "other",
+                                    "reason": "a test"})]
+    drop = {"created_at", "updated_at", "latency_ms", "event_id", "lease_expires_at",
+            "conversation_id", "id", "ledger_id"}
+
+    def rows(engine):
+        out = {}
+        with engine.connect() as conn:
+            for t, order in ((S.messages, "seq"), (S.events, "event_id"),
+                             (S.usage_ledger, "step"), (S.tool_calls, "seq"),
+                             (S.actions, "seq"), (S.conversations, "conversation_id"),
+                             (S.escalations, "escalation_id")):
+                got = []
+                for r in conn.execute(select(t).order_by(t.c[order])).mappings():
+                    r = {k: v for k, v in r.items() if k not in drop}
+                    if isinstance(r.get("payload"), dict):
+                        r["payload"] = {k: v for k, v in r["payload"].items()
+                                        if k not in ("latency_ms", "conversation_id")}
+                    got.append(r)
+                out[t.name] = got
+        return out
+
+    class Down:
+        name = model = "down"
+        reports_usage = True
+
+        def chat(self, messages, tools):
+            raise RuntimeError("HTTP 503 from https://provider.example: overloaded")
+
+    def run(batched, backend=lambda: Plan(calls)):
+        from pasarbench.service.resilience import Gates
+        engine, url = database("postgres", "steps")
+        app = make_app(engine, url, limits="process")
+        rt = app.state.runtime
+        rt.batched = batched
+        rt.gates = Gates(sleep=lambda s: None)
+        rt.registry.backend = lambda spec: backend()
+        seen = Counter()
+        counting = {"on": False}
+
+        @event.listens_for(engine, "before_cursor_execute")
+        def _stmt(conn, cursor, statement, params, context, executemany):  # noqa: ANN001
+            if counting["on"]:
+                seen["statements"] += 1
+
+        @event.listens_for(engine, "commit")
+        def _commit(conn):  # noqa: ANN001
+            if counting["on"] and conn.get_isolation_level() != "AUTOCOMMIT":
+                seen["transactions"] += 1
+
+        with client(app) as c:
+            h = tenant(c, "acme")
+            cid = c.post("/v1/conversations", headers=h, json={"user_id": owner}).json()[
+                "conversation_id"]
+            counting["on"] = True
+            first = c.post(f"/v1/conversations/{cid}/messages", headers=h,
+                           json={"content": "where is my order, and a human please"})
+            counting["on"] = False
+            second = c.post(f"/v1/conversations/{cid}/messages", headers=h,
+                            json={"content": "thanks"})
+        out = rows(engine)
+        engine.dispose()
+        return first, second, out, seen
+
+    one = run(False)
+    batched = run(True)
+    same = {t: batched[2][t] == one[2][t] for t in one[2]}
+    check("[postgres] the same two turns -- three tool calls, an escalation among them -- "
+          "write the same rows one statement a step as one statement at a time: messages, "
+          "events, the ledger, the tool calls and actions, the conversation, the escalation",
+          one[0].status_code == batched[0].status_code == 200
+          and one[1].status_code == batched[1].status_code == 200 and all(same.values()),
+          {t: ok for t, ok in same.items() if not ok} or None)
+    failed = [run(b, Down) for b in (False, True)]
+    same_failed = {t: failed[1][2][t] == failed[0][2][t] for t in failed[0][2]}
+    check("[postgres] …and the same for a turn its provider fails: the fallback reply and "
+          "the turn's end in one statement",
+          failed[0][0].json().get("fallback") and failed[1][0].json().get("fallback")
+          and all(same_failed.values()),
+          {t: ok for t, ok in same_failed.items() if not ok} or failed[1][0].text[:200])
+    steps, tools = 4, 3                 # the turn's model calls and tool calls
+    fewer = one[3]["statements"] - batched[3]["statements"]
+    fewer_tx = one[3]["transactions"] - batched[3]["transactions"]
+    check("[postgres] …in fewer statements and transactions: a model call's step one "
+          "statement (four before), a tool call's record one (five), the turn's start one "
+          "(three) and its end one (two); every step and the end without a transaction of "
+          "their own",
+          fewer == 3 * steps + 4 * tools + 2 + 1 and fewer_tx == steps + 1,
+          (dict(one[3]), dict(batched[3]), fewer, fewer_tx))
+
+    # A lease taken away: what each statement writes when it is not the turn's.
+    engine, url = database("postgres", "lost")
+    app = make_app(engine, url, limits="process")
+    with client(app) as c:
+        h = tenant(c, "acme")
+        cid = c.post("/v1/conversations", headers=h, json={"user_id": owner}).json()[
+            "conversation_id"]
+    with transaction(engine, write=True) as conn:
+        conn.execute(update(S.conversations).where(
+            S.conversations.c.conversation_id == cid).values(
+            lease_owner="another-process", lease_expires_at=utcnow() + timedelta(seconds=60)))
+
+    def written():
+        with engine.connect() as conn:
+            got = {t.name: len(conn.execute(select(t).where(t.c.conversation_id == cid)).all())
+                   for t in (S.usage_ledger, S.messages, S.events, S.tool_calls, S.actions)}
+            # The events' ids drawn so far: an insert that runs and is rolled
+            # back uses one up, as one that is kept does.
+            got["event ids"] = conn.execute(text(
+                "SELECT pg_sequence_last_value(pg_get_serial_sequence('events', 'event_id'))")
+            ).scalar()
+            return got
+
+    ledger = {"l_tenant": "acme", "l_turn": 1, "l_provider": "mock", "l_model": "mock",
+              "l_price": None, "d_prompt": 1, "d_cached": 0, "d_completion": 1,
+              "l_estimated": False, "d_cost": 0, "l_latency": 1, "l_served": None,
+              "m_seq": 1, "m_content": "x", "m_tool_calls": None, "e_payload": {}}
+    before = written()
+    mine = {"cid": cid, "owner": "this-turn"}          # alone() takes the time itself
+    rt = app.state.runtime
+    step = rt.alone(B.STEP, {**mine, **ledger, "l_step": 1})
+    finish = rt.alone(B.FINISH[True], {**mine, "f_stop": "replied", "m_turn": 1,
+                                       "e_payload": {}, "m_seq": 1, "m_content": "x"})
+    recorded = rt.alone(B.RECORD[True], {
+        **mine, "t_seq": 0, "t_tenant": "acme", "t_user": owner, "t_turn": 1, "t_step": 1,
+        "t_call": "c1", "t_tool": "verify_identity", "t_args": {}, "t_ok": True, "t_error": None,
+        "t_sha": "0" * 16, "t_write": False, "t_world": None, "t_verified": [],
+        "t_customer": None, "t_changes": None, "t_allocated": None, "t_attempts": 1,
+        "t_latency": 1, "a_rows": [{"seq": 0, "tool": "verify_identity", "args": {}, "ok": True,
+                                    "error": None, "denied": False}],
+        "m_seq": 1, "m_content": "{}", "v_verified": [owner], "d_tool_calls": 1,
+        "d_n_actions": 1, "d_n_messages": 1, "e_payload": {}})
+    now = utcnow()
+    with transaction(engine, write=True) as conn:
+        opened = conn.execute(B.OPEN, {**mine, "now": now, "expires": now + timedelta(seconds=60),
+                                       "m_seq": 1, "m_turn": 1, "m_content": "x",
+                                       "v_turns": 1, "d_n_messages": 1,
+                                       "e_payload": {}}).first()
+    after = written()
+    with engine.connect() as conn:
+        held = conn.execute(select(S.conversations.c.lease_owner).where(
+            S.conversations.c.conversation_id == cid)).scalar()
+    added = {k: after[k] - before[k] for k in after}
+    check("[postgres] a turn whose lease is another's: its step writes the ledger row -- "
+          "the model call was made -- and no message or event; its end, a tool call's record "
+          "and its start write nothing and leave the lease -- nor draw an event id, which an "
+          "insert that ran and was rolled back would have used up",
+          step is None and finish is None and recorded is None and opened is None
+          and added == {"usage_ledger": 1, "messages": 0, "events": 0, "tool_calls": 0,
+                        "actions": 0, "event ids": 0}
+          and held == "another-process", (step, finish, recorded, opened, added, held))
+
+    # A statement that stands alone takes its time once it has a connection,
+    # as a transaction does: a step that waited for one renews the lease
+    # from when it writes, not from before the wait (the review of v84).
+    small = make_engine(url, pool_size=1, max_overflow=0)
+    busy, freed = small.connect(), {}
+
+    def give_back():
+        time.sleep(0.3)
+        freed["at"] = utcnow()
+        busy.close()
+
+    t = threading.Thread(target=give_back)
+    t.start()
+    Runtime.alone(types.SimpleNamespace(engine=small, settings=rt.settings), B.STEP,
+                  {**mine, **ledger, "l_step": 2})
+    t.join()
+    with engine.connect() as conn:
+        charged = conn.execute(select(S.usage_ledger.c.created_at).where(
+            S.usage_ledger.c.conversation_id == cid, S.usage_ledger.c.step == 2)).scalar()
+    small.dispose()
+    engine.dispose()
+    check("[postgres] a statement that stands alone takes its time once it has its "
+          "connection: a step that waited 0.3 s for one is charged from when it wrote",
+          charged is not None and charged >= freed["at"], (freed.get("at"), charged))
+
+
 def test_profiler():
     """The sampling profiler (profiling.py, v80): every thread's CPU charged to
     calls that ran throughout, waiting charged nothing -- against threads
@@ -2887,17 +3097,18 @@ def test_order(kind: str):
     engine.dispose()
 
 
-def test_failures_keep_their_key():
+def test_failures_keep_their_key(kind: str = "sqlite"):
     """A turn that began and then failed keeps its answer under its key: it may
     have changed things, and a retry must not run it again (the review of v75:
-    a lost lease freed the key, and the retry escalated twice)."""
-    print("failures keep their key")
+    a lost lease freed the key, and the retry escalated twice). On PostgreSQL
+    too, where a step's writes are one statement (v84)."""
+    print(f"failures keep their key [{kind}]")
     from datetime import timedelta
     from sqlalchemy import insert, select, update
     from pasarbench.service import schema as S
     from pasarbench.service.runtime import utcnow
     from pasarbench.service.store import transaction
-    engine, url = database("sqlite", "failkey")
+    engine, url = database(kind, "failkey")
     app = make_app(engine, url)
     box = {}
 
@@ -2948,6 +3159,104 @@ def test_failures_keep_their_key():
                    json={"content": "hello"})
         check("a key whose request died with its process frees itself when the turn's lease "
               "would have", r.status_code == 200, r.text[:200])
+
+        # The turn's end written, and the database's answer lost on its way
+        # back (the review of v84): the request is answered 503, and its key
+        # is settled once the database answers -- with the answer the turn's
+        # end holds, not forgotten, so the retry gets the turn back.
+        from sqlalchemy.exc import IntegrityError, OperationalError
+        from pasarbench.service import runtime as R
+        rt = app.state.runtime
+        rt.registry.backend = lambda spec: Plan(calls)
+        real_finish, real_tool = R.Turn._finish, R.run_tool
+
+        def answer_lost(self, *a, **kw):
+            real_finish(self, *a, **kw)
+            raise OperationalError("COMMIT", {}, ConnectionError("the server's answer was lost"))
+
+        def escalations():
+            with engine.connect() as conn:
+                return len(conn.execute(select(S.escalations)).all())
+
+        def turn_rows(cid_):
+            with engine.connect() as conn:
+                said = conn.execute(select(S.messages).where(
+                    S.messages.c.conversation_id == cid_, S.messages.c.role == "user")).all()
+                evs = [e.type for e in conn.execute(select(S.events).where(
+                    S.events.c.conversation_id == cid_).order_by(S.events.c.event_id))]
+            return len(said), evs
+
+        esc0 = escalations()
+        cid2 = c.post("/v1/conversations", headers=h, json={"user_id": "U001"}).json()[
+            "conversation_id"]
+        hk2 = {**h, "Idempotency-Key": "k-answer-lost"}
+        R.Turn._finish = answer_lost
+        try:
+            first = c.post(f"/v1/conversations/{cid2}/messages", headers=hk2,
+                           json={"content": "go"})
+        finally:
+            R.Turn._finish = real_finish
+        settled = until(lambda: rt.unreleased() == 0, 15)
+        retry = c.post(f"/v1/conversations/{cid2}/messages", headers=hk2, json={"content": "go"})
+        said, evs = turn_rows(cid2)
+        got = retry.json() if retry.status_code == 200 else {}
+        check("a turn whose end was written but whose answer the database lost is answered "
+              "503; once the database answers, its key keeps the turn's answer: the retry "
+              "gets the turn back (200, replayed) and runs nothing",
+              first.status_code == 503 and settled and retry.status_code == 200
+              and retry.headers.get("idempotent-replayed") == "true"
+              and got.get("turn") == 1 and got.get("reply") == "done"
+              and len(got.get("tool_calls", [])) == 2 and said == 1
+              and evs.count("turn.completed") == 1 and escalations() - esc0 == 1,
+              (first.status_code, settled, retry.status_code,
+               retry.headers.get("idempotent-replayed"), said, evs, escalations() - esc0))
+
+        # The lease taken while a tool call runs, and the call's record running
+        # into the rows the conversation's new holder wrote (the review of
+        # v84): a conflict, answered 409 and kept under the key -- not a call
+        # the platform could not carry out, whose own record runs into them
+        # too (a 500).
+        cv = S.conversations
+
+        def collides(engine_, **kw):
+            if kw.get("name") != "escalate_to_human":
+                return real_tool(engine_, **kw)
+            with transaction(engine, write=True) as conn:
+                row = conn.execute(select(cv).where(cv.c.conversation_id == box["cid3"])).one()
+                conn.execute(update(cv).where(cv.c.conversation_id == box["cid3"]).values(
+                    lease_owner="another-process",
+                    lease_expires_at=utcnow() + timedelta(seconds=60),
+                    tool_calls=cv.c.tool_calls + 1))
+                conn.execute(insert(S.tool_calls).values(
+                    conversation_id=box["cid3"], seq=row.tool_calls, tenant_id="acme",
+                    user_id="U001", turn=row.turns, step=0, call_id="x",
+                    tool="escalate_to_human", args={}, ok=False,
+                    error="interrupted: this call was not run", result_sha="0" * 16,
+                    is_write=False, dispatched=False, verified_before=[], latency_ms=0,
+                    created_at=utcnow()))
+            raise IntegrityError("INSERT INTO tool_calls", {},
+                                 Exception("duplicate key value violates unique constraint"))
+
+        esc0 = escalations()
+        box["cid3"] = cid3 = c.post("/v1/conversations", headers=h,
+                                    json={"user_id": "U001"}).json()["conversation_id"]
+        hk3 = {**h, "Idempotency-Key": "k-collides"}
+        R.run_tool = collides
+        try:
+            first = c.post(f"/v1/conversations/{cid3}/messages", headers=hk3,
+                           json={"content": "go"})
+            retry = c.post(f"/v1/conversations/{cid3}/messages", headers=hk3,
+                           json={"content": "go"})
+        finally:
+            R.run_tool = real_tool
+        said, evs = turn_rows(cid3)
+        check("a turn whose lease is taken while a tool call runs -- the call's record running "
+              "into the rows the new holder wrote -- answers 409, and its key keeps that "
+              "answer; it writes no answer of its own to the call",
+              first.status_code == 409 and first.json().get("type") == "/problems/conflict"
+              and retry.status_code == 409 and retry.headers.get("idempotent-replayed") == "true"
+              and said == 1 and evs.count("tool.result") == 1 and escalations() == esc0,
+              (first.status_code, first.text[:160], retry.status_code, said, evs))
     engine.dispose()
 
 
@@ -3146,6 +3455,8 @@ def main() -> int:
             test_slices("postgres")
             test_liveness()
             test_silent_database()
+            test_one_statement_steps()
+            test_failures_keep_their_key("postgres")
             test_shared_limits("postgres")
             test_bad_arguments("postgres")
             test_nul("postgres")

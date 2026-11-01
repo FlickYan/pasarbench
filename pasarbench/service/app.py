@@ -508,17 +508,35 @@ def create_app(settings: Settings | None = None, engine: Engine | None = None) -
                     conn, tenant_id, key, status, body, rh, held))
         return response
 
-    def forget_later(request: Request, tenant_id: str, key: str | None) -> None:
+    def forget_later(request: Request, tenant_id: str, key: str | None,
+                     turn: Turn | None = None) -> None:
         """The key of a request the database did not answer: forgotten as soon
         as it answers again (Runtime.later), so that the request can be sent
         again under it -- not held until it expires, a lease on, which would
         answer that retry 409 until then. As a crashed request's key would be,
         sooner: the turn may have done part of its work, which the retry's
-        turn sees and goes on from (v83)."""
+        turn sees and goes on from (v83). Unless the turn finished: a turn
+        whose last statement the database ran and whose answer was lost on
+        the way back has its turn.completed, and the key keeps the answer it
+        holds, so that the retry gets the turn back rather than running it
+        again (v84)."""
         held = getattr(request.state, "idem_held", None)
-        if key and held is not None:
-            runtime.later(("key", tenant_id, key),
-                          lambda conn: idem.forget_in(conn, tenant_id, key, held))
+        if not key or held is None:
+            return
+        rh = getattr(request.state, "idem_hash", None)
+
+        def settle(conn: Any) -> None:
+            done = None if turn is None else conn.execute(
+                select(S.events.c.payload).where(
+                    S.events.c.conversation_id == turn.cid, S.events.c.turn == turn.number,
+                    S.events.c.type == "turn.completed")).first()
+            if done is None:
+                idem.forget_in(conn, tenant_id, key, held)
+            else:
+                body = JSONResponse(sent(TurnResult, done.payload)).body.decode()
+                idem.complete_in(conn, tenant_id, key, 200, body, rh, held)
+
+        runtime.later(("key", tenant_id, key), settle)
 
     async def kept(request: Request, tenant_id: str, key: str | None,
                    response: JSONResponse) -> JSONResponse:
@@ -700,8 +718,8 @@ def create_app(settings: Settings | None = None, engine: Engine | None = None) -
             response = failed(e, request)
             if unavailable(e):
                 # Not kept: the database that did not answer would be asked
-                # again, for as long. The key is forgotten once it answers.
-                forget_later(request, tenant_id, idempotency_key)
+                # again, for as long. The key is settled once it answers.
+                forget_later(request, tenant_id, idempotency_key, turn)
                 return response
         return await kept(request, tenant_id, idempotency_key, response)
 
@@ -729,7 +747,7 @@ def create_app(settings: Settings | None = None, engine: Engine | None = None) -
                     if not unavailable(e):      # (not asked again: post_message says why)
                         await kept(request, tenant_id, key, response)
                     else:
-                        forget_later(request, tenant_id, key)
+                        forget_later(request, tenant_id, key, turn)
                 finally:
                     queue.put_nowait(("error", response.body.decode()))
 
